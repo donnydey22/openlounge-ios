@@ -10,7 +10,7 @@
     "backgroundColor": "#1C1C1E",
     "ios": {
       "bundleIdentifier": "com.donnydey.openlounge",
-      "buildNumber": "12",
+      "buildNumber": "13",
       "deploymentTarget": "16.4",
       "supportsTablet": false,
       "icon": {
@@ -149,7 +149,6 @@
           }
         ]
       },
-      "googleServicesFile": "./GoogleService-Info.plist",
       "entitlements": {
         "aps-environment": "production"
       }
@@ -189,16 +188,6 @@
           }
         }
       ],
-      "./plugins/withSafeFirebaseConfigure.js",
-      "@react-native-firebase/app",
-      "@react-native-firebase/messaging",
-      [
-        "expo-notifications",
-        {
-          "icon": "./assets/icon.png",
-          "color": "#F2B366"
-        }
-      ],
       [
         "expo-contacts",
         {
@@ -218,8 +207,7 @@
             "networkInspector": false
           }
         }
-      ],
-      "./plugins/withRNFirebaseDisableSPM.js"
+      ]
     ],
     "extra": {
       "startUrl": "https://openlounge.app",
