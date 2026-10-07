@@ -13,7 +13,11 @@
       "buildNumber": "7",
       "deploymentTarget": "16.4",
       "supportsTablet": false,
-      "icon": "./assets/icon.png",
+      "icon": {
+        "light": "./assets/icon.png",
+        "dark": "./assets/icon-dark.png",
+        "tinted": "./assets/icon-tinted.png"
+      },
       "config": {
         "usesNonExemptEncryption": false
       },
@@ -136,8 +140,9 @@
     "android": {
       "package": "com.donnydey.openlounge",
       "adaptiveIcon": {
-        "backgroundColor": "#1C1C1E",
-        "foregroundImage": "./assets/adaptive-icon.png"
+        "backgroundColor": "#10B981",
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "monochromeImage": "./assets/adaptive-monochrome.png"
       },
       "permissions": [
         "android.permission.RECORD_AUDIO",
@@ -173,8 +178,8 @@
       [
         "expo-notifications",
         {
-          "icon": "./assets/icon.png",
-          "color": "#F2B366"
+          "icon": "./assets/notification-icon.png",
+          "color": "#10B981"
         }
       ],
       [
