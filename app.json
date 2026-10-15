@@ -10,7 +10,7 @@
     "backgroundColor": "#1C1C1E",
     "ios": {
       "bundleIdentifier": "com.donnydey.openlounge",
-      "buildNumber": "20",
+      "buildNumber": "25",
       "deploymentTarget": "16.4",
       "supportsTablet": false,
       "icon": {

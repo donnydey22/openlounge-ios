@@ -57,7 +57,7 @@ export const COLORS = {
  * env(safe-area-inset-bottom) for the home indicator. Flip to true once every web header uses
  * env(safe-area-inset-top).
  */
-export const EDGE_TO_EDGE_TOP = false;
+export const EDGE_TO_EDGE_TOP = true;
 
 /**
  * 'overlay' (default): WKWebView behaviour — the keyboard overlays the page, the web composer follows
