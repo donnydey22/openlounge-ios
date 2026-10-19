@@ -555,10 +555,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         }
       }
 
-    case "call:ringtonePrepare":
-      // page is about to play the incoming ringtone (tones.ts): ring/speaker session, not a left-over call session
-      prepareRingtoneSession()
-
     case "call:outgoing":
       let video = (m["video"] as? Bool) ?? false
       callVideo = video
@@ -824,17 +820,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     ringbackReported = nil
   }
 
-  /// before the incoming ringtone: native audio engine stopped, playAndRecord/.default/.defaultToSpeaker re-applied
-  /// and the loudspeaker forced (no headset) — ringtone only, never while a call is live
-  private func prepareRingtoneSession() {
-    guard !hasLiveCall else { return }
-    OLNativeAudio.stopIdle()
-    prepareHeadsetSession()
-    let s = AVAudioSession.sharedInstance()
-    try? s.setActive(true)
-    try? s.overrideOutputAudioPort(Self.headsetAttached() ? .none : .speaker)
-  }
-
   private func restoreAudioIfIdle(force: Bool = false) {
     guard !hasLiveCall, let saved = savedAudio else { return }
     savedAudio = nil
@@ -845,7 +830,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let s = AVAudioSession.sharedInstance()
     try? s.overrideOutputAudioPort(.none)
     try? s.setCategory(saved.0, mode: saved.1, options: saved.2)
-    OLNativeAudio.stopIdle()
     prepareHeadsetSession()
     _ = force
   }

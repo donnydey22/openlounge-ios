@@ -33,15 +33,6 @@ enum OLNativeAudio {
     #endif
   }
 
-  /// idle after a call: WebRTC's audio unit fully stopped so nothing keeps the session in voice-processing/call shape
-  /// (that left-over state made the next ringtone thin and quiet on iPhone b39)
-  static func stopIdle() {
-    #if canImport(LiveKitWebRTC)
-    let rtc = RTCAudioSession.sharedInstance()
-    if rtc.isAudioEnabled { rtc.isAudioEnabled = false }
-    #endif
-  }
-
   static func didDeactivate(_ session: AVAudioSession) {
     #if canImport(LiveKitWebRTC)
     let rtc = RTCAudioSession.sharedInstance()
