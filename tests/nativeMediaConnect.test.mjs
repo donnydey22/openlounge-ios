@@ -1,5 +1,5 @@
-// Behaviour test for the 60 s block reconnect hang: concurrent connects for one call coalesce into a single build,
-// and closing a session aborts its pending connect immediately (no 12 s wait on a dead transport).
+// Behaviour test for the native reconnect path: concurrent connects coalesce, a superseded connect aborts promptly,
+// and static assertions protect the paired iPhone audio+camera contract.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
@@ -7,15 +7,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import ts from 'typescript';
 
+const source = () => readFileSync('src/nativeMedia.ts', 'utf8');
 const dir = mkdtempSync(join(tmpdir(), 'nm-'));
-let js = ts.transpileModule(readFileSync('src/nativeMedia.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+let js = ts.transpileModule(source(), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
 js = js.replace(/import \{[^}]*\} from '@livekit\/react-native-webrtc';/, 'const mediaDevices = globalThis.__md;')
   .replace(/import \{[^}]*\} from '@livekit\/react-native';/, 'const registerGlobals = () => {};')
   .replace(/import\('mediasoup-client'\)/g, 'Promise.resolve(globalThis.__ms)');
 writeFileSync(join(dir, 'nm.mjs'), js);
 
 const track = () => ({ readyState: 'live', enabled: true, stop() { this.readyState = 'ended'; } });
-globalThis.__md = { getUserMedia: async () => { const t = track(); return { getAudioTracks: () => [t], getTracks: () => [t] }; } };
+globalThis.__md = { getUserMedia: async () => { const t = track(); return { getAudioTracks: () => [t], getVideoTracks: () => [], getTracks: () => [t] }; } };
 let transports = [];
 function mkT(dir) {
   const h = {}; const t = { id: dir + transports.length, connectionState: 'new', on: (e, f) => ((h[e] ||= []).push(f)),
@@ -61,8 +62,28 @@ test('after a build settles, a later rebuild builds fresh again', async () => {
   await go(); await go(); assert.equal(joins, 2); c.closeAll();
 });
 
-test('paired native video producers carry one explicit stream ID and replacement video consumers are closed', () => {
-  const src = readFileSync('src/nativeMedia.ts', 'utf8');
-  assert.match(src, /streamId: this\.streamId[\s\S]{0,2400}streamId: this\.streamId/);
-  assert.match(src, /for \(const \[id, prior\] of this\.consumers\)[\s\S]{0,180}prior\.close\(\)/);
+test('paired native producers use one app-owned stream and an explicit shared stream identifier', () => {
+  const src = source();
+  assert.match(src, /const \[\{ Device \}, stream\] = await Promise\.all\(\[import\('mediasoup-client'\), takeStream\(this\.video\)\]\)/,
+    'one native stream supplies paired capture');
+  assert.match(src, /const track = stream\.getAudioTracks\(\)\[0\];[\s\S]{0,600}streamId: this\.streamId/,
+    'audio producer carries the explicit stream id');
+  assert.match(src, /await this\.publishCamera\(stream\.getVideoTracks\(\)\[0\]\);/,
+    'the initial camera comes from the same app-owned capture stream');
+  assert.match(src, /private async publishCamera\(track: MediaStreamTrack \| undefined\)[\s\S]{0,700}streamId: this\.streamId/,
+    'camera producer carries that exact same stream id');
+  assert.match(src, /const streamId = typeof cmd\.streamId === 'string'[\s\S]{0,300}new NativeMediaSession\(callId,[\s\S]{0,300}streamId/,
+    'the page-provided call-scoped id is validated before native construction');
+});
+
+test('native camera lifecycle keeps microphone continuity and retires old remote video consumers', () => {
+  const src = source();
+  assert.match(src, /if \(warmed && hasAudio\) return warmed;/,
+    'a camera acquisition failure retains the native microphone stream');
+  assert.match(src, /camera-unavailable/,
+    'camera-only failure reports a non-terminal video failure');
+  assert.match(src, /for \(const \[id, prior\] of this\.consumers\)[\s\S]{0,220}prior\.close\(\)[\s\S]{0,180}this\.remoteVideo = new MediaStream\(\[c\.track\]\)/,
+    'replacement remote video closes prior consumer before rendering the new track');
+  assert.match(src, /dropConsumer\(consumerId: string\)[\s\S]{0,500}this\.remoteVideo = null/,
+    'producer closure removes the native remote renderer');
 });
