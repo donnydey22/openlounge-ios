@@ -5,7 +5,7 @@
 //
 // Page → app  (bridge method 'nativeMedia', request/reply):
 //   {op:'prewarm'}                          dial tapped: grab the mic + load the WebRTC stack before the invite
-//   {op:'connect', callId, iceServers, tcpOnly?, rebuild?} join + send/recv transports + audio producer + consume
+//   {op:'connect', callId, iceServers, tcpOnly?}   join + send/recv transports + audio producer + consume
 //   {op:'connectLiveKit', callId, url, token, iceServers}   emergency LiveKit path, still native
 //   {op:'status'}  → {callId, kind, connected} | null    (a reloaded page re-attaches; connect on the same call = attach)
 //   {op:'mute', muted} | {op:'close'} | {op:'restartIce'} | {op:'stats'} | {op:'ladder', audioBps}
@@ -361,11 +361,9 @@ export class NativeMediaController {
       case 'connect': {
         if (!CALL_ID.test(callId)) throw new Error('bad callId');
         const tcpOnly = cmd.tcpOnly === true;
-        // outage recovery: the page asks for fresh transports (its ICE restarts did not bring the media back)
-        const rebuild = cmd.rebuild === true;
         const cur = this.session;
         // page reload mid-call: same call, same path, still alive → re-attach, never rebuild native media
-        if (!rebuild && cur?.alive && cur.callId === callId && cur.tcpOnly === tcpOnly) {
+        if (cur?.alive && cur.callId === callId && cur.tcpOnly === tcpOnly) {
           if (cur.isConnected) {
             void cur.syncConsumers().catch(() => {});
             return { attached: true };
