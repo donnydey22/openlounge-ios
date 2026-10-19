@@ -238,7 +238,12 @@
         }
       ],
       "./plugins/withFirebasePhoneAuthScheme.js",
-      "@livekit/react-native-expo-plugin"
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "microphonePermission": "Open Lounge uses your microphone so you can speak in live rooms, drop-in chats and calls. Audio is only sent while you\u2019re speaking on stage or in a call."
+        }
+      ]
     ],
     "extra": {
       "startUrl": "https://openlounge.app",

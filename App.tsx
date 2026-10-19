@@ -293,18 +293,12 @@ function Shell() {
   }, [hideSplash, scheduleRetry, setOfflineBoth]);
 
   // Network comes back → retry immediately (NWPathMonitor via expo-network).
-  const netTypeRef = useRef<string | null>(null);
-  const nativeMediaRef = useRef<NativeMediaController | null>(null);
   useEffect(() => {
     let sub: { remove: () => void } = { remove: () => {} };
     try {
     sub = Network.addNetworkStateListener((s) => {
       // Wi-Fi ⇄ cellular handoff → the page restarts ICE in place (native-only call adaptation, netAdapt.ts)
       if (s.isConnected !== false && s.type) {
-        // native call media restarts ICE itself (no page round trip; works mid page-reload too)
-        const t = String(s.type).toLowerCase();
-        if (netTypeRef.current && netTypeRef.current !== t) nativeMediaRef.current?.onNetworkChange();
-        netTypeRef.current = t;
         webRef.current?.injectJavaScript(`try{window.__olNetworkChanged&&window.__olNetworkChanged(${JSON.stringify(String(s.type).toLowerCase())})}catch(e){};true;`);
       }
       if (!offlineRef.current || s.isConnected === false || s.isInternetReachable === false) return;
@@ -576,7 +570,6 @@ function Shell() {
       (detail) => inject(nativeEventScript('openlounge:native-media', detail)),
     );
   }
-  nativeMediaRef.current = nativeMedia.current;
 
   const onMessage = useCallback(
     async (e: WebViewMessageEvent) => {
