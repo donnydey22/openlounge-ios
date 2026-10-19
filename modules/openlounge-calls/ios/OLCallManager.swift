@@ -712,9 +712,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // Preferences only — iOS clamps to what the route supports and never throws the call off the session.
     if s.preferredSampleRate != 48_000 { try? s.setPreferredSampleRate(48_000) }
     if abs(s.preferredIOBufferDuration - 0.01) > 0.0005 { try? s.setPreferredIOBufferDuration(0.01) }
-    // Loudness (Oct 16, Donny/Keiko "not loud enough"): full mic input gain where the route allows it (voiceChat's
-    // own AGC still levels it); a no-op on routes that don't expose a settable gain.
-    if s.isInputGainSettable && s.inputGain < 1.0 { try? s.setInputGain(1.0) }
     let wantSpeaker = speaker && !headset
     let onSpeaker = s.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
     if wantSpeaker != onSpeaker {

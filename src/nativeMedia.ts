@@ -142,8 +142,7 @@ export class NativeMediaSession {
     const track = stream.getAudioTracks()[0];
     this.producer = await this.send.produce({
       track,
-      codecOptions: { opusStereo: false, opusDtx: false, // DTX off: onset clipping read as quiet (web parity, Oct 16)
-        opusFec: true, opusMaxPlaybackRate: 48000 },
+      codecOptions: { opusStereo: false, opusDtx: true, opusFec: true, opusMaxPlaybackRate: 48000 },
       encodings: [{ maxBitrate: 48_000, priority: 'high', networkPriority: 'high' } as never],
       appData: { source: 'mic', native: true },
     });
@@ -199,7 +198,7 @@ export class NativeMediaSession {
   }
 
   private async keepRestarting(t: Transport, direction: string) {
-    const delays = [0, 500, 1000, 2000, 4000]; // back on UDP sooner (web parity, Oct 16)
+    const delays = [0, 1000, 2000, 4000, 8000];
     for (let i = 0; !this.closed && this.iceRestarted.has(direction); i++) {
       await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
       if (this.closed || !this.iceRestarted.has(direction) || t.connectionState === 'connected') return;
