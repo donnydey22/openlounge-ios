@@ -78,15 +78,11 @@ t(B.parseBridgeMessage('{"type":"call:audioRoute","speaker":false}'), { __ol: 1,
 t(B.parseBridgeMessage('{"type":"call:audioRoute","speaker":"no"}'), null, 'audio route non-bool');
 t(B.parseBridgeMessage('{"type":"call:explode"}'), null, 'unknown call type');
 t(B.parseBridgeMessage('{"__ol":1,"type":"call:ended"}'), null, 'enveloped call msg ignored');
-t(B.parseBridgeMessage('{"__ol":1,"id":"a1","method":"nativeMedia","value":{"op":"prewarm"}}')?.value?.op, 'prewarm', 'nativeMedia cmd');
-t(B.parseBridgeMessage('{"__ol":1,"method":"nativeMedia","value":{"op":"prewarm"}}'), null, 'nativeMedia needs id');
-t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"id":"nm1","ok":true,"result":{"a":1}}}')?.value?.ok, true, 'msReply parsed');
-t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"ok":true}}'), null, 'msReply needs id');
 {
   const js = B.injectedBeforeContentLoaded('ios', '0.3.1', true);
-  t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls', 'nativeMedia'\]/.test(js), true, 'native calls flag on');
+  t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls'\]/.test(js), true, 'native calls flag on');
   const off = B.injectedBeforeContentLoaded('ios', '0.3.1');
-  t(/if \(false\)/.test(off) && !/'calls'/.test(off), true, 'native calls flag off by default');
+  t(/if \(false\)/.test(off) && !/'calls'\]/.test(off), true, 'native calls flag off by default');
 }
 {
   const { shouldLock } = require(path.join(root, 'src/lockPolicy.ts'));

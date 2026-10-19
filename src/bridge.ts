@@ -85,11 +85,7 @@ export type BridgeRequest =
   | { __ol: 1; method: 'setBadge'; value: number }
   | { __ol: 1; method: 'phoneAuthStart'; value: { id: string; phone: string } }
   | { __ol: 1; method: 'phoneAuthConfirm'; value: { id: string; code: string } }
-  | { __ol: 1; method: 'call'; value: PageCallMessage }
-  /** native call media (src/nativeMedia.ts): page → app command, answered via resolveScript */
-  | { __ol: 1; id: string; method: 'nativeMedia'; value: Record<string, unknown> }
-  /** page's answer to an app-originated ms:* signaling request (window.__olNativeMsReq) */
-  | { __ol: 1; method: 'msReply'; value: { id: string; ok: boolean; result: unknown; error?: string } };
+  | { __ol: 1; method: 'call'; value: PageCallMessage };
 
 /** Page → native call messages (NATIVE_SPEC.md §5), sent as plain {type:"call:*"} JSON (no __ol envelope). */
 export type PageCallMessage =
@@ -177,17 +173,7 @@ export function parseBridgeMessage(data: string): BridgeRequest | null {
       case 'requestNotificationPermission':
         return { __ol: 1, method: m.method } as BridgeRequest;
     }
-    if (m.method === 'msReply') {
-      const v = m.value as { id?: unknown; ok?: unknown; result?: unknown; error?: unknown } | null;
-      return v && typeof v.id === 'string' && v.id.length <= 64
-        ? { __ol: 1, method: 'msReply', value: { id: v.id, ok: v.ok === true, result: v.result ?? null, error: typeof v.error === 'string' ? v.error.slice(0, 200) : undefined } }
-        : null;
-    }
     if (typeof m.id !== 'string' || m.id.length > 64) return null;
-    if (m.method === 'nativeMedia') {
-      const v = m.value as Record<string, unknown> | null;
-      return v && typeof v === 'object' && typeof v.op === 'string' ? { __ol: 1, id: m.id, method: 'nativeMedia', value: v } : null;
-    }
     if (m.method === 'getSession' || m.method === 'clearSession') return m as BridgeRequest;
     if (m.method === 'bioIsAvailable' || m.method === 'bioGetEnabled') return { __ol: 1, id: m.id, method: m.method } as BridgeRequest;
     if (m.method === 'bioSetEnabled' && typeof m.value === 'boolean') return { __ol: 1, id: m.id, method: 'bioSetEnabled', value: m.value };
@@ -291,10 +277,7 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       buildNumber: ${JSON.stringify(appBuild)},
       getVersion: function () { return ${JSON.stringify(appVersion)}; },
       getBuildNumber: function () { return ${JSON.stringify(appBuild)}; },
-      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls', 'nativeMedia'" : ''}]),
-      // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
-      nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
-      msReply: function (id, ok, result, error) { post({ __ol: 1, method: 'msReply', value: { id: String(id), ok: !!ok, result: result === undefined ? null : result, error: error ? String(error) : undefined } }); },
+      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls'" : ''}]),
       getPlatform: function () { return ${JSON.stringify(platform)}; },
       // the native side sets window.__olExpoPushToken and calls window.__olPushToken(token) when FCM hands one out
       getPushToken: function () { return typeof window.__olExpoPushToken === 'string' ? window.__olExpoPushToken : ''; },

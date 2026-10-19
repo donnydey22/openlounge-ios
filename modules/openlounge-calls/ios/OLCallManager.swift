@@ -124,7 +124,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   // MARK: - lifecycle / JS
 
   func start() {
-    OLNativeAudio.setUp()
     if started { return }
     started = true
     let cfg = CXProviderConfiguration()
@@ -487,7 +486,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     callKitAudioActive = true
     configureAudio()
-    OLNativeAudio.didActivate(audioSession) // native call media: WebRTC audio unit starts only now
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
@@ -506,10 +504,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     }
   }
 
-  public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
-    callKitAudioActive = false
-    OLNativeAudio.didDeactivate(audioSession)
-  }
+  public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) { callKitAudioActive = false }
 
   // MARK: - page → native (src/calls.ts forwards {type:"call:*"} bridge messages)
 

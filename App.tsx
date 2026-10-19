@@ -54,7 +54,6 @@ import {
   startNativeCalls,
   syncCallAuthFromSession,
 } from './src/calls';
-import { NativeMediaController } from './src/nativeMedia';
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
 
@@ -465,8 +464,6 @@ function Shell() {
         return;
       }
       if (a.type === 'answer') {
-        // native call media: grab the mic + load WebRTC while the page accepts (CallKit activation then just flips audio on)
-        void nativeMedia.current?.handle({ op: 'prewarm' }).catch(() => {});
         unlockForCall();
         setIncomingCard(null);
         const url = acceptUrl(appOrigin(), a.callId);
@@ -550,27 +547,6 @@ function Shell() {
     [inject],
   );
 
-  // ---------------- native call media (src/nativeMedia.ts) ----------------
-  const msPending = useRef(new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>());
-  const msSeq = useRef(0);
-  const nativeMedia = useRef<NativeMediaController | null>(null);
-  if (!nativeMedia.current && nativeCallsAvailable()) {
-    nativeMedia.current = new NativeMediaController(
-      // app → page: ms:* signaling relayed over the page's authenticated realtime socket
-      (event, data) =>
-        new Promise((resolve, reject) => {
-          const id = `nm${Date.now().toString(36)}_${++msSeq.current}`;
-          const timer = setTimeout(() => {
-            msPending.current.delete(id);
-            reject(new Error(`${event} timed out`));
-          }, 8_000);
-          msPending.current.set(id, { resolve, reject, timer });
-          inject(`(function(){try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)});}catch(e){window.OpenLoungeNative&&window.OpenLoungeNative.msReply(${JSON.stringify(id)},false,null,'no relay');}})();true;`);
-        }),
-      (detail) => inject(nativeEventScript('openlounge:native-media', detail)),
-    );
-  }
-
   const onMessage = useCallback(
     async (e: WebViewMessageEvent) => {
       // Only the Open Lounge origin may use the native bridge (frame URL, strict parser).
@@ -615,30 +591,8 @@ function Shell() {
             })
             .catch(() => {});
           return;
-        case 'nativeMedia': {
-          const ctl = nativeMedia.current;
-          if (!ctl) {
-            reply(msg.id, false, null, 'nativeMedia unavailable');
-            return;
-          }
-          ctl.handle(msg.value).then(
-            (r) => reply(msg.id, true, r),
-            (err: unknown) => reply(msg.id, false, null, String((err as Error)?.message ?? err)),
-          );
-          return;
-        }
-        case 'msReply': {
-          const p = msPending.current.get(msg.value.id);
-          if (!p) return;
-          msPending.current.delete(msg.value.id);
-          clearTimeout(p.timer);
-          if (msg.value.ok) p.resolve(msg.value.result);
-          else p.reject(new Error(msg.value.error || 'signaling failed'));
-          return;
-        }
         case 'call': {
           const v = msg.value as { type?: string; callId?: string; name?: string; video?: boolean };
-          if (v?.type === 'call:ended') nativeMedia.current?.closeAll();
           forwardPageCallMessage(msg.value);
           if (v?.type === 'call:incoming' && typeof v.callId === 'string' && lockRef.current !== 'unlocked') {
             // Fallback card above LockScreen if CallKit is delayed / refused; CallKit still gets the page message.
