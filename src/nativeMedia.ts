@@ -4,14 +4,15 @@
 // realtime socket (window.__olNativeMsReq) and forwards ms:consumer:available here.
 //
 // Page → app  (bridge method 'nativeMedia', request/reply):
-//   {op:'prewarm'}                          dial tapped: grab the mic + load the WebRTC stack before the invite
-//   {op:'connect', callId, iceServers, tcpOnly?, rebuild?} join + send/recv transports + audio producer + consume
-//   {op:'connectLiveKit', callId, url, token, iceServers}   emergency LiveKit path, still native
+//   {op:'prewarm', video?}                  dial tapped: pre-load native media without involving WKWebView
+//   {op:'connect', callId, iceServers, video?, nativeVideo?, tcpOnly?, rebuild?} join + send/recv transports + paired native producers
+//   {op:'connectLiveKit', callId, url, token, iceServers, video?, nativeVideo?} emergency LiveKit path, still native
 //   {op:'status'}  → {callId, kind, connected} | null    (a reloaded page re-attaches; connect on the same call = attach)
 //   {op:'mute', muted} | {op:'close'} | {op:'restartIce'} | {op:'stats'} | {op:'ladder', audioBps}
-//   {op:'consumerAvailable'}                ms:consumer:available arrived on the page socket
+//   {op:'consumerAvailable'} | {op:'consumerClosed', consumerId}  SFU remote-track lifecycle arrived on the page socket
 // App → page events (CustomEvent 'openlounge:native-media'): {state:'connected'|'disconnected'|'failed'|'remote-audio'}
-import { mediaDevices, type MediaStream } from '@livekit/react-native-webrtc';
+// App-only video state is delivered directly to App.tsx; MediaStream values are never serialized into the WebView.
+import { mediaDevices, MediaStream } from '@livekit/react-native-webrtc';
 import { registerGlobals } from '@livekit/react-native';
 
 type Req = <T>(event: string, data: Record<string, unknown>) => Promise<T>;
@@ -24,30 +25,43 @@ function ensureGlobals() {
   globalsDone = true;
 }
 
-/** mic captured on dial/answer, before CallKit activates the session (audio flows only once isAudioEnabled) */
+/** Native camera constraints deliberately preserve the sensor frame. RTCView uses contain for remote video, so
+ * a portrait iPhone feed is never zoomed/cropped to fill a landscape stage. */
+const cameraConstraints = (facing: 'user' | 'environment' = 'user') => ({
+  facingMode: facing,
+  width: { ideal: 720 },
+  height: { ideal: 1280 },
+  frameRate: { ideal: 30, max: 30 },
+} as never);
+/** mic (and, for an explicit iOS native-video call, camera) captured only by the app — never WKWebView */
 let preStream: Promise<MediaStream | null> | null = null;
-
-export function prewarmNativeMedia(): void {
+let prewarmHasVideo = false;
+export function prewarmNativeMedia(video = false): void {
   ensureGlobals();
-  if (!preStream) {
+  if (!preStream || (video && !prewarmHasVideo)) {
+    preStream?.then((s) => s?.getTracks().forEach((t) => t.stop()));
+    prewarmHasVideo = video;
     preStream = mediaDevices
-      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } as never, video: false })
+      .getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } as never, video: video ? cameraConstraints() : false })
       .then((s) => s as MediaStream)
       .catch(() => null);
   }
   // load mediasoup-client now so connect() is pure network work
   void import('mediasoup-client').catch(() => {});
 }
-
-async function takeMic(): Promise<MediaStream | null> {
+async function takeStream(video: boolean): Promise<MediaStream | null> {
   const p = preStream;
   preStream = null;
+  prewarmHasVideo = false;
   const s = p ? await p : null;
-  if (s && s.getAudioTracks().some((t) => t.readyState === 'live')) return s;
+  const hasAudio = !!s?.getAudioTracks().some((t) => t.readyState === 'live');
+  const hasVideo = !video || !!s?.getVideoTracks().some((t) => t.readyState === 'live');
+  if (s && hasAudio && hasVideo) return s;
   s?.getTracks().forEach((t) => t.stop());
   ensureGlobals();
-  return (await mediaDevices.getUserMedia({ audio: true, video: false }).catch(() => null)) as MediaStream | null;
+  return (await mediaDevices.getUserMedia({ audio: true, video: video ? cameraConstraints() : false }).catch(() => null)) as MediaStream | null;
 }
+export type NativeVideoState = { callId: string; local: MediaStream | null; remote: MediaStream | null; facing: 'user' | 'environment' } | null;
 
 type Transport = {
   id: string;
@@ -59,8 +73,8 @@ type Transport = {
   getStats(): Promise<Map<string, Record<string, unknown>>>;
   close(): void;
 };
-type Producer = { id: string; pause(): void; resume(): void; close(): void; rtpSender?: { getParameters(): any; setParameters(p: any): Promise<void> } };
-type Consumer = { id: string; kind: string; close(): void };
+type Producer = { id: string; pause(): void; resume(): void; close(): void; replaceTrack?(o: { track: MediaStreamTrack }): Promise<void>; rtpSender?: { getParameters(): any; setParameters(p: any): Promise<void> } };
+type Consumer = { id: string; kind: string; track: MediaStreamTrack; close(): void };
 
 const CONNECT_TIMEOUT_MS = 12_000;
 
@@ -69,7 +83,11 @@ export class NativeMediaSession {
   private recv: Transport | null = null;
   private device: { rtpCapabilities: unknown; load(o: unknown): Promise<void>; createSendTransport(o: unknown): Transport; createRecvTransport(o: unknown): Transport } | null = null;
   private producer: Producer | null = null;
+  private videoProducer: Producer | null = null;
   private stream: MediaStream | null = null;
+  private localVideo: MediaStream | null = null;
+  private remoteVideo: MediaStream | null = null;
+  private facing: 'user' | 'environment' = 'user';
   private consumers = new Map<string, Consumer>();
   private closed = false;
   private joined = false;
@@ -85,7 +103,7 @@ export class NativeMediaSession {
    *  of the server tearing the SFU peer down with the old socket */
   readonly nativeConn = `n_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
 
-  constructor(readonly callId: string, private iceServers: unknown[], readonly tcpOnly: boolean, private req: Req, private emit: Emit) {}
+  constructor(readonly callId: string, private iceServers: unknown[], readonly tcpOnly: boolean, private video: boolean, private nativeVideo: boolean, private req: Req, private emit: Emit, private emitVideo: (state: NativeVideoState) => void) {}
 
   get alive() {
     return !this.closed;
@@ -117,7 +135,7 @@ export class NativeMediaSession {
 
   private async connectInner() {
     ensureGlobals();
-    const [{ Device }, stream] = await Promise.all([import('mediasoup-client'), takeMic()]);
+    const [{ Device }, stream] = await Promise.all([import('mediasoup-client'), takeStream(this.video)]);
     this.check();
     if (!stream) throw new Error('microphone unavailable');
     this.stream = stream;
@@ -147,6 +165,7 @@ export class NativeMediaSession {
       encodings: [{ maxBitrate: 48_000, priority: 'high', networkPriority: 'high' } as never],
       appData: { source: 'mic', native: true },
     });
+    if (this.video) await this.publishCamera(stream.getVideoTracks()[0]);
     this.check();
     await this.syncConsumers();
     await waitConnected(this.send);
@@ -155,6 +174,58 @@ export class NativeMediaSession {
     this.emit({ state: 'connected' });
   }
 
+  private emitVideoState() {
+    this.emitVideo(this.closed ? null : { callId: this.callId, local: this.localVideo, remote: this.remoteVideo, facing: this.facing });
+  }
+  private async publishCamera(track: MediaStreamTrack | undefined) {
+    if (!track || !this.send) throw new Error('camera unavailable');
+    this.localVideo?.getTracks().forEach((t) => t.stop());
+    this.localVideo = new MediaStream([track]);
+    this.videoProducer = await this.send.produce({
+      track,
+      encodings: [{ maxBitrate: 1_800_000, maxFramerate: 30, priority: 'high', networkPriority: 'high' } as never],
+      appData: { source: 'camera', native: true },
+    });
+    this.emitVideoState();
+  }
+  private async acquireCamera(facing: 'user' | 'environment') {
+    ensureGlobals();
+    const stream = (await mediaDevices.getUserMedia({ audio: false, video: cameraConstraints(facing) })) as MediaStream;
+    const track = stream.getVideoTracks()[0];
+    if (!track) { stream.getTracks().forEach((t) => t.stop()); throw new Error('camera unavailable'); }
+    this.facing = facing;
+    return { stream, track };
+  }
+  async setCamera(on: boolean, facing: 'user' | 'environment' = this.facing) {
+    if (this.closed) throw new Error('native media closed');
+    if (!on) {
+      this.videoProducer?.close();
+      this.videoProducer = null;
+      this.localVideo?.getTracks().forEach((t) => t.stop());
+      this.localVideo = null;
+      this.emitVideoState();
+      return;
+    }
+    if (!this.send) throw new Error('native media not connected');
+    const next = await this.acquireCamera(facing);
+    try {
+      if (this.videoProducer?.replaceTrack) {
+        await this.videoProducer.replaceTrack({ track: next.track });
+        this.localVideo?.getTracks().forEach((t) => t.stop());
+        this.localVideo = next.stream;
+        this.emitVideoState();
+      } else {
+        this.videoProducer?.close();
+        this.videoProducer = null;
+        this.localVideo?.getTracks().forEach((t) => t.stop());
+        this.localVideo = null;
+        await this.publishCamera(next.track);
+      }
+    } catch (error) {
+      next.getTracks().forEach((t) => t.stop());
+      throw error;
+    }
+  }
   private wire(t: Transport, direction: 'send' | 'recv') {
     t.on('connect', ({ dtlsParameters }: { dtlsParameters: unknown }, cb: () => void, eb: (e: Error) => void) => {
       this.r<{ ok: boolean }>('ms:transport:connect', { direction, transportId: t.id, dtlsParameters })
@@ -228,13 +299,18 @@ export class NativeMediaSession {
           });
           if (!x.ok) throw new Error('Mediasoup consumer setup failed');
           for (const p of x.consumers ?? []) {
-            // audio-only native mode: remote video stays off (the page shows the avatar)
-            if (this.closed || this.consumers.has(p.id) || p.kind !== 'audio') continue;
+            // A native-video grant consumes the matching video producer on this same connection; audio-only calls stay unchanged.
+            if (this.closed || this.consumers.has(p.id) || (p.kind !== 'audio' && (!this.nativeVideo || p.kind !== 'video'))) continue;
             const c = await this.recv!.consume(p);
             if (this.closed) { c.close(); continue; }
             this.consumers.set(c.id, c);
             await this.r('ms:consumer:resume', { consumerId: c.id });
-            this.emit({ state: 'remote-audio' });
+            if (c.kind === 'audio') this.emit({ state: 'remote-audio' });
+            else {
+              this.remoteVideo?.getTracks().forEach((t) => t.stop());
+              this.remoteVideo = new MediaStream([c.track]);
+              this.emitVideoState();
+            }
           }
         } while (this.syncAgain && !this.closed);
       } finally {
@@ -244,6 +320,18 @@ export class NativeMediaSession {
     return this.syncing;
   }
 
+  dropConsumer(consumerId: string) {
+    const consumer = this.consumers.get(consumerId);
+    if (!consumer) return;
+    this.consumers.delete(consumerId);
+    const wasRemoteVideo = consumer.kind === 'video' && this.remoteVideo?.getVideoTracks().some((track) => track === consumer.track);
+    consumer.close();
+    if (wasRemoteVideo) {
+      this.remoteVideo?.getTracks().forEach((track) => track.stop());
+      this.remoteVideo = null;
+      this.emitVideoState();
+    }
+  }
   setMuted(muted: boolean) {
     if (!this.producer) return;
     if (muted) this.producer.pause();
@@ -287,6 +375,13 @@ export class NativeMediaSession {
     this.consumers.clear();
     this.producer?.close();
     this.producer = null;
+    this.videoProducer?.close();
+    this.videoProducer = null;
+    this.localVideo?.getTracks().forEach((t) => t.stop());
+    this.localVideo = null;
+    this.remoteVideo?.getTracks().forEach((t) => t.stop());
+    this.remoteVideo = null;
+    this.emitVideoState();
     this.send?.close();
     this.recv?.close();
     this.stream?.getTracks().forEach((t) => t.stop());
@@ -304,19 +399,47 @@ function waitConnected(t: Transport): Promise<void> {
   });
 }
 
-/** Emergency LiveKit (TCP/TURN-443) path, also native: the page never captures the mic in native-media mode. */
+/** Emergency LiveKit (TCP/TURN-443) path. It retains the same app-owned audio+camera pairing for a granted
+ * iPhone caller, so a UDP fallback never hands microphone ownership back to WKWebView after CallKit activation. */
 class NativeLiveKitSession {
   private room: any = null;
   private stream: MediaStream | null = null;
+  private localVideo: MediaStream | null = null;
+  private remoteVideo: MediaStream | null = null;
+  private publishedVideo: any = null;
+  private facing: 'user' | 'environment' = 'user';
   private closed = false;
-  constructor(readonly callId: string, private emit: Emit) {}
+  constructor(readonly callId: string, private video: boolean, private nativeVideo: boolean, private emit: Emit, private emitVideo: (state: NativeVideoState) => void) {}
   get alive() {
     return !this.closed;
+  }
+  private emitVideoState() {
+    this.emitVideo(this.closed ? null : { callId: this.callId, local: this.localVideo, remote: this.remoteVideo, facing: this.facing });
+  }
+  private async publishVideo(track: MediaStreamTrack) {
+    const room = this.room;
+    if (!room) throw new Error('native media not connected');
+    const LK = await import('livekit-client');
+    const publication = await room.localParticipant.publishTrack(track as never, {
+      source: LK.Track.Source.Camera,
+      simulcast: true,
+      videoCodec: 'vp8',
+    });
+    // LiveKit unpublishes its LocalTrack, not the raw MediaStreamTrack passed to publishTrack.
+    this.publishedVideo = publication?.track ?? track;
+  }
+  private async acquireCamera(facing: 'user' | 'environment') {
+    ensureGlobals();
+    const stream = (await mediaDevices.getUserMedia({ audio: false, video: cameraConstraints(facing) })) as MediaStream;
+    const track = stream.getVideoTracks()[0];
+    if (!track) { stream.getTracks().forEach((t) => t.stop()); throw new Error('camera unavailable'); }
+    this.facing = facing;
+    return { stream, track };
   }
   async connect(url: string, token: string, iceServers: unknown[]) {
     ensureGlobals();
     const LK = await import('livekit-client');
-    const stream = await takeMic();
+    const stream = await takeStream(this.video);
     if (!stream) throw new Error('microphone unavailable');
     this.stream = stream;
     const room = new LK.Room({ adaptiveStream: false, dynacast: false });
@@ -324,11 +447,64 @@ class NativeLiveKitSession {
     room.on(LK.RoomEvent.Reconnecting, () => this.emit({ state: 'disconnected' }));
     room.on(LK.RoomEvent.Reconnected, () => this.emit({ state: 'connected' }));
     room.on(LK.RoomEvent.Disconnected, () => { if (!this.closed) this.emit({ state: 'failed' }); });
-    room.on(LK.RoomEvent.TrackSubscribed, (t: { kind: string }) => { if (t.kind === 'audio') this.emit({ state: 'remote-audio' }); });
+    room.on(LK.RoomEvent.TrackSubscribed, (t: any) => {
+      if (t.kind === 'audio') this.emit({ state: 'remote-audio' });
+      if (this.nativeVideo && t.kind === 'video' && t.mediaStreamTrack) {
+        this.remoteVideo?.getTracks().forEach((track) => track.stop());
+        this.remoteVideo = new MediaStream([t.mediaStreamTrack]);
+        this.emitVideoState();
+      }
+    });
+    room.on(LK.RoomEvent.TrackUnsubscribed, (t: any) => {
+      if (!this.nativeVideo || t.kind !== 'video') return;
+      this.remoteVideo?.getTracks().forEach((track) => track.stop());
+      this.remoteVideo = null;
+      this.emitVideoState();
+    });
+    room.on(LK.RoomEvent.TrackMuted, (publication: any, participant: any) => {
+      if (this.nativeVideo && !participant?.isLocal && publication?.kind === 'video') {
+        this.remoteVideo?.getTracks().forEach((track) => track.stop());
+        this.remoteVideo = null;
+        this.emitVideoState();
+      }
+    });
     await room.connect(url, token, { autoSubscribe: true, rtcConfig: iceServers.length ? { iceServers: iceServers as RTCIceServer[] } : undefined });
     if (this.closed) throw new Error('native media closed');
-    await room.localParticipant.publishTrack(stream.getAudioTracks()[0] as never, { source: LK.Track.Source.Microphone, dtx: true, red: true });
+    const mic = stream.getAudioTracks()[0];
+    if (!mic) throw new Error('microphone unavailable');
+    await room.localParticipant.publishTrack(mic as never, { source: LK.Track.Source.Microphone, dtx: true, red: true });
+    if (this.video) {
+      const camera = stream.getVideoTracks()[0];
+      if (!camera) throw new Error('camera unavailable');
+      this.localVideo = new MediaStream([camera]);
+      await this.publishVideo(camera);
+      this.emitVideoState();
+    }
     this.emit({ state: 'connected' });
+  }
+  async setCamera(on: boolean, facing: 'user' | 'environment' = this.facing) {
+    if (this.closed) throw new Error('native media closed');
+    const room = this.room;
+    if (!room) throw new Error('native media not connected');
+    if (!on) {
+      if (this.publishedVideo) await room.localParticipant.unpublishTrack?.(this.publishedVideo).catch?.(() => {});
+      this.publishedVideo = null;
+      this.localVideo?.getTracks().forEach((track) => track.stop());
+      this.localVideo = null;
+      this.emitVideoState();
+      return;
+    }
+    const next = await this.acquireCamera(facing);
+    try {
+      if (this.publishedVideo) await room.localParticipant.unpublishTrack?.(this.publishedVideo).catch?.(() => {});
+      this.localVideo?.getTracks().forEach((track) => track.stop());
+      this.localVideo = next.stream;
+      await this.publishVideo(next.track);
+      this.emitVideoState();
+    } catch (error) {
+      next.getTracks().forEach((track) => track.stop());
+      throw error;
+    }
   }
   setMuted(muted: boolean) {
     this.stream?.getAudioTracks().forEach((t) => { t.enabled = !muted; });
@@ -339,11 +515,16 @@ class NativeLiveKitSession {
     this.closed = true;
     void this.room?.disconnect?.();
     this.room = null;
+    this.publishedVideo = null;
+    this.localVideo?.getTracks().forEach((t) => t.stop());
+    this.localVideo = null;
+    this.remoteVideo?.getTracks().forEach((t) => t.stop());
+    this.remoteVideo = null;
     this.stream?.getTracks().forEach((t) => t.stop());
     this.stream = null;
+    this.emitVideoState();
   }
 }
-
 const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 /** One live session at a time; owned by App.tsx. Survives WebView reloads (the page re-attaches as UI). */
@@ -353,7 +534,7 @@ export class NativeMediaController {
   /** the one fresh build in flight: a second connect for the same call/path joins it instead of tearing it down
    *  (the 60 s block hang: recovery + the page's own rejoin both issued connect, each closing the other's session) */
   private building: { callId: string; tcpOnly: boolean; p: Promise<{ attached: boolean }>; tok: object } | null = null;
-  constructor(private req: Req, private emit: Emit) {}
+  constructor(private req: Req, private emit: Emit, private emitVideo: (state: NativeVideoState) => void) {}
 
   /** live call media the app is holding (for a reloaded page to re-attach) */
   current(): { callId: string; kind: 'mediasoup' | 'livekit'; connected: boolean } | null {
@@ -366,7 +547,7 @@ export class NativeMediaController {
     const callId = typeof cmd.callId === 'string' ? cmd.callId : '';
     switch (cmd.op) {
       case 'prewarm':
-        prewarmNativeMedia();
+        prewarmNativeMedia(cmd.video === true);
         return true;
       case 'connect': {
         if (!CALL_ID.test(callId)) throw new Error('bad callId');
@@ -386,8 +567,10 @@ export class NativeMediaController {
         this.lk?.close();
         this.lk = null;
         cur?.close();
-        const s = new NativeMediaSession(callId, Array.isArray(cmd.iceServers) ? cmd.iceServers : [], tcpOnly, this.req, (d) => {
+        const s = new NativeMediaSession(callId, Array.isArray(cmd.iceServers) ? cmd.iceServers : [], tcpOnly, cmd.video === true, cmd.nativeVideo === true, this.req, (d) => {
           if (this.session === s) this.emit(d);
+        }, (state) => {
+          if (this.session === s) this.emitVideo(state);
         });
         this.session = s;
         const tok = {};
@@ -411,7 +594,7 @@ export class NativeMediaController {
         this.session?.close();
         this.session = null;
         this.lk?.close();
-        const l = new NativeLiveKitSession(callId, (d) => { if (this.lk === l) this.emit(d); });
+        const l = new NativeLiveKitSession(callId, cmd.video === true, cmd.nativeVideo === true, (d) => { if (this.lk === l) this.emit(d); }, (state) => { if (this.lk === l) this.emitVideo(state); });
         this.lk = l;
         try {
           await l.connect(cmd.url, cmd.token, Array.isArray(cmd.iceServers) ? cmd.iceServers : []);
@@ -426,6 +609,9 @@ export class NativeMediaController {
       case 'consumerAvailable':
         await this.session?.syncConsumers().catch(() => {});
         return true;
+      case 'consumerClosed':
+        if (typeof cmd.consumerId === 'string') this.session?.dropConsumer(cmd.consumerId);
+        return true;
       case 'mute':
         this.session?.setMuted(cmd.muted === true);
         this.lk?.setMuted(cmd.muted === true);
@@ -437,6 +623,12 @@ export class NativeMediaController {
         return (await this.session?.ladder(Number(cmd.audioBps) || 48_000)) ?? false;
       case 'stats':
         return (await this.session?.stats()) ?? [];
+      case 'camera': {
+        const facing = cmd.facing === 'environment' ? 'environment' : 'user';
+        await this.session?.setCamera(cmd.on === true, facing);
+        await this.lk?.setCamera(cmd.on === true, facing);
+        return true;
+      }
       case 'close':
         this.closeAll(false);
         return true;
@@ -455,6 +647,7 @@ export class NativeMediaController {
     this.session = null;
     this.lk?.close();
     this.lk = null;
+    this.emitVideo(null);
     if (dropPrewarm) {
       preStream?.then((st) => st?.getTracks().forEach((t) => t.stop()));
       preStream = null;

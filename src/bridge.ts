@@ -94,7 +94,7 @@ export type BridgeRequest =
 /** Page → native call messages (NATIVE_SPEC.md §5), sent as plain {type:"call:*"} JSON (no __ol envelope). */
 export type PageCallMessage =
   | { type: 'call:incoming'; callId: string; name: string; video: boolean; photo?: string; expiresAt?: number }
-  | { type: 'call:outgoing'; callId: string; name: string; video: boolean }
+  | { type: 'call:outgoing'; callId: string; name: string; video: boolean; /** server-issued current-call native video grant */ nativeMedia?: boolean }
   | { type: 'call:connected'; callId: string }
   | { type: 'call:ended'; callId: string }
   | { type: 'call:muted'; muted: boolean }
@@ -120,7 +120,7 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
           })
         : null;
     case 'call:outgoing':
-      return id ? wrap({ type: 'call:outgoing', callId: id, name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', video: m.video === true }) : null;
+      return id ? wrap({ type: 'call:outgoing', callId: id, name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', video: m.video === true, nativeMedia: m.nativeMedia === true }) : null;
     case 'call:connected':
     case 'call:ended':
       // callId may be missing on old pages; '' means "the current call"

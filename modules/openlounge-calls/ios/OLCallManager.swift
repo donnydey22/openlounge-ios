@@ -24,6 +24,8 @@ final class OLCall {
   let uuid: UUID
   let incoming: Bool
   var video: Bool
+  /// True only for an explicitly server-granted outgoing iPhone native-video call.
+  let nativeMedia: Bool
   var answered = false
   var answeredInPage = false
   var connected = false
@@ -33,11 +35,12 @@ final class OLCall {
   var expiryTimer: Timer?
   var pollTimer: Timer?
 
-  init(callId: String, uuid: UUID, incoming: Bool, video: Bool) {
+  init(callId: String, uuid: UUID, incoming: Bool, video: Bool, nativeMedia: Bool = false) {
     self.callId = callId
     self.uuid = uuid
     self.incoming = incoming
     self.video = video
+    self.nativeMedia = nativeMedia
   }
 }
 
@@ -487,10 +490,13 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     callKitAudioActive = true
     configureAudio()
-    // video calls run exactly as pre-0.3.15: WKWebView getUserMedia owns mic + camera on the CallKit session, the app's
-    // WebRTC audio unit never starts (it competed with WebKit for the mic → iPhone-placed video calls sent silence).
-    // Voice calls keep native media.
-    if !callVideo { OLNativeAudio.didActivate(audioSession) }
+    // Ungranted video calls retain the established WKWebView-media behavior, so their native WebRTC audio unit must
+    // remain off. The explicit native-video caller marker is the sole video exception: its one app-owned mic+camera
+    // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
+    // remain unchanged.
+    if !callVideo || calls.values.contains(where: { !$0.ended && $0.nativeMedia }) {
+      OLNativeAudio.didActivate(audioSession)
+    }
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
@@ -564,6 +570,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
     case "call:outgoing":
       let video = (m["video"] as? Bool) ?? false
+      // This value comes from the server-issued call media grant and is never inferred merely from video=true.
+      let nativeMedia = video && ((m["nativeMedia"] as? Bool) ?? false)
       callVideo = video
       speaker = true
       webOwnsRingback = false
@@ -574,7 +582,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       configureAudio()
       var name = String(((m["name"] as? String) ?? "").prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
       if name.isEmpty { name = "Open Lounge" }
-      let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video)
+      let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video, nativeMedia: nativeMedia)
       calls[c.uuid] = c
       let a = CXStartCallAction(call: c.uuid, handle: CXHandle(type: .generic, value: name))
       a.isVideo = video

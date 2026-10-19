@@ -7,6 +7,7 @@ import * as SystemUI from 'expo-system-ui';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, type AppStateStatus, Keyboard, Linking, Platform, Share, StyleSheet, View } from 'react-native';
+import { RTCView } from '@livekit/react-native-webrtc';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
@@ -54,7 +55,7 @@ import {
   startNativeCalls,
   syncCallAuthFromSession,
 } from './src/calls';
-import { NativeMediaController } from './src/nativeMedia';
+import { NativeMediaController, type NativeVideoState } from './src/nativeMedia';
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
 
@@ -98,6 +99,9 @@ function Shell() {
   const [offline, setOffline] = useState(false);
   const [webKey, setWebKey] = useState(0);
   const [sourceUri, setSourceUri] = useState(START_URL);
+  // Native iPhone video is intentionally held outside the WebView. Streams never cross the JS bridge; the page
+  // remains the call-control overlay while RTCView owns only the actual camera/remote pixels.
+  const [nativeVideo, setNativeVideo] = useState<NativeVideoState>(null);
   const [kbHeight, setKbHeight] = useState(0);
 
   const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD), []);
@@ -483,7 +487,12 @@ function Shell() {
         } else navigate(url); // /call/<id>?accept=1: the web layer joins instantly
         return;
       }
-      if (a.type === 'decline' || a.type === 'hangup') setIncomingCard(null);
+      if (a.type === 'decline' || a.type === 'hangup') {
+        setIncomingCard(null);
+        // CallKit can end while WKWebView is cold, terminated, or reloading. App-owned capture is independent of
+        // page delivery, so stop it eagerly before the best-effort signaling injection below.
+        nativeMedia.current?.closeAll();
+      }
       if (coldStart || !everLoaded.current) return; // nothing to tell a page that isn't loaded
       const detail = a.type === 'mute' ? { type: 'call:mute', muted: a.muted } : { type: a.type === 'decline' ? 'call:decline' : 'call:hangup' };
       inject(nativeEventScript('openlounge:native-call', detail));
@@ -574,6 +583,7 @@ function Shell() {
           inject(`(function(){try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)});}catch(e){window.OpenLoungeNative&&window.OpenLoungeNative.msReply(${JSON.stringify(id)},false,null,'no relay');}})();true;`);
         }),
       (detail) => inject(nativeEventScript('openlounge:native-media', detail)),
+      (state) => setNativeVideo(state),
     );
   }
   nativeMediaRef.current = nativeMedia.current;
@@ -825,6 +835,22 @@ function Shell() {
           onContentProcessDidTerminate={() => webRef.current?.reload()}
           startInLoadingState={false}
         />
+        {(nativeVideo?.remote || nativeVideo?.local) && (
+          <View
+            pointerEvents="none"
+            // The WebView starts below the status inset; preserve its top bar and lower controls visually as well as
+            // interactively. RTCView owns only the centre video pixels.
+            style={[styles.nativeVideoStage, { top: insets.top + 56, bottom: insets.bottom + 150 }]}
+            accessibilityElementsHidden
+          >
+            {nativeVideo.remote && <RTCView streamURL={nativeVideo.remote.toURL()} style={styles.nativeRemoteVideo} objectFit="contain" mirror={false} />}
+            {nativeVideo.local && (
+              <View style={styles.nativeLocalFrame}>
+                <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeLocalVideo} objectFit="cover" mirror={nativeVideo.facing === 'user'} />
+              </View>
+            )}
+          </View>
+        )}
       </View>
 
       <LaunchOverlay ready={launchReady} theme={theme} onShown={() => SplashScreen.hideAsync().catch(() => {})} />
@@ -867,4 +893,9 @@ export default function App() {
 
 const styles = StyleSheet.create({
   root: { flex: 1 },
+  // The WebView remains interactive: this window is visual-only; safe-area-aware bounds are applied at render time.
+  nativeVideoStage: { position: 'absolute', left: 0, right: 0, backgroundColor: '#050505' },
+  nativeRemoteVideo: { width: '100%', height: '100%', backgroundColor: '#050505' },
+  nativeLocalFrame: { position: 'absolute', top: 18, right: 14, width: 104, height: 156, borderRadius: 14, overflow: 'hidden', borderWidth: 1, borderColor: 'rgba(255,255,255,0.48)', backgroundColor: '#111' },
+  nativeLocalVideo: { width: '100%', height: '100%' },
 });
