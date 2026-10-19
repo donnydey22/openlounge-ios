@@ -10,9 +10,11 @@
     "web": "expo start --web",
     "typecheck": "tsc --noEmit",
     "doctor": "expo-doctor",
-    "prebuild:ios": "expo prebuild --platform ios --no-install --clean",
+    "prebuild:ios": "node tests/videoNoMicGrab.test.mjs && expo prebuild --platform ios --no-install --clean",
     "test:bridge": "node scripts/check-bridge.cjs",
-    "assets": "node scripts/generate-assets.mjs"
+    "assets": "node scripts/generate-assets.mjs",
+    "test:video-no-mic": "node tests/videoNoMicGrab.test.mjs",
+    "eas-build-pre-install": "node tests/videoNoMicGrab.test.mjs"
   },
   "dependencies": {
     "@livekit/react-native": "^3.0.0",
