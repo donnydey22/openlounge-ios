@@ -76,7 +76,7 @@ test('paired native producers use one app-owned stream and an explicit shared st
     'the page-provided call-scoped id is validated before native construction');
 });
 
-test('native camera lifecycle keeps microphone continuity and retires old remote video consumers', () => {
+test('native camera lifecycle keeps microphone continuity and retires old remote video consumers before replacement', () => {
   const src = source();
   assert.match(src, /if \(warmed && hasAudio\) return warmed;/,
     'a camera acquisition failure retains the native microphone stream');
@@ -84,6 +84,24 @@ test('native camera lifecycle keeps microphone continuity and retires old remote
     'camera-only failure reports a non-terminal video failure');
   assert.match(src, /for \(const \[id, prior\] of this\.consumers\)[\s\S]{0,220}prior\.close\(\)[\s\S]{0,180}this\.remoteVideo = new MediaStream\(\[c\.track\]\)/,
     'replacement remote video closes prior consumer before rendering the new track');
-  assert.match(src, /dropConsumer\(consumerId: string\)[\s\S]{0,500}this\.remoteVideo = null/,
-    'producer closure removes the native remote renderer');
+  assert.match(src, /c\.track\.addEventListener\('ended',[\s\S]{0,400}this\.remoteVideo = null/,
+    'an ended remote track clears the native renderer without a WebView bridge command');
+});
+
+test('native renderer accepts a hidden-only layout and ignores a transient missing PiP rectangle', () => {
+  const app = readFileSync('App.tsx', 'utf8');
+  assert.match(app, /if \(v\.hidden\) return \{ callId: v\.callId, hidden: true, big: null, pip: null \};/);
+  assert.doesNotMatch(app, /v\.pip !== null && !pip/);
+  assert.match(app, /const nativeBigLayout = nativeVideoLayout\?\.hidden \? null : nativeVideoLayout\?\.big \?\? null;/);
+});
+
+test('the retained native LiveKit fallback is audio-only', () => {
+  const src = source();
+  const start = src.indexOf('class NativeLiveKitSession');
+  const end = src.indexOf('const CALL_ID =', start);
+  assert.ok(start >= 0 && end > start, 'native LiveKit session block exists');
+  const block = src.slice(start, end);
+  assert.match(block, /takeStream\(false\)/, 'fallback acquires only app-owned microphone audio');
+  assert.doesNotMatch(block, /Track\.Source\.Camera|setCamera\(|remoteVideo|localVideo|publishedVideo|nativeVideo/);
+  assert.doesNotMatch(src, /consumerClosed|dropConsumer/);
 });

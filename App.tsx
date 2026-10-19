@@ -72,7 +72,7 @@ type NativeTileRect = { x: number; y: number; width: number; height: number };
 type NativeVideoLayout = {
   callId: string;
   hidden: boolean;
-  big: { kind: 'local' | 'remote'; rect: NativeTileRect; fit: 'cover' | 'contain' };
+  big: { kind: 'local' | 'remote'; rect: NativeTileRect; fit: 'cover' | 'contain' } | null;
   pip: { kind: 'local' | 'remote'; rect: NativeTileRect; mirror: boolean } | null;
 };
 type WebFrame = { x: number; y: number; width: number; height: number };
@@ -89,6 +89,7 @@ const parseNativeVideoLayout = (value: unknown): NativeVideoLayout | null => {
   if (!value || typeof value !== 'object') return null;
   const v = value as Record<string, unknown>;
   if (v.op !== 'videoLayout' || v.version !== 1 || typeof v.callId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(v.callId) || typeof v.hidden !== 'boolean') return null;
+  if (v.hidden) return { callId: v.callId, hidden: true, big: null, pip: null };
   const readTile = (value: unknown) => {
     if (!value || typeof value !== 'object') return null;
     const tile = value as Record<string, unknown>;
@@ -98,8 +99,8 @@ const parseNativeVideoLayout = (value: unknown): NativeVideoLayout | null => {
     return kind && fit && rect ? { kind, fit, rect, mirror: tile.mirror === true } : null;
   };
   const big = readTile(v.big);
-  const pip = v.pip === null ? null : readTile(v.pip);
-  if (!big || (v.pip !== null && !pip) || (pip && pip.fit !== 'cover')) return null;
+  const pip = readTile(v.pip);
+  if (!big || (pip && pip.fit !== 'cover')) return null;
   return { callId: v.callId, hidden: v.hidden, big: { kind: big.kind, fit: big.fit, rect: big.rect }, pip: pip ? { kind: pip.kind, rect: pip.rect, mirror: pip.mirror } : null };
 };
 
@@ -797,7 +798,9 @@ function Shell() {
   }, []);
 
   const bg = themeColor(theme);
-  const visibleNativeVideo = !!nativeVideo && !!nativeVideoLayout && nativeVideo.callId === nativeVideoLayout.callId && !nativeVideoLayout.hidden && !!webFrame;
+  const nativeBigLayout = nativeVideoLayout?.hidden ? null : nativeVideoLayout?.big ?? null;
+  const nativePipLayout = nativeBigLayout ? nativeVideoLayout?.pip ?? null : null;
+  const visibleNativeVideo = !!nativeVideo && !!nativeVideoLayout && nativeVideo.callId === nativeVideoLayout.callId && !!nativeBigLayout && !!webFrame;
   const mapTile = (rect: NativeTileRect | null) => {
     if (!rect || !webFrame) return null;
     const maxHeight = Math.max(0, webFrame.height - kbHeight);
@@ -807,8 +810,8 @@ function Shell() {
     const height = Math.max(0, Math.min(rect.height * webFrame.height, webFrame.y + maxHeight - top));
     return width > 0 && height > 0 ? { left, top, width, height } : null;
   };
-  const bigTile = visibleNativeVideo ? mapTile(nativeVideoLayout!.big.rect) : null;
-  const pipTile = visibleNativeVideo ? mapTile(nativeVideoLayout!.pip?.rect ?? null) : null;
+  const bigTile = visibleNativeVideo ? mapTile(nativeBigLayout?.rect ?? null) : null;
+  const pipTile = visibleNativeVideo ? mapTile(nativePipLayout?.rect ?? null) : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? nativeVideo?.local : nativeVideo?.remote;
 
   return (
@@ -820,12 +823,12 @@ function Shell() {
           { paddingTop: EDGE_TO_EDGE_TOP ? 0 : insets.top, paddingBottom: KEYBOARD_MODE === 'resize' ? kbHeight : 0 },
         ]}
       >
-        {visibleNativeVideo && bigTile && streamFor(nativeVideoLayout!.big.kind) && (
+        {visibleNativeVideo && nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && (
           <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-            <RTCView streamURL={streamFor(nativeVideoLayout!.big.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={nativeVideoLayout!.big.fit} mirror={nativeVideoLayout!.big.kind === 'local' && nativeVideo!.facing === 'user'} />
-            {pipTile && nativeVideoLayout!.pip && streamFor(nativeVideoLayout!.pip.kind) && (
+            <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={nativeBigLayout.fit} mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />
+            {pipTile && nativePipLayout && streamFor(nativePipLayout.kind) && (
               <View style={[styles.nativePipFrame, pipTile]}>
-                <RTCView streamURL={streamFor(nativeVideoLayout!.pip.kind)!.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativeVideoLayout!.pip.kind === 'local' && nativeVideo!.facing === 'user'} />
+                <RTCView streamURL={streamFor(nativePipLayout.kind)!.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativePipLayout.kind === 'local' && nativeVideo!.facing === 'user'} />
               </View>
             )}
           </View>
