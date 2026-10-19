@@ -170,15 +170,10 @@ export class NativeMediaSession {
         if (this.connected) this.emit({ state: 'connected' });
         return;
       }
-      if (this.connected && (state === 'disconnected' || state === 'failed')) {
-        // persistent reconnecting: keep restarting ICE with backoff for as long as the call lives (the page/server
-        // decide when it ends). The page also gets 'disconnected' → "Reconnecting…" and may step down the ladder.
+      if (this.connected && (state === 'disconnected' || state === 'failed') && !this.iceRestarted.has(direction)) {
+        this.iceRestarted.add(direction);
+        void this.restartIce(t, direction);
         this.emit({ state: 'disconnected' });
-        if (!this.iceRestarted.has(direction)) {
-          this.iceRestarted.add(direction);
-          void this.keepRestarting(t, direction);
-        }
-        if (state === 'failed') this.emit({ state: 'failed' });
         return;
       }
       if (state === 'failed' || state === 'closed') this.emit({ state: 'failed' });
@@ -191,15 +186,6 @@ export class NativeMediaSession {
       const x = await this.r<{ ok: boolean; iceParameters?: unknown }>('ms:transport:restartIce', { direction, transportId: t.id });
       if (x.ok && x.iceParameters && !this.closed) await t.restartIce({ iceParameters: x.iceParameters });
     } catch {}
-  }
-
-  private async keepRestarting(t: Transport, direction: string) {
-    const delays = [0, 1000, 2000, 4000, 8000];
-    for (let i = 0; !this.closed && this.iceRestarted.has(direction); i++) {
-      await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
-      if (this.closed || !this.iceRestarted.has(direction) || t.connectionState === 'connected') return;
-      await this.restartIce(t, direction);
-    }
   }
 
   async restartIceAll() {
