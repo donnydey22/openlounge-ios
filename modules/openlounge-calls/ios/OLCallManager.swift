@@ -440,6 +440,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     c.answered = true
     stopTimers(c)
     callVideo = c.video
+    OLNativeAudio.setCallKind(video: c.video)
     configureAudio()
     action.fulfill()
     if !c.answeredInPage { emit(["type": "answer", "callId": c.callId, "video": c.video]) }
@@ -471,6 +472,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
     guard let c = calls[action.callUUID] else { action.fail(); return }
     callVideo = c.video
+    OLNativeAudio.setCallKind(video: c.video)
     configureAudio()
     provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
     action.fulfill()
@@ -487,7 +489,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     callKitAudioActive = true
     configureAudio()
-    OLNativeAudio.didActivate(audioSession) // native call media: WebRTC audio unit starts only now
+    OLNativeAudio.didActivate(audioSession, video: callVideo) // native call media: WebRTC audio unit starts only now
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
@@ -562,6 +564,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     case "call:outgoing":
       let video = (m["video"] as? Bool) ?? false
       callVideo = video
+      OLNativeAudio.setCallKind(video: video)
       speaker = true
       webOwnsRingback = false
       guard Self.valid(callId), call(callId) == nil, !hasLiveCall else { configureAudio(); return }

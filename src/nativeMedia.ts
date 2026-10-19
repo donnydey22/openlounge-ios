@@ -39,6 +39,13 @@ export function prewarmNativeMedia(): void {
   void import('mediasoup-client').catch(() => {});
 }
 
+/** release a dial/answer prewarmed mic (video call: the page's capture must own the mic) */
+export function dropPrewarm(): void {
+  const p = preStream;
+  preStream = null;
+  void p?.then((s) => s?.getTracks().forEach((t) => t.stop())).catch(() => {});
+}
+
 async function takeMic(): Promise<MediaStream | null> {
   const p = preStream;
   preStream = null;
@@ -366,6 +373,11 @@ export class NativeMediaController {
     const callId = typeof cmd.callId === 'string' ? cmd.callId : '';
     switch (cmd.op) {
       case 'prewarm':
+        // video calls: WKWebView getUserMedia owns the mic; never grab it natively at dial/answer
+        if (cmd.video === true) {
+          dropPrewarm();
+          return false;
+        }
         prewarmNativeMedia();
         return true;
       case 'connect': {

@@ -25,9 +25,26 @@ enum OLNativeAudio {
     #endif
   }
 
-  static func didActivate(_ session: AVAudioSession) {
+  /// Video calls never use the app's native audio engine: WKWebView getUserMedia owns the mic on the normal
+  /// playAndRecord/videoChat session. Manual audio (audio flows only once isAudioEnabled) is for voice calls only —
+  /// on a placed video call it left the page's capture delivering pure silence (b47/b48, no error logged).
+  static func setCallKind(video: Bool) {
     #if canImport(LiveKitWebRTC)
     let rtc = RTCAudioSession.sharedInstance()
+    if video {
+      if rtc.isAudioEnabled { rtc.isAudioEnabled = false }
+      if rtc.useManualAudio { rtc.useManualAudio = false }
+    } else if !rtc.useManualAudio {
+      rtc.useManualAudio = true
+      rtc.isAudioEnabled = false
+    }
+    #endif
+  }
+
+  static func didActivate(_ session: AVAudioSession, video: Bool = false) {
+    #if canImport(LiveKitWebRTC)
+    let rtc = RTCAudioSession.sharedInstance()
+    if video { setCallKind(video: true); return } // the web page's capture owns the session
     rtc.audioSessionDidActivate(session)
     rtc.isAudioEnabled = true
     #endif

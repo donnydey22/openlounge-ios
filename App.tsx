@@ -472,7 +472,8 @@ function Shell() {
       }
       if (a.type === 'answer') {
         // native call media: grab the mic + load WebRTC while the page accepts (CallKit activation then just flips audio on)
-        void nativeMedia.current?.handle({ op: 'prewarm' }).catch(() => {});
+        // voice only: a video call's mic belongs to the page (WKWebView getUserMedia), never the native engine
+        void nativeMedia.current?.handle({ op: 'prewarm', video: a.video === true }).catch(() => {});
         unlockForCall();
         setIncomingCard(null);
         const url = acceptUrl(appOrigin(), a.callId);
@@ -646,6 +647,7 @@ function Shell() {
         case 'call': {
           const v = msg.value as { type?: string; callId?: string; name?: string; video?: boolean };
           if (v?.type === 'call:ended') nativeMedia.current?.closeAll();
+          if (v?.type === 'call:outgoing' && v.video === true) void nativeMedia.current?.handle({ op: 'prewarm', video: true }).catch(() => {});
           forwardPageCallMessage(msg.value);
           if (v?.type === 'call:incoming' && typeof v.callId === 'string' && lockRef.current !== 'unlocked') {
             // Fallback card above LockScreen if CallKit is delayed / refused; CallKit still gets the page message.
