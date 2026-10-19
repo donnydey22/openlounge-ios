@@ -20,7 +20,7 @@ let transports = [];
 function mkT(dir) {
   const h = {}; const t = { id: dir + transports.length, connectionState: 'new', on: (e, f) => ((h[e] ||= []).push(f)),
     fire: (s) => { t.connectionState = s; (h.connectionstatechange || []).forEach((f) => f(s)); },
-    produce: async () => ({ id: 'p', close() {}, pause() {}, resume() {} }), consume: async (p) => ({ id: p.id, kind: 'audio', close() {} }),
+    produce: async (o) => ({ id: 'p', options: o, close() {}, pause() {}, resume() {} }), consume: async (p) => ({ id: p.id, kind: 'audio', close() {} }),
     restartIce: async () => {}, getStats: async () => new Map(), close() { t.fire('closed'); } };
   transports.push(t); return t;
 }
@@ -33,7 +33,7 @@ const req = async (ev) => { if (ev === 'ms:join') { joins++; return { ok: true, 
 
 test('two concurrent rebuild connects coalesce into one fresh build', async () => {
   transports = []; joins = 0;
-  const c = new NativeMediaController(req, () => {});
+  const c = new NativeMediaController(req, () => {}, () => {});
   const a = c.handle({ op: 'connect', callId: 'c1', rebuild: true });
   const b = c.handle({ op: 'connect', callId: 'c1', rebuild: true });
   await tick(); transports.filter((t) => t.id.startsWith('s')).forEach((t) => t.fire('connected'));
@@ -44,7 +44,7 @@ test('two concurrent rebuild connects coalesce into one fresh build', async () =
 });
 test('a superseded connect (path change) fails fast instead of hanging to the timeout', async () => {
   transports = [];
-  const c = new NativeMediaController(req, () => {});
+  const c = new NativeMediaController(req, () => {}, () => {});
   const t0 = Date.now();
   const a = c.handle({ op: 'connect', callId: 'c2' }).then(() => 'ok', (e) => e.message);
   await tick();
@@ -56,7 +56,13 @@ test('a superseded connect (path change) fails fast instead of hanging to the ti
 });
 test('after a build settles, a later rebuild builds fresh again', async () => {
   transports = []; joins = 0;
-  const c = new NativeMediaController(req, () => {});
+  const c = new NativeMediaController(req, () => {}, () => {});
   const go = async () => { const p = c.handle({ op: 'connect', callId: 'c3', rebuild: true }); await tick(); transports.at(-2).fire('connected'); return p; };
   await go(); await go(); assert.equal(joins, 2); c.closeAll();
+});
+
+test('paired native video producers carry one explicit stream ID and replacement video consumers are closed', () => {
+  const src = readFileSync('src/nativeMedia.ts', 'utf8');
+  assert.match(src, /streamId: this\.streamId[\s\S]{0,2400}streamId: this\.streamId/);
+  assert.match(src, /for \(const \[id, prior\] of this\.consumers\)[\s\S]{0,180}prior\.close\(\)/);
 });

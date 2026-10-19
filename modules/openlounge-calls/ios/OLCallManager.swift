@@ -494,8 +494,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // remain off. The explicit native-video caller marker is the sole video exception: its one app-owned mic+camera
     // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
     // remain unchanged.
-    if !callVideo || calls.values.contains(where: { !$0.ended && $0.nativeMedia }) {
-      OLNativeAudio.didActivate(audioSession)
+    let nativeVideo = calls.values.contains(where: { !$0.ended && $0.nativeMedia })
+    if !callVideo || nativeVideo {
+      OLNativeAudio.didActivate(audioSession, video: nativeVideo)
     }
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
