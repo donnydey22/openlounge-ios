@@ -76,6 +76,30 @@ type NativeVideoLayout = {
   pip: { kind: 'local' | 'remote'; rect: NativeTileRect; mirror: boolean } | null;
 };
 type WebFrame = { x: number; y: number; width: number; height: number };
+type NativeInsets = { top: number; right: number; bottom: number; left: number };
+const NATIVE_PIP_MARGIN = 12;
+const NATIVE_PIP_ASPECT = 3 / 4;
+
+/** Fixed local self-view for the paired native iPhone call. Coordinates share WebView's native parent.
+ * In non-edge-to-edge mode `webFrame.y` already starts below the status area, so top is not added twice. */
+export function nativePipFrame(webFrame: WebFrame, insets: NativeInsets, edgeToEdgeTop: boolean) {
+  const leftBound = webFrame.x + Math.max(0, insets.left);
+  const rightBound = webFrame.x + webFrame.width - Math.max(0, insets.right);
+  const topBound = webFrame.y + (edgeToEdgeTop ? Math.max(0, insets.top) : 0);
+  const bottomBound = webFrame.y + webFrame.height - Math.max(0, insets.bottom);
+  const availableWidth = Math.max(0, rightBound - leftBound);
+  const availableHeight = Math.max(0, bottomBound - topBound);
+  const maxWidth = Math.max(0, availableWidth - NATIVE_PIP_MARGIN * 2);
+  const maxHeight = Math.max(0, availableHeight - NATIVE_PIP_MARGIN * 2);
+  const width = Math.min(maxWidth, Math.max(88, Math.min(144, Math.floor(availableWidth * 0.38))));
+  const height = Math.min(maxHeight, Math.max(118, Math.round(width / NATIVE_PIP_ASPECT)));
+  return {
+    left: Math.max(leftBound + NATIVE_PIP_MARGIN, rightBound - width - NATIVE_PIP_MARGIN),
+    top: topBound + NATIVE_PIP_MARGIN,
+    width,
+    height,
+  };
+}
 
 const finiteUnitRect = (value: unknown): NativeTileRect | null => {
   if (!value || typeof value !== 'object') return null;
@@ -801,7 +825,6 @@ function Shell() {
 
   const bg = themeColor(theme);
   const nativeBigLayout = nativeVideoLayout?.hidden ? null : nativeVideoLayout?.big ?? null;
-  const nativePipLayout = nativeBigLayout ? nativeVideoLayout?.pip ?? null : null;
   const visibleNativeVideo = !!nativeVideo && !!nativeVideoLayout && nativeVideo.callId === nativeVideoLayout.callId && !!nativeBigLayout && !!webFrame;
   const mapTile = (rect: NativeTileRect | null) => {
     if (!rect || !webFrame) return null;
@@ -815,7 +838,12 @@ function Shell() {
     return width > 0 && height > 0 ? { left, top, width, height } : null;
   };
   const bigTile = visibleNativeVideo ? mapTile(nativeBigLayout?.rect ?? null) : null;
-  const pipTile = visibleNativeVideo ? mapTile(nativePipLayout?.rect ?? null) : null;
+  // Native iPhone caller pattern: remote full-screen and fixed local self-view at the safe top-right. Unlike the
+  // DOM PiP, this view is not a transparent layout placeholder and cannot be dragged/swapped through WKWebView. Keep
+  // the real local tile pinned through a temporary remote-camera loss rather than replacing it with a ghost box.
+  const pipTile = visibleNativeVideo && nativeVideo?.local && webFrame
+    ? nativePipFrame(webFrame, insets, EDGE_TO_EDGE_TOP)
+    : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? nativeVideo?.local : nativeVideo?.remote;
 
   return (
@@ -827,12 +855,12 @@ function Shell() {
           { paddingTop: EDGE_TO_EDGE_TOP ? 0 : insets.top, paddingBottom: KEYBOARD_MODE === 'resize' ? kbHeight : 0 },
         ]}
       >
-        {visibleNativeVideo && nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && (
+        {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
           <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-            <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />
-            {pipTile && nativePipLayout && streamFor(nativePipLayout.kind) && (
+            {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
+            {pipTile && nativeVideo?.local && (
               <View style={[styles.nativePipFrame, pipTile]}>
-                <RTCView streamURL={streamFor(nativePipLayout.kind)!.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativePipLayout.kind === 'local' && nativeVideo!.facing === 'user'} />
+                <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativeVideo.facing === 'user'} />
               </View>
             )}
           </View>

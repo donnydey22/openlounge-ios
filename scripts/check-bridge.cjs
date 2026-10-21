@@ -85,9 +85,10 @@ t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"id":"nm1","ok":tr
 t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"ok":true}}'), null, 'msReply needs id');
 {
   const js = B.injectedBeforeContentLoaded('ios', '0.3.1', true);
-  t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls', 'nativeMedia', 'nativeVideo'\]/.test(js), true, 'native calls flag on');
+  t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'\]/.test(js), true, 'native calls flag on');
   const off = B.injectedBeforeContentLoaded('ios', '0.3.1');
-  t(/if \(false\)/.test(off) && !/'calls'/.test(off), true, 'native calls flag off by default');
+  // The bridge always exposes the nativeMedia method as a safe no-op API; only its advertised capabilities enable it.
+  t(/if \(false\)/.test(off) && !/capabilities: Object\.freeze\(\[[^\]]*'calls'/.test(off), true, 'native calls flag off by default');
 }
 {
   const { shouldLock } = require(path.join(root, 'src/lockPolicy.ts'));

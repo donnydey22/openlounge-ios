@@ -62,6 +62,7 @@ test("Swift: configureAudio is idempotent (category/mode/options, sample rate, I
   assert.match(SWIFT, /if s\.category != \.playAndRecord \|\| s\.mode != mode \|\| s\.categoryOptions != opts \{/);
   assert.match(SWIFT, /if s\.preferredSampleRate != 48_000/);
   assert.match(SWIFT, /if wantSpeaker != onSpeaker \{/);
+  assert.doesNotMatch(SWIFT, /setInputGain|isInputGainSettable|inputGain/);
 });
 
 test("Swift: configured once at activation — not after connect; speaker tap only overrides the port", () => {
@@ -101,7 +102,8 @@ test("0.3.13: ringback watchdog restarts a stopped player, reports status, honou
   assert.match(tick, /guard wantRingback else \{ return stopRingback\(\) \}/);
   assert.match(tick, /ringback\?\.isPlaying != true[\s\S]{0,160}playRingback\(\)/);
   assert.match(SWIFT, /AVAudioSession\.interruptionNotification/);
-  assert.match(SWIFT, /InterruptionType\(rawValue: raw\) == \.ended, self\.wantRingback[\s\S]{0,40}self\.playRingback\(\)/);
+  // Current Swift expresses the same condition in two readable guards: interruption-ended, then ringback ownership.
+  assert.match(SWIFT, /InterruptionType\(rawValue: raw\) == \.ended[\s\S]{0,100}if self\.wantRingback \{ self\.playRingback\(\) \}/);
   assert.match(SWIFT, /emit\(\["type": "ringback", "playing": playing\]\)/);
   assert.match(SWIFT, /case "call:ringbackStop":\s*\n\s*webOwnsRingback = true\s*\n\s*stopRingback\(\)/);
   assert.match(SWIFT, /!webOwnsRingback && calls\.values\.contains \{ !\$0\.incoming && !\$0\.ended && !\$0\.answered && !\$0\.connected \}/);
