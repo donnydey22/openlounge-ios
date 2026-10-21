@@ -82,6 +82,9 @@ const NATIVE_PIP_ASPECT = 3 / 4;
 
 /** Fixed local self-view for the paired native iPhone call. Coordinates share WebView's native parent.
  * In non-edge-to-edge mode `webFrame.y` already starts below the status area, so top is not added twice. */
+// Self-view top offset below the safe-area top: the larger of Donny's 48 pt and the call screen's own top bar
+// (CallOverlay h-14 = 56 pt: minimize button + quality bars), so the self-view sits just below those controls.
+const NATIVE_PIP_TOP_CLEARANCE = Math.max(48, 56);
 export function nativePipFrame(webFrame: WebFrame, insets: NativeInsets, edgeToEdgeTop: boolean) {
   const leftBound = webFrame.x + Math.max(0, insets.left);
   const rightBound = webFrame.x + webFrame.width - Math.max(0, insets.right);
@@ -95,7 +98,7 @@ export function nativePipFrame(webFrame: WebFrame, insets: NativeInsets, edgeToE
   const height = Math.min(maxHeight, Math.max(118, Math.round(width / NATIVE_PIP_ASPECT)));
   return {
     left: Math.max(leftBound + NATIVE_PIP_MARGIN, rightBound - width - NATIVE_PIP_MARGIN),
-    top: topBound + NATIVE_PIP_MARGIN,
+    top: topBound + NATIVE_PIP_TOP_CLEARANCE,
     width,
     height,
   };

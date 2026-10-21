@@ -64,3 +64,4 @@ test('uncropped native frames paint no separate dark rectangle or shadow', () =>
   assert.doesNotMatch(pipStyle, /shadowColor|shadowOffset|shadowOpacity|shadowRadius/);
 });
 test('iOS wrapper removes the web self-view shadow only in native-video mode (no ghost rectangle)',async()=>{const {readFileSync}=await import('node:fs');const b=readFileSync(new URL('../src/bridge.ts',import.meta.url),'utf8');assert.match(b,/\[class\*="__nativeVideoScreen"\] \[class\*="__pip"\]\{box-shadow:none!important\}/);});
+test('self-view clears the safe top by max(48, 56 pt top bar)',()=>{const a=readFileSync(new URL('../App.tsx',import.meta.url),'utf8');assert.match(a,/const NATIVE_PIP_TOP_CLEARANCE = Math\.max\(48, 56\)/);assert.match(a,/top: topBound \+ NATIVE_PIP_TOP_CLEARANCE/);});
