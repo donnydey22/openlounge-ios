@@ -370,7 +370,10 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       + 'a,img,svg,video,button,[role=button],[role=tab],[role=menuitem],[role=link],nav,header,label'
       + '{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}'
       + 'input,textarea,select,[contenteditable],[contenteditable] *,[data-selectable],[data-selectable] *'
-      + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}';
+      + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}'
+      // Native iPhone caller video: the page's self-view tile is a transparent placeholder over the native RTCView,
+      // so its drop shadow drew a ghost rectangle over the remote video. Scoped to native-video mode only.
+      + '[class*="__nativeVideoScreen"] [class*="__pip"]{box-shadow:none!important}';
     function lockViewport() {
       var head = document.head || document.getElementsByTagName('head')[0];
       if (!head) return;

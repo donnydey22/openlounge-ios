@@ -63,3 +63,4 @@ test('uncropped native frames paint no separate dark rectangle or shadow', () =>
   assert.match(pipStyle, /backgroundColor: 'transparent'/);
   assert.doesNotMatch(pipStyle, /shadowColor|shadowOffset|shadowOpacity|shadowRadius/);
 });
+test('iOS wrapper removes the web self-view shadow only in native-video mode (no ghost rectangle)',async()=>{const {readFileSync}=await import('node:fs');const b=readFileSync(new URL('../src/bridge.ts',import.meta.url),'utf8');assert.match(b,/\[class\*="__nativeVideoScreen"\] \[class\*="__pip"\]\{box-shadow:none!important\}/);});
