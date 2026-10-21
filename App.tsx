@@ -124,10 +124,10 @@ const parseNativeVideoLayout = (value: unknown): NativeVideoLayout | null => {
   };
   const big = readTile(v.big);
   const pip = readTile(v.pip);
-  if (!big || (pip && pip.fit !== 'cover')) return null;
-  // Native iPhone calls deliberately use the phone-sized call surface: remote full tile is always aspect-fill. The
-  // page still owns tile identities and rectangles, while RTCView retains source aspect ratio without stretching.
-  return { callId: v.callId, hidden: v.hidden, big: { kind: big.kind, fit: 'cover', rect: big.rect }, pip: pip ? { kind: pip.kind, rect: pip.rect, mirror: pip.mirror } : null };
+  if (!big) return null;
+  // Donny's native caller-video policy is uncropped aspect-fit. Accept the existing page's cover metadata for
+  // compatibility, but never use it to crop or stretch either native video view.
+  return { callId: v.callId, hidden: v.hidden, big: { kind: big.kind, fit: 'contain', rect: big.rect }, pip: pip ? { kind: pip.kind, rect: pip.rect, mirror: pip.mirror } : null };
 };
 
 // WebKit errors that are not "the page could not be loaded".
@@ -860,10 +860,10 @@ function Shell() {
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
       {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
         <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
+          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="contain" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
           {pipTile && nativeVideo?.local && (
             <View style={[styles.nativePipFrame, pipTile]}>
-              <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativeVideo.facing === 'user'} />
+              <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="contain" mirror={nativeVideo.facing === 'user'} />
             </View>
           )}
         </View>
@@ -999,7 +999,7 @@ const styles = StyleSheet.create({
   // zIndex orders siblings, so explicitly place the granted caller's WebView container over its native underlay.
   nativeWebOverlay: { zIndex: 1 },
   nativeVideoLayer: { ...StyleSheet.absoluteFill, zIndex: 0 },
-  nativeTile: { position: 'absolute', zIndex: 0, backgroundColor: '#050505' },
+  nativeTile: { position: 'absolute', zIndex: 0, backgroundColor: 'transparent' },
   // UIKit uses sibling z-index/order; RTCView's zOrder prop is not exported on iOS by this installed WebRTC package.
   // Keep the established rounded PiP, but never paint a separate rectangle/shadow behind or beyond its video.
   nativePipFrame: { position: 'absolute', zIndex: 1, borderRadius: 18, overflow: 'hidden', backgroundColor: 'transparent' },

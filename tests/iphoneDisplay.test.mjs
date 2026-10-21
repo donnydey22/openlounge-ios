@@ -49,3 +49,17 @@ test('existing native layer is a sibling before the unchanged padded web contain
   assert.match(app, /nativeWebOverlay: \{ zIndex: 1 \}/);
   assert.match(render, /paddingTop: EDGE_TO_EDGE_TOP \? 0 : insets\.top/);
 });
+
+test('Donny fit policy renders both native video views with contain, never cover or stretch', () => {
+  const fits = [...app.matchAll(/objectFit="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(fits, ['contain', 'contain']);
+  assert.match(app, /big: \{ kind: big\.kind, fit: 'contain', rect: big\.rect \}/);
+  assert.doesNotMatch(app, /if \(!big \|\| \(pip && pip\.fit !== 'cover'\)\)/);
+});
+
+test('uncropped native frames paint no separate dark rectangle or shadow', () => {
+  assert.match(app, /nativeTile: \{ position: 'absolute', zIndex: 0, backgroundColor: 'transparent' \}/);
+  const pipStyle = app.slice(app.indexOf('  nativePipFrame:'), app.indexOf('  nativeFill:'));
+  assert.match(pipStyle, /backgroundColor: 'transparent'/);
+  assert.doesNotMatch(pipStyle, /shadowColor|shadowOffset|shadowOpacity|shadowRadius/);
+});
