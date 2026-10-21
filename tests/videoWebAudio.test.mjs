@@ -33,10 +33,12 @@ assert.match(outgoing, /let nativeMedia = video && \(\(m\["nativeMedia"\] as\? B
 assert.match(outgoing, /OLCall\(callId: callId, uuid: UUID\(\), incoming: false, video: video, nativeMedia: nativeMedia\)/,
   'the server grant is retained on the outgoing CallKit record');
 
-assert.match(nativeAudio, /cfg\.mode = \(video \? AVAudioSession\.Mode\.videoChat : AVAudioSession\.Mode\.voiceChat\)\.rawValue/,
-  'granted native video uses videoChat; voice stays voiceChat');
-assert.match(nativeAudio, /static func didActivate\(_ session: AVAudioSession, video: Bool = false\)[\s\S]{0,260}setUp\(video: video\)/,
-  'the active CallKit mode is passed into the WebRTC audio unit');
+assert.match(nativeAudio, /let callMode: AVAudioSession\.Mode = \(session\.mode == \.voiceChat \|\| session\.mode == \.videoChat\)/,
+  'native WebRTC preserves the activated CallKit voice/video mode');
+assert.match(nativeAudio, /cfg\.categoryOptions = session\.categoryOptions/,
+  'native WebRTC preserves CallKit speaker, receiver, and headset route options');
+assert.match(nativeAudio, /static func didActivate\(_ session: AVAudioSession, video: Bool = false\)[\s\S]{0,300}setUp\(video: video, session: session\)/,
+  'the activated CallKit session is passed into the WebRTC audio unit');
 
 assert.ok(!/prewarmNativeMedia\(\)/.test(calls), 'the generic native call action does not prewarm media outside the call engine');
 assert.match(media, /case 'prepare':[\s\S]{0,700}ms:join/, 'ring-time preparation loads signaling state without capture');

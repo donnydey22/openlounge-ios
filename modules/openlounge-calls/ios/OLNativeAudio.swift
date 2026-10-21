@@ -10,26 +10,31 @@ private typealias RTCAudioSessionConfiguration = LKRTCAudioSessionConfiguration
 /// pre-warmed mic + transports built on dial/answer sit idle until didActivate flips isAudioEnabled (no renegotiation,
 /// no fresh capture: the "Keiko can't hear the iPhone caller" race is gone by construction).
 enum OLNativeAudio {
-  static func setUp(video: Bool = false) {
+  static func setUp(video: Bool = false, session: AVAudioSession = AVAudioSession.sharedInstance()) {
     #if canImport(LiveKitWebRTC)
     let rtc = RTCAudioSession.sharedInstance()
     rtc.useManualAudio = true
     rtc.isAudioEnabled = false
-    // configure once: WebRTC's own default config must match what configureAudio() sets, so it never re-applies
-    // a category/mode mid-call (each one is a route change + voice-processing reset).
+    // CallKit has already selected the route. Copy its live category, mode, and options into WebRTC instead of
+    // reintroducing WebRTC's receiver-oriented defaults when its manual audio unit starts. This retains
+    // defaultToSpeaker for the normal call speaker route, while leaving Bluetooth/headset and an explicit receiver
+    // selection under OLCallManager's control.
     let cfg = RTCAudioSessionConfiguration.webRTC()
-    cfg.category = AVAudioSession.Category.playAndRecord.rawValue
-    // Match the active CallKit mode: only the explicit app-owned video call uses videoChat.
-    cfg.mode = (video ? AVAudioSession.Mode.videoChat : AVAudioSession.Mode.voiceChat).rawValue
-    cfg.categoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
+    let callCategory: AVAudioSession.Category = session.category == .playAndRecord ? session.category : .playAndRecord
+    let callMode: AVAudioSession.Mode = (session.mode == .voiceChat || session.mode == .videoChat)
+      ? session.mode
+      : (video ? .videoChat : .voiceChat)
+    cfg.category = callCategory.rawValue
+    cfg.mode = callMode.rawValue
+    cfg.categoryOptions = session.categoryOptions
     RTCAudioSessionConfiguration.setWebRTC(cfg)
     #endif
   }
 
   static func didActivate(_ session: AVAudioSession, video: Bool = false) {
     #if canImport(LiveKitWebRTC)
-    // Keep WebRTC's manual audio unit in the same mode CallKit has just activated.
-    setUp(video: video)
+    // The session was configured by CallKit immediately before this callback; make the manual WebRTC audio unit match.
+    setUp(video: video, session: session)
     let rtc = RTCAudioSession.sharedInstance()
     rtc.audioSessionDidActivate(session)
     rtc.isAudioEnabled = true
