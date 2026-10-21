@@ -373,7 +373,10 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}'
       // Native iPhone caller video: the page's self-view tile is a transparent placeholder over the native RTCView,
       // so its drop shadow drew a ghost rectangle over the remote video. Scoped to native-video mode only.
-      + '[class*="__nativeVideoScreen"] [class*="__pip"]{box-shadow:none!important}';
+      + '[class*="__nativeVideoScreen"] [class*="__pip"]{box-shadow:none!important}'
+      // Hangup: the page drops __nativeVideoScreen when ui becomes "ended" while the self-view tile stays mounted, so
+      // its bg-zinc-950 + .pip shadow briefly drew a dark rectangle at top right. Hide the tile on the ended screen.
+      + '[data-testid="call-screen"][data-ui="ended"] [class*="__pip"]{visibility:hidden!important;box-shadow:none!important}';
     function lockViewport() {
       var head = document.head || document.getElementsByTagName('head')[0];
       if (!head) return;
