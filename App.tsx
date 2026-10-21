@@ -166,6 +166,7 @@ function Shell() {
   const [nativeVideo, setNativeVideo] = useState<NativeVideoState>(null);
   const [nativeVideoLayout, setNativeVideoLayout] = useState<NativeVideoLayout | null>(null);
   const [webFrame, setWebFrame] = useState<WebFrame | null>(null);
+  const [windowFrame, setWindowFrame] = useState<WebFrame | null>(null);
   const [kbHeight, setKbHeight] = useState(0);
 
   const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD), []);
@@ -837,34 +838,43 @@ function Shell() {
     const height = rect.height * webFrame.height;
     return width > 0 && height > 0 ? { left, top, width, height } : null;
   };
-  const bigTile = visibleNativeVideo ? mapTile(nativeBigLayout?.rect ?? null) : null;
+  const fullStageRemote = nativeBigLayout?.kind === 'remote' && nativeBigLayout.rect.x === 0 && nativeBigLayout.rect.y === 0 && nativeBigLayout.rect.width === 1 && nativeBigLayout.rect.height === 1;
+  // Only the granted caller's full-stage remote tile leaves WebView coordinates. Partial/local tiles keep the
+  // existing mapping; the root's actual onLayout dimensions include the screen's status and home-indicator areas.
+  const bigTile = visibleNativeVideo && fullStageRemote && windowFrame
+    ? { left: 0, top: 0, width: windowFrame.width, height: windowFrame.height }
+    : visibleNativeVideo ? mapTile(nativeBigLayout?.rect ?? null) : null;
   // Native iPhone caller pattern: remote full-screen and fixed local self-view at the safe top-right. Unlike the
   // DOM PiP, this view is not a transparent layout placeholder and cannot be dragged/swapped through WKWebView. Keep
   // the real local tile pinned through a temporary remote-camera loss rather than replacing it with a ghost box.
-  const pipTile = visibleNativeVideo && nativeVideo?.local && webFrame
-    ? nativePipFrame(webFrame, insets, EDGE_TO_EDGE_TOP)
+  const pipTile = visibleNativeVideo && nativeVideo?.local && windowFrame
+    ? nativePipFrame(windowFrame, insets, true)
     : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? nativeVideo?.local : nativeVideo?.remote;
 
   return (
-    <View style={[styles.root, { backgroundColor: bg }]}>
+    <View style={[styles.root, { backgroundColor: bg }]} onLayout={(e: LayoutChangeEvent) => {
+      const { width, height } = e.nativeEvent.layout;
+      setWindowFrame({ x: 0, y: 0, width, height });
+    }}>
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
+      {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
+        <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
+          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
+          {pipTile && nativeVideo?.local && (
+            <View style={[styles.nativePipFrame, pipTile]}>
+              <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativeVideo.facing === 'user'} />
+            </View>
+          )}
+        </View>
+      )}
       <View
         style={[
           styles.root,
+          visibleNativeVideo && styles.nativeWebOverlay,
           { paddingTop: EDGE_TO_EDGE_TOP ? 0 : insets.top, paddingBottom: KEYBOARD_MODE === 'resize' ? kbHeight : 0 },
         ]}
       >
-        {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
-          <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-            {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
-            {pipTile && nativeVideo?.local && (
-              <View style={[styles.nativePipFrame, pipTile]}>
-                <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativeVideo.facing === 'user'} />
-              </View>
-            )}
-          </View>
-        )}
         <WebView
           key={webKey}
           ref={webRef}
@@ -986,10 +996,12 @@ const styles = StyleSheet.create({
   // The page remains the interactive control layer. It makes only native-video pixels transparent, exposing this
   // underlying RTC layer at the exact measured tile rectangles.
   webView: { flex: 1, zIndex: 1, backgroundColor: 'transparent' },
+  // zIndex orders siblings, so explicitly place the granted caller's WebView container over its native underlay.
+  nativeWebOverlay: { zIndex: 1 },
   nativeVideoLayer: { ...StyleSheet.absoluteFill, zIndex: 0 },
   nativeTile: { position: 'absolute', zIndex: 0, backgroundColor: '#050505' },
   // UIKit uses sibling z-index/order; RTCView's zOrder prop is not exported on iOS by this installed WebRTC package.
-  // Match the established call-overlay PiP: rounded 18 px corner, dark depth shadow, and no separate visible border.
-  nativePipFrame: { position: 'absolute', zIndex: 1, borderRadius: 18, overflow: 'hidden', backgroundColor: '#111', shadowColor: '#000', shadowOffset: { width: 0, height: 10 }, shadowOpacity: 0.45, shadowRadius: 15 },
+  // Keep the established rounded PiP, but never paint a separate rectangle/shadow behind or beyond its video.
+  nativePipFrame: { position: 'absolute', zIndex: 1, borderRadius: 18, overflow: 'hidden', backgroundColor: 'transparent' },
   nativeFill: { width: '100%', height: '100%' },
 });
