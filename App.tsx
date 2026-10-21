@@ -839,8 +839,9 @@ function Shell() {
   };
   const bigTile = visibleNativeVideo ? mapTile(nativeBigLayout?.rect ?? null) : null;
   // Native iPhone caller pattern: remote full-screen and fixed local self-view at the safe top-right. Unlike the
-  // DOM PiP, this view is not a transparent layout placeholder and cannot be dragged/swapped through WKWebView.
-  const pipTile = visibleNativeVideo && nativeBigLayout?.kind === 'remote' && nativeVideo?.local && nativeVideo?.remote && webFrame
+  // DOM PiP, this view is not a transparent layout placeholder and cannot be dragged/swapped through WKWebView. Keep
+  // the real local tile pinned through a temporary remote-camera loss rather than replacing it with a ghost box.
+  const pipTile = visibleNativeVideo && nativeVideo?.local && webFrame
     ? nativePipFrame(webFrame, insets, EDGE_TO_EDGE_TOP)
     : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? nativeVideo?.local : nativeVideo?.remote;
@@ -854,9 +855,9 @@ function Shell() {
           { paddingTop: EDGE_TO_EDGE_TOP ? 0 : insets.top, paddingBottom: KEYBOARD_MODE === 'resize' ? kbHeight : 0 },
         ]}
       >
-        {visibleNativeVideo && nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && (
+        {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
           <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-            <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />
+            {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="cover" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
             {pipTile && nativeVideo?.local && (
               <View style={[styles.nativePipFrame, pipTile]}>
                 <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="cover" mirror={nativeVideo.facing === 'user'} />

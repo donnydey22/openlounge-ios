@@ -62,6 +62,7 @@ test("Swift: configureAudio is idempotent (category/mode/options, sample rate, I
   assert.match(SWIFT, /if s\.category != \.playAndRecord \|\| s\.mode != mode \|\| s\.categoryOptions != opts \{/);
   assert.match(SWIFT, /if s\.preferredSampleRate != 48_000/);
   assert.match(SWIFT, /if wantSpeaker != onSpeaker \{/);
+  assert.doesNotMatch(SWIFT, /setInputGain|isInputGainSettable|inputGain/);
 });
 
 test("Swift: configured once at activation — not after connect; speaker tap only overrides the port", () => {
