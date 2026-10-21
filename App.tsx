@@ -93,7 +93,7 @@ export function nativePipFrame(webFrame: WebFrame, insets: NativeInsets, edgeToE
   const availableWidth = Math.max(0, rightBound - leftBound);
   const availableHeight = Math.max(0, bottomBound - topBound);
   const maxWidth = Math.max(0, availableWidth - NATIVE_PIP_MARGIN * 2);
-  const maxHeight = Math.max(0, availableHeight - NATIVE_PIP_MARGIN * 2);
+  const maxHeight = Math.max(0, availableHeight - NATIVE_PIP_TOP_CLEARANCE - NATIVE_PIP_MARGIN);
   const width = Math.min(maxWidth, Math.max(88, Math.min(144, Math.floor(availableWidth * 0.38))));
   const height = Math.min(maxHeight, Math.max(118, Math.round(width / NATIVE_PIP_ASPECT)));
   return {
