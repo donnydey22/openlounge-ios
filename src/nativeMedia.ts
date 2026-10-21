@@ -12,6 +12,7 @@
 //   {op:'consumerAvailable'}  SFU remote-track availability arrived on the page socket
 // App → page events (CustomEvent 'openlounge:native-media'): {state:'connected'|'disconnected'|'failed'|'remote-audio'|'remote-video', on?:boolean}
 // App-only video state is delivered directly to App.tsx; MediaStream values are never serialized into the WebView.
+import { Platform } from 'react-native';
 import { mediaDevices, MediaStream, type MediaStreamTrack } from '@livekit/react-native-webrtc';
 import { registerGlobals } from '@livekit/react-native';
 
@@ -62,6 +63,17 @@ type NativeQualityStep = { audioBps: number; videoBps?: number; videoFps?: numbe
 type VideoCodecCapability = { kind?: string; mimeType?: string; parameters?: Record<string, unknown> };
 type SenderEncoding = { maxBitrate?: number; maxFramerate?: number; scaleResolutionDownBy?: number };
 const NATIVE_CAMERA_MAX_BPS = 850_000;
+
+/** netAdapt tiers keyed by the page's audio step → camera budget; voice is held at ≥32 kbps while video is shed. */
+export function iosVideoTier(audioBps: number, apply: boolean) {
+  if (!apply) return null;
+  const a = Math.round(audioBps);
+  const video = a >= 48_000 ? { videoBps: NATIVE_CAMERA_MAX_BPS, videoFps: 30, videoScale: 1 }
+    : a >= 32_000 ? { videoBps: 400_000, videoFps: 24, videoScale: 2 }
+    : a >= 24_000 ? { videoBps: 150_000, videoFps: 15, videoScale: 4 }
+    : { videoBps: 60_000, videoFps: 8, videoScale: 4 };
+  return { audioBps: Math.max(32_000, Math.min(48_000, a)), video };
+}
 
 /**
  * The SFU does not expose a peer receiver's RTP capabilities before this producer is created. VP8 is therefore the
@@ -404,10 +416,16 @@ export class NativeMediaSession {
   /** Coalesce the one-second page samples: native WebRTC rejects overlapping setParameters transactions. */
   async ladder(step: NativeQualityStep) {
     if (this.closed) return false;
+    // iPhone native VIDEO call: the page's native ladder sends audioBps only, so a congested link used to step the
+    // Opus sender 48→32→24→16 kbps every few seconds while the camera stayed at its full 850 kbps — bursty, muddy
+    // iPhone audio. With a camera producer up, shed the camera along the same netAdapt tier and hold voice ≥32 kbps
+    // (total on the weakest tier is 32+60 kbps, far below the old 16+850). Audio-only calls are unchanged. iOS only.
+    const tier = iosVideoTier(step.audioBps || 48_000, Platform.OS === 'ios' && !!this.videoProducer && !Number.isFinite(step.videoBps));
+    if (tier) step = { ...step, ...tier.video };
     this.pendingLadder = {
       // The shared ladder reserves the 16 kbps Opus floor before camera bitrate. Do not reintroduce a local 24/60 kbps
       // clamp here: it would oversubscribe the weakest native link the page has already measured.
-      audioBps: Math.max(16_000, Math.round(step.audioBps || 48_000)),
+      audioBps: tier ? tier.audioBps : Math.max(16_000, Math.round(step.audioBps || 48_000)),
       ...(Number.isFinite(step.videoBps) ? { videoBps: Math.min(NATIVE_CAMERA_MAX_BPS, Math.max(1_000, Math.round(step.videoBps!))) } : {}),
       ...(Number.isFinite(step.videoFps) ? { videoFps: Math.max(8, Math.min(30, Math.round(step.videoFps!))) } : {}),
       ...(Number.isFinite(step.videoScale) ? { videoScale: Math.max(1, Math.min(4, Number(step.videoScale))) } : {}),

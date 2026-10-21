@@ -43,6 +43,8 @@ export function parseCallAction(raw: unknown): CallAction | null {
     const a = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
     if (!a || typeof a.type !== 'string') return null;
     if (a.type === 'audio') return { type: 'audio', reason: typeof a.reason === 'string' ? a.reason.slice(0, 40) : 'callkit' };
+    // Actual output route (Speaker/Phone button truth). Previously dropped here, so the page never learned the route.
+    if (a.type === 'audioRoute') return { type: 'audioRoute', headset: a.headset === true, speaker: a.speaker === true, port: typeof a.port === 'string' ? a.port.slice(0, 40) : '', name: typeof a.name === 'string' ? a.name.slice(0, 80) : '', reason: typeof a.reason === 'number' ? a.reason : 0 } as unknown as CallAction;
     if (a.type === 'mute') return typeof a.muted === 'boolean' ? { type: 'mute', muted: a.muted } : null;
     if ((a.type === 'answer' || a.type === 'decline' || a.type === 'hangup') && typeof a.callId === 'string') {
       if (a.type !== 'hangup' && !CALL_ID.test(a.callId)) return null;

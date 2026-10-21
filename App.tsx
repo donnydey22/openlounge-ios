@@ -532,8 +532,8 @@ function Shell() {
         return;
       }
       if ((a as { type: string }).type === 'audioRoute') {
-        const r = a as unknown as { headset?: boolean; port?: string; name?: string; reason?: number };
-        const detail = JSON.stringify({ headset: !!r.headset, port: String(r.port || ''), name: String(r.name || ''), reason: Number(r.reason || 0) });
+        const r = a as unknown as { headset?: boolean; port?: string; name?: string; reason?: number; speaker?: boolean };
+        const detail = JSON.stringify({ headset: !!r.headset, port: String(r.port || ''), name: String(r.name || ''), reason: Number(r.reason || 0), speaker: r.speaker === true });
         if (!coldStart && everLoaded.current)
           inject(`(function(){try{window.dispatchEvent(new CustomEvent('openlounge:native-audio-route',{detail:${detail}}))}catch(e){}})();true;`);
         return;

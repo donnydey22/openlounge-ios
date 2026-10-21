@@ -700,7 +700,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       guard Self.isDeviceRouteChange(why) else { return }
       if self.savedAudio != nil { self.configureAudio() } else { self.prepareHeadsetSession() }
       let out = AVAudioSession.sharedInstance().currentRoute.outputs.first
-      self.emit(["type": "audioRoute", "headset": headset, "port": out?.portType.rawValue ?? "", "name": out?.portName ?? "", "reason": reason])
+      self.emit(["type": "audioRoute", "headset": headset, "port": out?.portType.rawValue ?? "", "name": out?.portName ?? "", "reason": reason, "speaker": out?.portType == .builtInSpeaker])
     }
   }
 
@@ -739,7 +739,21 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let s = AVAudioSession.sharedInstance()
     let wantSpeaker = speaker && !Self.headsetAttached()
     let onSpeaker = s.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
-    if wantSpeaker != onSpeaker { try? s.overrideOutputAudioPort(wantSpeaker ? .speaker : .none) }
+    if wantSpeaker != onSpeaker {
+      do { try s.overrideOutputAudioPort(wantSpeaker ? .speaker : .none) }
+      catch { NSLog("[OLCalls] speaker override failed: %@", error.localizedDescription) }
+    }
+    reportActualRoute(reason: "override")
+  }
+
+  /// Speaker/Phone button truth: log and tell the page the route iOS actually chose (builtInSpeaker vs builtInReceiver
+  /// vs headset), so the button reflects the real output instead of the last tap. Headset routing is untouched.
+  private func reportActualRoute(reason: String) {
+    let out = AVAudioSession.sharedInstance().currentRoute.outputs.first
+    let port = out?.portType.rawValue ?? ""
+    let onSpeaker = out?.portType == .builtInSpeaker
+    NSLog("[OLCalls] audio route (%@): %@ speaker=%d", reason, port, onSpeaker ? 1 : 0)
+    emit(["type": "audioRoute", "headset": Self.headsetAttached(), "port": port, "name": out?.portName ?? "", "reason": 0, "speaker": onSpeaker, "source": reason])
   }
 
   /// North-American ringback (440 + 480 Hz, 2 s on / 4 s off), synthesized once as 16-bit 48 kHz mono PCM WAV.
