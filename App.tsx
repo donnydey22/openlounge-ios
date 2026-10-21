@@ -854,6 +854,12 @@ function Shell() {
     ? nativePipFrame(windowFrame, insets, true)
     : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? nativeVideo?.local : nativeVideo?.remote;
+  // Fill edge to edge like FaceTime/Telegram. Only a known landscape source (wider than tall) on the big tile falls
+  // back to aspect-fit so a rotated/landscape caller is not over-cropped; unknown dimensions default to cover.
+  const bigFit = (kind: 'local' | 'remote'): 'cover' | 'contain' => {
+    const s = (streamFor(kind)?.getVideoTracks?.()[0] as any)?.getSettings?.() ?? {};
+    return typeof s.width === 'number' && typeof s.height === 'number' && s.width > s.height * 1.1 ? 'contain' : 'cover';
+  };
 
   return (
     <View style={[styles.root, { backgroundColor: bg }]} onLayout={(e: LayoutChangeEvent) => {
@@ -863,7 +869,7 @@ function Shell() {
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
       {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
         <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit="contain" mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
+          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={bigFit(nativeBigLayout.kind)} mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
           {pipTile && nativeVideo?.local && (
             <View style={[styles.nativePipFrame, pipTile]}>
               <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="contain" mirror={nativeVideo.facing === 'user'} />

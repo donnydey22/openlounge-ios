@@ -50,9 +50,11 @@ test('existing native layer is a sibling before the unchanged padded web contain
   assert.match(render, /paddingTop: EDGE_TO_EDGE_TOP \? 0 : insets\.top/);
 });
 
-test('Donny fit policy renders both native video views with contain, never cover or stretch', () => {
+test('big native video fills edge to edge (cover) with landscape-source contain fallback; PiP unchanged', () => {
   const fits = [...app.matchAll(/objectFit="([^"]+)"/g)].map((match) => match[1]);
-  assert.deepEqual(fits, ['contain', 'contain']);
+  assert.deepEqual(fits, ['contain']);
+  assert.match(app, /objectFit=\{bigFit\(nativeBigLayout\.kind\)\}/);
+  assert.match(app, /s\.width > s\.height \* 1\.1 \? 'contain' : 'cover'/);
   assert.match(app, /big: \{ kind: big\.kind, fit: 'contain', rect: big\.rect \}/);
   assert.doesNotMatch(app, /if \(!big \|\| \(pip && pip\.fit !== 'cover'\)\)/);
 });
