@@ -61,7 +61,7 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
           grep -q 00008110-000E7DD63C03801E ../profile.plist && echo "Donny Dev in profile"
           cd .. && rm -rf x
-      - name: Encrypt IPA (public repo: artifact is passphrase-encrypted)
+      - name: Encrypt IPA (public repo, artifact is passphrase-encrypted)
         env:
           ARTIFACT_PASSPHRASE: ${{ secrets.IOS_ARTIFACT_PASSPHRASE }}
         run: |
