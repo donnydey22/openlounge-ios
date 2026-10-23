@@ -55,7 +55,8 @@ test("0.3.12: real device change (AirPods in/out) reconfigures exactly once each
 
 test("Swift: route handler filters by reason before reconfiguring", () => {
   assert.match(SWIFT, /case \.newDeviceAvailable, \.oldDeviceUnavailable, \.wakeFromSleep, \.noSuitableRouteForCategory: return true/);
-  assert.match(SWIFT, /guard Self\.isDeviceRouteChange\(why\) else \{ return \}\s*\n\s*if self\.savedAudio != nil \{ self\.configureAudio\(\) \}/);
+  // 875514d: a real device change also clears the explicit Speaker/Phone/headset pick (userRoute) before reconfiguring
+  assert.match(SWIFT, /guard Self\.isDeviceRouteChange\(why\) else \{ return \}\s*\n(?:\s*\/\/[^\n]*\n)*\s*self\.userRoute = nil\s*\n\s*if self\.savedAudio != nil \{ self\.configureAudio\(\) \}/);
 });
 
 test("Swift: configureAudio is idempotent (category/mode/options, sample rate, IO buffer, speaker override)", () => {

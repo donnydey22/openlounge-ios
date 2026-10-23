@@ -1,0 +1,81 @@
+name: iOS ad hoc build (eas --local on macOS)
+on:
+  push:
+    branches: [feat/audio-route-udp-first]
+    paths-ignore: ['**.md']
+permissions:
+  contents: read
+concurrency:
+  group: ios-adhoc-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit and call-audio tests
+        run: |
+          set -euo pipefail
+          node --test tests/*.mjs
+          npx --yes tsx --test tests/*.mts tests/*.ts
+          node scripts/check-bridge.cjs
+      - name: Typecheck
+        continue-on-error: true
+        run: npx tsc --noEmit
+      - name: Signing assets (existing Apple Distribution cert + ad hoc profile)
+        env:
+          P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          PROFILE_B64: ${{ secrets.IOS_ADHOC_PROFILE_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p credentials/ios
+          printf '%s' "$P12_B64" | base64 --decode > credentials/ios/dist.p12
+          printf '%s' "$PROFILE_B64" | base64 --decode > credentials/ios/adhoc.mobileprovision
+          node -e 'require("fs").writeFileSync("credentials.json", JSON.stringify({ios:{provisioningProfilePath:"credentials/ios/adhoc.mobileprovision",distributionCertificate:{path:"credentials/ios/dist.p12",password:process.env.P12_PASSWORD}}}))'
+      - name: eas build --local (preview = ad hoc, Release)
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          sudo gem install cocoapods --no-document >/dev/null 2>&1 || true
+          npx --yes eas-cli@latest build --local --platform ios --profile preview --non-interactive --output "$PWD/out/OpenLounge.ipa"
+      - name: Verify signature
+        run: |
+          set -euo pipefail
+          cd out && rm -rf x && mkdir x && cd x && unzip -q ../OpenLounge.ipa
+          APP=$(ls -d Payload/*.app)
+          codesign --verify --deep --strict "$APP"
+          codesign -dvv "$APP" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier"
+          security cms -D -i "$APP/embedded.mobileprovision" > ../profile.plist
+          /usr/libexec/PlistBuddy -c 'Print :Name' ../profile.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
+          grep -q 00008110-000E7DD63C03801E ../profile.plist && echo "Donny Dev in profile"
+          cd .. && rm -rf x
+      - name: Encrypt IPA (public repo: artifact is passphrase-encrypted)
+        env:
+          ARTIFACT_PASSPHRASE: ${{ secrets.IOS_ARTIFACT_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          shasum -a 256 out/OpenLounge.ipa | tee out/OpenLounge.ipa.sha256
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in out/OpenLounge.ipa -out out/OpenLounge.ipa.enc -pass env:ARTIFACT_PASSPHRASE
+          rm -f out/OpenLounge.ipa credentials/ios/dist.p12 credentials.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openlounge-ios-adhoc-encrypted
+          path: |
+            out/OpenLounge.ipa.enc
+            out/OpenLounge.ipa.sha256
+          retention-days: 14
+      - name: Cleanup
+        if: always()
+        run: rm -rf credentials credentials.json out/OpenLounge.ipa
