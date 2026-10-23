@@ -657,6 +657,13 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     case "call:audioRoute":
       guard let sp = m["speaker"] as? Bool else { return }
       speaker = sp
+      // Route picker (Oct 23): an explicit user pick of a kind/device wins until a device connects or disconnects.
+      // Pages that only send speaker on/off keep the old behaviour (userRoute stays nil).
+      if (m["user"] as? Bool) == true, let kind = m["route"] as? String {
+        userRoute = (kind, (m["deviceId"] as? String) ?? kind)
+      } else if (m["user"] as? Bool) != true {
+        userRoute = nil
+      }
       applySpeakerOverride()
 
     default:
@@ -693,14 +700,73 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   @objc private func onRouteChange(_ n: Notification) {
     DispatchQueue.main.async {
-      let headset = Self.headsetAttached()
       var reason = 0
       if let v = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt { reason = Int(v) }
       let why = AVAudioSession.RouteChangeReason(rawValue: UInt(reason)) ?? .unknown
       guard Self.isDeviceRouteChange(why) else { return }
+      // AirPods in/out, cable in/out: a new situation, so automatic routing takes over again (FaceTime does the same)
+      self.userRoute = nil
       if self.savedAudio != nil { self.configureAudio() } else { self.prepareHeadsetSession() }
-      let out = AVAudioSession.sharedInstance().currentRoute.outputs.first
-      self.emit(["type": "audioRoute", "headset": headset, "port": out?.portType.rawValue ?? "", "name": out?.portName ?? "", "reason": reason, "speaker": out?.portType == .builtInSpeaker])
+      self.emit(self.routePayload(reason: reason, source: "device"))
+    }
+  }
+
+  // MARK: - route picker
+
+  /// The user's explicit pick from the call screen's route sheet: (kind, device id). nil = automatic.
+  private var userRoute: (kind: String, id: String)?
+
+  static func routeKind(_ p: AVAudioSession.Port) -> String {
+    switch p {
+    case .builtInSpeaker: return "speaker"
+    case .builtInReceiver, .builtInMic: return "earpiece"
+    case .headphones, .headsetMic: return "wired"
+    case .bluetoothHFP, .bluetoothA2DP, .bluetoothLE: return "bluetooth"
+    case .usbAudio: return "usb"
+    case .carAudio: return "car"
+    default: return "system" // AirPlay, HDMI, …
+    }
+  }
+  static func routeId(_ kind: String, _ name: String) -> String { kind == "speaker" || kind == "earpiece" ? kind : "\(kind):\(name)" }
+
+  /// Current output + every output the user can pick: Speaker, Phone (iPhone receiver), and each headset input iOS
+  /// offers (AirPods/Bluetooth HFP, wired, USB, CarPlay) plus an output-only headset that is currently playing.
+  private func routePayload(reason: Int, source: String) -> [String: Any] {
+    let s = AVAudioSession.sharedInstance()
+    let out = s.currentRoute.outputs.first
+    let kind = out.map { Self.routeKind($0.portType) } ?? "system"
+    let name = out?.portName ?? ""
+    var routes: [[String: Any]] = [["kind": "speaker", "id": "speaker", "name": ""]]
+    if UIDevice.current.userInterfaceIdiom == .phone { routes.append(["kind": "earpiece", "id": "earpiece", "name": ""]) }
+    for i in s.availableInputs ?? [] where i.portType != .builtInMic {
+      let k = Self.routeKind(i.portType)
+      routes.append(["kind": k, "id": Self.routeId(k, i.portName), "name": i.portName, "port": i.portType.rawValue])
+    }
+    if !["speaker", "earpiece", "system"].contains(kind), !routes.contains(where: { ($0["id"] as? String) == Self.routeId(kind, name) }) {
+      routes.append(["kind": kind, "id": Self.routeId(kind, name), "name": name, "port": out?.portType.rawValue ?? ""])
+    }
+    return ["type": "audioRoute", "headset": Self.headsetAttached(), "port": out?.portType.rawValue ?? "", "name": name,
+            "reason": reason, "speaker": out?.portType == .builtInSpeaker, "kind": kind, "id": Self.routeId(kind, name),
+            "routes": routes, "source": source, "user": userRoute != nil]
+  }
+
+  /// Apply an explicit pick. Speaker overrides any headset (like FaceTime); Phone moves input to the built-in mic so
+  /// iOS routes output to the receiver; a headset pick selects that headset's input, which routes output to it too.
+  private func applyUserRoute(_ pick: (kind: String, id: String)) {
+    let s = AVAudioSession.sharedInstance()
+    let builtIn = s.availableInputs?.first { $0.portType == .builtInMic }
+    switch pick.kind {
+    case "speaker":
+      try? s.setPreferredInput(builtIn)
+      do { try s.overrideOutputAudioPort(.speaker) } catch { NSLog("[OLCalls] speaker override failed: %@", error.localizedDescription) }
+    case "earpiece":
+      try? s.overrideOutputAudioPort(.none)
+      try? s.setPreferredInput(builtIn)
+    default:
+      try? s.overrideOutputAudioPort(.none)
+      let match = s.availableInputs?.first { Self.routeId(Self.routeKind($0.portType), $0.portName) == pick.id }
+        ?? s.availableInputs?.first { Self.routeKind($0.portType) == pick.kind }
+      if let match { try? s.setPreferredInput(match) } else { try? s.setPreferredInput(nil) } // output-only (A2DP/wired) = system choice
     }
   }
 
@@ -724,6 +790,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // Preferences only — iOS clamps to what the route supports and never throws the call off the session.
     if s.preferredSampleRate != 48_000 { try? s.setPreferredSampleRate(48_000) }
     if abs(s.preferredIOBufferDuration - 0.01) > 0.0005 { try? s.setPreferredIOBufferDuration(0.01) }
+    if let pick = userRoute { applyUserRoute(pick); return }
     let wantSpeaker = speaker && !headset
     let onSpeaker = s.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
     if wantSpeaker != onSpeaker {
@@ -736,6 +803,11 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   private func applySpeakerOverride() {
+    if let pick = userRoute {
+      applyUserRoute(pick)
+      reportActualRoute(reason: "override")
+      return
+    }
     let s = AVAudioSession.sharedInstance()
     let wantSpeaker = speaker && !Self.headsetAttached()
     let onSpeaker = s.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
@@ -753,7 +825,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let port = out?.portType.rawValue ?? ""
     let onSpeaker = out?.portType == .builtInSpeaker
     NSLog("[OLCalls] audio route (%@): %@ speaker=%d", reason, port, onSpeaker ? 1 : 0)
-    emit(["type": "audioRoute", "headset": Self.headsetAttached(), "port": port, "name": out?.portName ?? "", "reason": 0, "speaker": onSpeaker, "source": reason])
+    emit(routePayload(reason: 0, source: reason))
   }
 
   /// North-American ringback (440 + 480 Hz, 2 s on / 4 s off), synthesized once as 16-bit 48 kHz mono PCM WAV.

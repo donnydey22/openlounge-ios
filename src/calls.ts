@@ -38,13 +38,31 @@ export const nativeCallsAvailable = (): boolean => native() != null;
 
 const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
+const ROUTE_KINDS = new Set(['speaker', 'earpiece', 'wired', 'bluetooth', 'usb', 'car', 'system']);
+const str = (v: unknown, n: number) => (typeof v === 'string' ? v.slice(0, n) : '');
+function routeEntry(x: unknown) {
+  const r = (x && typeof x === 'object' ? x : {}) as Record<string, unknown>;
+  const kind = typeof r.kind === 'string' && ROUTE_KINDS.has(r.kind) ? r.kind : '';
+  return kind ? { kind, id: str(r.id, 96), name: str(r.name, 80), port: str(r.port, 40) } : null;
+}
+/** Actual output route + available outputs (route picker). Older pages read only headset/speaker/port/name. */
+export function sanitizeAudioRoute(a: Record<string, unknown>) {
+  const cur = routeEntry(a);
+  const routes = Array.isArray(a.routes) ? a.routes.slice(0, 12).map(routeEntry).filter((r): r is NonNullable<typeof r> => !!r) : [];
+  return {
+    headset: a.headset === true, speaker: a.speaker === true, port: str(a.port, 40), name: str(a.name, 80),
+    reason: typeof a.reason === 'number' ? a.reason : 0, source: str(a.source, 20),
+    ...(cur ? { kind: cur.kind, id: cur.id } : {}), ...(routes.length ? { routes } : {}), ...(a.user === true ? { user: true } : {}),
+  };
+}
+
 export function parseCallAction(raw: unknown): CallAction | null {
   try {
     const a = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
     if (!a || typeof a.type !== 'string') return null;
     if (a.type === 'audio') return { type: 'audio', reason: typeof a.reason === 'string' ? a.reason.slice(0, 40) : 'callkit' };
     // Actual output route (Speaker/Phone button truth). Previously dropped here, so the page never learned the route.
-    if (a.type === 'audioRoute') return { type: 'audioRoute', headset: a.headset === true, speaker: a.speaker === true, port: typeof a.port === 'string' ? a.port.slice(0, 40) : '', name: typeof a.name === 'string' ? a.name.slice(0, 80) : '', reason: typeof a.reason === 'number' ? a.reason : 0 } as unknown as CallAction;
+    if (a.type === 'audioRoute') return { type: 'audioRoute', ...sanitizeAudioRoute(a) } as unknown as CallAction;
     if (a.type === 'mute') return typeof a.muted === 'boolean' ? { type: 'mute', muted: a.muted } : null;
     if ((a.type === 'answer' || a.type === 'decline' || a.type === 'hangup') && typeof a.callId === 'string') {
       if (a.type !== 'hangup' && !CALL_ID.test(a.callId)) return null;

@@ -98,7 +98,7 @@ export type PageCallMessage =
   | { type: 'call:connected'; callId: string }
   | { type: 'call:ended'; callId: string }
   | { type: 'call:muted'; muted: boolean }
-  | { type: 'call:audioRoute'; speaker: boolean }
+  | { type: 'call:audioRoute'; speaker: boolean; route?: string; deviceId?: string; user?: boolean }
   | { type: 'call:ringbackStop' }
   | { type: 'call:ringtonePrepare' };
 
@@ -128,7 +128,13 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
     case 'call:muted':
       return typeof m.muted === 'boolean' ? wrap({ type: 'call:muted', muted: m.muted }) : null;
     case 'call:audioRoute':
-      return typeof m.speaker === 'boolean' ? wrap({ type: 'call:audioRoute', speaker: m.speaker }) : null;
+      if (typeof m.speaker !== 'boolean') return null;
+      return wrap({
+        type: 'call:audioRoute', speaker: m.speaker,
+        ...(typeof m.route === 'string' && /^(speaker|earpiece|wired|bluetooth|usb|car)$/.test(m.route) ? { route: m.route } : {}),
+        ...(typeof m.deviceId === 'string' && m.deviceId.length <= 96 ? { deviceId: m.deviceId } : {}),
+        ...(m.user === true ? { user: true } : {}),
+      });
     case 'call:ringbackStop':
       // the page's web ringback took over (native did not confirm playing): native must stay silent
       return wrap({ type: 'call:ringbackStop' });

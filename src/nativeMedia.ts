@@ -59,7 +59,7 @@ type Transport = {
 };
 type Producer = { id: string; pause(): void; resume(): void; close(): void; replaceTrack?(o: { track: MediaStreamTrack }): Promise<void>; rtpSender?: { getParameters(): any; setParameters(p: any): Promise<void> } };
 type Consumer = { id: string; kind: string; track: MediaStreamTrack; close(): void };
-type NativeQualityStep = { audioBps: number; videoBps?: number; videoFps?: number; videoScale?: number };
+type NativeQualityStep = { audioBps: number; voiceBps?: number; videoBps?: number; videoFps?: number; videoScale?: number };
 type VideoCodecCapability = { kind?: string; mimeType?: string; parameters?: Record<string, unknown> };
 type SenderEncoding = { maxBitrate?: number; maxFramerate?: number; scaleResolutionDownBy?: number };
 const NATIVE_CAMERA_MAX_BPS = 850_000;
@@ -185,8 +185,8 @@ export class NativeMediaSession {
     this.producer = await this.send.produce({
       track,
       codecOptions: { opusStereo: false, opusDtx: false, // DTX off: onset clipping read as quiet (web parity, Oct 16)
-        opusFec: true, opusMaxPlaybackRate: 48000 },
-      encodings: [{ maxBitrate: 48_000, priority: 'high', networkPriority: 'high' } as never],
+        opusFec: true, opusMaxPlaybackRate: 48000, opusMaxAverageBitrate: 64000 }, // 64k cap (Oct 23 clarity; web parity)
+      encodings: [{ maxBitrate: 64_000, priority: 'high', networkPriority: 'high' } as never],
       ...(this.streamId ? { streamId: this.streamId } : {}),
       appData: { source: 'mic', native: true },
     });
@@ -425,7 +425,10 @@ export class NativeMediaSession {
     this.pendingLadder = {
       // The shared ladder reserves the 16 kbps Opus floor before camera bitrate. Do not reintroduce a local 24/60 kbps
       // clamp here: it would oversubscribe the weakest native link the page has already measured.
-      audioBps: tier ? tier.audioBps : Math.max(16_000, Math.round(step.audioBps || 48_000)),
+      // voiceBps (pages from Oct 23): the page's Opus cap — 32 kbps floor, 64 kbps top (FEC needs headroom on loss).
+      // Older pages send only audioBps → previous behaviour.
+      audioBps: Number.isFinite(step.voiceBps) ? Math.max(32_000, Math.min(64_000, Math.round(step.voiceBps!)))
+        : tier ? tier.audioBps : Math.max(16_000, Math.round(step.audioBps || 48_000)),
       ...(Number.isFinite(step.videoBps) ? { videoBps: Math.min(NATIVE_CAMERA_MAX_BPS, Math.max(1_000, Math.round(step.videoBps!))) } : {}),
       ...(Number.isFinite(step.videoFps) ? { videoFps: Math.max(8, Math.min(30, Math.round(step.videoFps!))) } : {}),
       ...(Number.isFinite(step.videoScale) ? { videoScale: Math.max(1, Math.min(4, Number(step.videoScale))) } : {}),
@@ -727,6 +730,7 @@ export class NativeMediaController {
       case 'ladder':
         return (await this.session?.ladder({
           audioBps: Number(cmd.audioBps) || 48_000,
+          ...(typeof cmd.voiceBps === 'number' ? { voiceBps: cmd.voiceBps } : {}),
           ...(typeof cmd.videoBps === 'number' ? { videoBps: cmd.videoBps } : {}),
           ...(typeof cmd.videoFps === 'number' ? { videoFps: cmd.videoFps } : {}),
           ...(typeof cmd.videoScale === 'number' ? { videoScale: cmd.videoScale } : {}),
