@@ -301,11 +301,9 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       buildNumber: ${JSON.stringify(appBuild)},
       getVersion: function () { return ${JSON.stringify(appVersion)}; },
       getBuildNumber: function () { return ${JSON.stringify(appBuild)}; },
-      // FX-065 (Oct 24): rolled back to the b45 (0.3.16, d2e0308) video path — nativeVideo and nativeQualityV1 are NOT
-      // advertised, so video calls use WKWebView getUserMedia + the page's tiles (app-owned video from 70d4f4f is dormant).
       // nativeVideo is deliberately separate from nativeMedia: legacy audio-only wrappers must retain WebView video.
       // nativeQualityV1 gates serialized app-owned camera adaptation to this paired-media wrapper release.
-      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls', 'nativeMedia'" : ''}]),
+      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'" : ''}]),
       // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
       nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
       msReply: function (id, ok, result, error) { post({ __ol: 1, method: 'msReply', value: { id: String(id), ok: !!ok, result: result === undefined ? null : result, error: error ? String(error) : undefined } }); },
