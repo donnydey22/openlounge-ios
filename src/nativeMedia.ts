@@ -20,6 +20,7 @@ import { mediaDevices, MediaStream, registerGlobals, type MediaStreamTrack } fro
 import { CHATSWAP_RTC } from './callMediaProfile';
 
 type Req = <T>(event: string, data: Record<string, unknown>) => Promise<T>;
+export const RESTART_ICE_TIMEOUT_MS = 4_000;
 type Emit = (detail: Record<string, unknown>) => void;
 
 let globalsDone = false;
@@ -305,8 +306,11 @@ export class NativeMediaSession {
     t.on('connectionstatechange', (state: string) => {
       if (this.closed) return;
       if (state === 'connected') {
-        this.iceRestarted.delete(direction);
+        const recovered = this.iceRestarted.delete(direction);
         if (this.connected) this.emit({ state: 'connected' });
+        // FX-063: after an ICE recovery, re-consume (a producer may have arrived or been replaced during the dip) and
+        // re-assert resume on every consumer (idempotent on the SFU) so audio never stays paused after the restart.
+        if (recovered && this.connected) void this.afterRecovery();
         return;
       }
       if (this.connected && (state === 'disconnected' || state === 'failed')) {
@@ -327,7 +331,12 @@ export class NativeMediaSession {
 
   private async restartIce(t: Transport, direction: string) {
     try {
-      const x = await this.r<{ ok: boolean; iceParameters?: unknown }>('ms:transport:restartIce', { direction, transportId: t.id });
+      // FX-063: a stalled page socket (call c0f559f2: 8 s 'Request timed out') must not hold up the next attempt.
+      let timer: ReturnType<typeof setTimeout> | null = null;
+      const x = await Promise.race([
+        this.r<{ ok: boolean; iceParameters?: unknown }>('ms:transport:restartIce', { direction, transportId: t.id }),
+        new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('restartIce timed out')), RESTART_ICE_TIMEOUT_MS); }),
+      ]).finally(() => { if (timer) clearTimeout(timer); });
       if (x.ok && x.iceParameters && !this.closed) await t.restartIce({ iceParameters: x.iceParameters });
     } catch {}
   }
@@ -339,6 +348,15 @@ export class NativeMediaSession {
       if (this.closed || !this.iceRestarted.has(direction) || t.connectionState === 'connected') return;
       await this.restartIce(t, direction);
     }
+  }
+
+  private async afterRecovery() {
+    await this.syncConsumers().catch(() => {});
+    for (const c of [...this.consumers.values()]) {
+      if (this.closed) return;
+      await this.resumeConsumer(c.id).catch(() => {});
+    }
+    this.diag('ice-recovered', { consumers: this.consumers.size });
   }
 
   async restartIceAll() {
