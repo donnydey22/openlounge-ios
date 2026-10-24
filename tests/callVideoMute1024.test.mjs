@@ -44,3 +44,9 @@ test('FX-064 outgoing start is CallKit-native: CXStartCallAction → startedConn
   assert.match(s, /reportOutgoingCall\(with: action\.callUUID, startedConnectingAt: Date\(\)\)/);
   assert.match(s, /reportOutgoingCall\(with: c\.uuid, connectedAt: Date\(\)\)/);
 });
+
+test('FX-065 iPhone video calls use the b45 (0.3.16) WKWebView media path: nativeVideo is not advertised', () => {
+  const b = readFileSync(new URL('../src/bridge.ts', import.meta.url), 'utf8');
+  assert.match(b, /nativeCalls \? ", 'calls', 'nativeMedia'" : ''/);
+  assert.doesNotMatch(b, /'nativeVideo'|'nativeQualityV1'/);
+});
