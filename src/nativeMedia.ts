@@ -13,6 +13,7 @@
 // App → page events (CustomEvent 'openlounge:native-media'): {state:'connected'|'disconnected'|'failed'|'remote-audio'|'remote-video', on?:boolean}
 // App-only video state is delivered directly to App.tsx; MediaStream values are never serialized into the WebView.
 import { Platform } from 'react-native';
+import { pollConsumers } from './consumeUntil';
 // Stream's WebRTC build (StreamWebRTC 125.6422 on iOS, io.getstream:stream-webrtc-android:1.3.10 on Android): the same
 // m125 WebRTC ChatSwap ships. No LiveKit native code in the call lane.
 import { mediaDevices, MediaStream, registerGlobals, type MediaStreamTrack } from '@stream-io/react-native-webrtc';
@@ -355,12 +356,35 @@ export class NativeMediaSession {
     }
   }
 
+  /** FX-063: keep consuming until the peer's media is here. An empty consume (peer not produced yet) is not success. */
   private async syncConsumersRetrying() {
-    for (let i = 0; i < 6 && !this.closed; i++) {
-      try { await this.syncConsumers(); return; } catch {
-        await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
-      }
+    await pollConsumers({
+      sync: () => this.syncConsumers(),
+      done: () => this.hasRemote('audio') && (!this.nativeVideo || this.hasRemote('video')),
+      closed: () => this.closed,
+    });
+  }
+  private hasRemote(kind: string) {
+    for (const c of this.consumers.values()) if (c.kind === kind) return true;
+    return false;
+  }
+  /** FX-063 diagnostics: app-side media events for the page to forward (ignored by pages that predate them). */
+  private diag(ev: string, data: Record<string, unknown> = {}) {
+    this.emit({ state: 'media-diag', callId: this.callId, ev, ...data });
+  }
+  /** FX-063: report the first decoded remote video frame (or that none arrived) so a black tile is visible in logs. */
+  private async watchFirstFrame(c: Consumer) {
+    const t0 = Date.now();
+    while (!this.closed && this.consumers.has(c.id) && Date.now() - t0 < 20_000) {
+      try {
+        const stats = await (c as unknown as { getStats(): Promise<Map<string, Record<string, unknown>>> }).getStats();
+        for (const r of stats.values()) {
+          if (r.type === 'inbound-rtp' && Number(r.framesDecoded ?? 0) > 0) { this.diag('first-remote-video-frame', { ms: Date.now() - t0 }); return; }
+        }
+      } catch {}
+      await new Promise((r) => setTimeout(r, 500));
     }
+    if (!this.closed && this.consumers.has(c.id)) this.diag('no-remote-video-frame', { ms: Date.now() - t0 });
   }
 
   syncConsumers(): Promise<void> {
@@ -378,6 +402,8 @@ export class NativeMediaSession {
             rtpCapabilities: this.device!.rtpCapabilities,
           });
           if (!x.ok) throw new Error('Mediasoup consumer setup failed');
+          const got = x.consumers ?? [];
+          this.diag('consume-result', { n: got.length, kinds: got.map((p) => p.kind).join(',') });
           for (const p of x.consumers ?? []) {
             // A native-video grant consumes the matching video producer on this same connection; audio-only calls stay unchanged.
             if (this.closed || this.consumers.has(p.id) || (p.kind !== 'audio' && (!this.nativeVideo || p.kind !== 'video'))) continue;
@@ -409,6 +435,7 @@ export class NativeMediaSession {
             await this.resumeConsumer(c.id);
             if (c.kind === 'audio') this.emit({ state: 'remote-audio' });
             else if (this.nativeVideo) {
+              void this.watchFirstFrame(c);
               this.emitVideoState();
               // The WebView cannot inspect the native track. It receives only availability so its existing overlay
               // selects the remote full-screen tile and local PiP; App.tsx keeps both MediaStreams native.

@@ -10,6 +10,8 @@ const source = () => readFileSync('src/nativeMedia.ts', 'utf8');
 const appSource = () => readFileSync('App.tsx', 'utf8');
 const dir = mkdtempSync(join(tmpdir(), 'nm-'));
 let js = ts.transpileModule(source(), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+writeFileSync(join(dir, 'consumeUntil.mjs'), ts.transpileModule(readFileSync('src/consumeUntil.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
+js = js.replace("from './consumeUntil'", "from './consumeUntil.mjs'");
 js = js.replace(/import \{[^}]*\} from '@stream-io\/react-native-webrtc';/, 'const mediaDevices = globalThis.__md; class MediaStream { constructor(t=[]){this.t=t;} getTracks(){return this.t;} getAudioTracks(){return this.t.filter((x)=>x.kind===\'audio\');} getVideoTracks(){return this.t.filter((x)=>x.kind===\'video\');} addTrack(t){this.t.push(t);} removeTrack(t){this.t=this.t.filter((x)=>x!==t);} toURL(){return \"native\";} }')
   .replace(/import \{ CHATSWAP_RTC \} from '.\/callMediaProfile';/, "const registerGlobals = () => {}; const CHATSWAP_AUDIO = { echoCancellation: true, autoGainControl: true, noiseSuppression: true }; const CHATSWAP_RTC = { bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' };")
   .replace(/import \{ Platform \} from 'react-native';/, "const Platform = globalThis.__rnPlatform ?? { OS: 'ios' };")
