@@ -1,8 +1,11 @@
 import AVFoundation
-#if canImport(LiveKitWebRTC)
-import LiveKitWebRTC
-private typealias RTCAudioSession = LKRTCAudioSession
-private typealias RTCAudioSessionConfiguration = LKRTCAudioSessionConfiguration
+// Stream's WebRTC build (StreamWebRTC 125.6422, m125: the same WebRTC as ChatSwap's stream-webrtc-android 1.3.10),
+// shared with @stream-io/react-native-webrtc. Classes keep the stock RTC prefix. Fail the build loudly rather than
+// ship a call lane whose CallKit audio silently never starts.
+#if canImport(StreamWebRTC)
+import StreamWebRTC
+#else
+#error("OpenLoungeCalls requires StreamWebRTC (via @stream-io/react-native-webrtc)")
 #endif
 
 /// Native call media (src/nativeMedia.ts): CallKit owns the AVAudioSession; WebRTC's audio unit only runs while
@@ -11,7 +14,7 @@ private typealias RTCAudioSessionConfiguration = LKRTCAudioSessionConfiguration
 /// no fresh capture: the "Keiko can't hear the iPhone caller" race is gone by construction).
 enum OLNativeAudio {
   static func setUp(video: Bool = false, session: AVAudioSession = AVAudioSession.sharedInstance()) {
-    #if canImport(LiveKitWebRTC)
+    #if canImport(StreamWebRTC)
     let rtc = RTCAudioSession.sharedInstance()
     rtc.useManualAudio = true
     rtc.isAudioEnabled = false
@@ -32,7 +35,7 @@ enum OLNativeAudio {
   }
 
   static func didActivate(_ session: AVAudioSession, video: Bool = false) {
-    #if canImport(LiveKitWebRTC)
+    #if canImport(StreamWebRTC)
     // The session was configured by CallKit immediately before this callback; make the manual WebRTC audio unit match.
     setUp(video: video, session: session)
     let rtc = RTCAudioSession.sharedInstance()
@@ -44,14 +47,14 @@ enum OLNativeAudio {
   /// idle after a call: WebRTC's audio unit fully stopped so nothing keeps the session in voice-processing/call shape
   /// (that left-over state made the next ringtone thin and quiet on iPhone b39)
   static func stopIdle() {
-    #if canImport(LiveKitWebRTC)
+    #if canImport(StreamWebRTC)
     let rtc = RTCAudioSession.sharedInstance()
     if rtc.isAudioEnabled { rtc.isAudioEnabled = false }
     #endif
   }
 
   static func didDeactivate(_ session: AVAudioSession) {
-    #if canImport(LiveKitWebRTC)
+    #if canImport(StreamWebRTC)
     let rtc = RTCAudioSession.sharedInstance()
     rtc.isAudioEnabled = false
     rtc.audioSessionDidDeactivate(session)

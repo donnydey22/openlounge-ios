@@ -237,8 +237,7 @@
           "faceIDPermission": "Open Lounge uses Face ID to unlock the app when you turn on App lock."
         }
       ],
-      "./plugins/withFirebasePhoneAuthScheme.js",
-      "@livekit/react-native-expo-plugin"
+      "./plugins/withFirebasePhoneAuthScheme.js"
     ],
     "extra": {
       "startUrl": "https://openlounge.app",

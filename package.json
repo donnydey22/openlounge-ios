@@ -15,9 +15,6 @@
     "assets": "node scripts/generate-assets.mjs"
   },
   "dependencies": {
-    "@livekit/react-native": "^3.0.0",
-    "@livekit/react-native-expo-plugin": "^1.0.3",
-    "@livekit/react-native-webrtc": "^144.2.0",
     "@react-native-firebase/app": "^26.4.0",
     "@react-native-firebase/auth": "^26.4.0",
     "@react-native-firebase/messaging": "^26.4.0",
@@ -35,7 +32,7 @@
     "expo-status-bar": "~57.0.1",
     "expo-system-ui": "~57.0.4",
     "expo-web-browser": "~57.0.3",
-    "livekit-client": "^2.22.4",
+    "@stream-io/react-native-webrtc": "125.4.5",
     "mediasoup-client": "^3.24.5",
     "react": "19.2.3",
     "react-native": "0.86.3",

@@ -7,7 +7,7 @@ import * as SystemUI from 'expo-system-ui';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, type AppStateStatus, Keyboard, type LayoutChangeEvent, Linking, Platform, Share, StyleSheet, View } from 'react-native';
-import { RTCView } from '@livekit/react-native-webrtc';
+import { RTCView } from '@stream-io/react-native-webrtc';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
