@@ -356,6 +356,9 @@ export class NativeMediaSession {
           for (const p of x.consumers ?? []) {
             // A native-video grant consumes the matching video producer on this same connection; audio-only calls stay unchanged.
             if (this.closed || this.consumers.has(p.id) || (p.kind !== 'audio' && (!this.nativeVideo || p.kind !== 'video'))) continue;
+            // FX-061: never consume this phone's own producers as the "remote" feed (self-view in the remote tile).
+            const pid = (p as { producerId?: unknown }).producerId;
+            if (pid && (pid === this.producer?.id || pid === this.videoProducer?.id)) continue;
             const c = await this.recv!.consume(p);
             if (this.closed) { c.close(); continue; }
             if (c.kind === 'video' && this.nativeVideo) {

@@ -123,6 +123,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// the page's web ringback owns the tone for this call (call:ringbackStop) → native stays silent
   private var webOwnsRingback = false
   private var pageMuted: Bool?
+  /// FX-063: page-requested mute values whose CXSetMutedCallAction has not been performed yet (in tap order). Fast taps
+  /// queue several transactions; matching each performed action against this FIFO (not just the latest value) keeps
+  /// those echoes from being reported back to the page as new user mutes, which made the Mute button flicker.
+  private var pendingPageMutes: [Bool] = []
 
   // MARK: - lifecycle / JS
 
@@ -466,7 +470,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
     action.fulfill()
-    if pageMuted == action.isMuted { return } // echo of a page-initiated change
+    if let i = pendingPageMutes.firstIndex(of: action.isMuted) { pendingPageMutes.removeSubrange(0...i); return } // echo of a page tap
+    if pageMuted == action.isMuted { return } // already the page's state
     pageMuted = action.isMuted
     emit(["type": "mute", "muted": action.isMuted])
   }
@@ -640,6 +645,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .remoteEnded)
       }
       pageMuted = nil
+      pendingPageMutes = []
+    pendingPageMutes = []
       stopRingback()
       restoreAudioIfIdle(force: true)
 
@@ -647,7 +654,12 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       guard let muted = m["muted"] as? Bool else { return }
       pageMuted = muted
       if let c = calls.values.first(where: { !$0.ended && ($0.answered || !$0.incoming) }) {
-        controller.request(CXTransaction(action: CXSetMutedCallAction(call: c.uuid, muted: muted))) { _ in }
+        pendingPageMutes.append(muted)
+        if pendingPageMutes.count > 8 { pendingPageMutes.removeFirst(pendingPageMutes.count - 8) }
+        controller.request(CXTransaction(action: CXSetMutedCallAction(call: c.uuid, muted: muted))) { [weak self] error in
+          guard error != nil else { return }
+          DispatchQueue.main.async { if let i = self?.pendingPageMutes.firstIndex(of: muted) { self?.pendingPageMutes.remove(at: i) } }
+        }
       }
 
     case "call:ringbackStop":
@@ -940,6 +952,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     callVideo = false
     stopRingback()
     pageMuted = nil
+    pendingPageMutes = []
     let s = AVAudioSession.sharedInstance()
     try? s.overrideOutputAudioPort(.none)
     try? s.setCategory(saved.0, mode: saved.1, options: saved.2)

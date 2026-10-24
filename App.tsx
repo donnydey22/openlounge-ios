@@ -854,7 +854,11 @@ function Shell() {
   const pipTile = visibleNativeVideo && nativeVideo?.local && windowFrame
     ? nativePipFrame(windowFrame, insets, true)
     : null;
-  const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? nativeVideo?.local : nativeVideo?.remote;
+  // FX-061: the remote tile only ever renders a stream that carries none of this phone's own camera tracks. If the
+  // remote slot is empty (or would alias the local capture) it stays unrendered: the page paints the placeholder.
+  const localTrackIds = new Set((nativeVideo?.local?.getTracks?.() ?? []).map((t: any) => t.id));
+  const remoteStream = nativeVideo?.remote && !(nativeVideo.remote.getTracks?.() ?? []).some((t: any) => localTrackIds.has(t.id)) && (!nativeVideo.local || nativeVideo.remote.toURL() !== nativeVideo.local.toURL()) ? nativeVideo.remote : null;
+  const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? null : remoteStream;
   // Fill edge to edge like FaceTime/Telegram. Only a known landscape source (wider than tall) on the big tile falls
   // back to aspect-fit so a rotated/landscape caller is not over-cropped; unknown dimensions default to cover.
   const bigFit = (kind: 'local' | 'remote'): 'cover' | 'contain' => {
