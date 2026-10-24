@@ -457,6 +457,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     c.ended = true
     stopTimers(c)
     calls[action.callUUID] = nil
+    pageMuted = nil; pendingPageMutes = [] // FX-063: no stale mute echo leaks into the next call's start
     if c.incoming && !c.answered {
       declineOnServer(c.callId, declineToken: c.declineToken)
       c.declineToken = nil // single-use
@@ -646,7 +647,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       }
       pageMuted = nil
       pendingPageMutes = []
-    pendingPageMutes = []
       stopRingback()
       restoreAudioIfIdle(force: true)
 
