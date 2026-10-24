@@ -188,6 +188,9 @@ export class NativeMediaSession {
         opusFec: true, opusMaxPlaybackRate: 48000, opusMaxAverageBitrate: 64000 }, // 64k cap (Oct 23 clarity; web parity)
       encodings: [{ maxBitrate: 64_000, priority: 'high', networkPriority: 'high' } as never],
       ...(this.streamId ? { streamId: this.streamId } : {}),
+      // FX-062: the controller owns capture across rebuilds. mediasoup-client's default stopTracks:true ended the mic and
+      // camera on the first failed connect, so every rebuild failed 'track ended' (iPhone-caller black remote video).
+      stopTracks: false,
       appData: { source: 'mic', native: true },
     });
     if (this.nativeVideo) {
@@ -199,7 +202,10 @@ export class NativeMediaSession {
       }
     }
     this.check();
-    await this.syncConsumers();
+    // FX-062: consuming the peer's media (consume + DTLS on recv + resume: several round trips on a ~1.5 s-RTT cellular
+    // link) no longer counts against CONNECT_TIMEOUT_MS. It used to expire the 12 s budget before the remote video was
+    // resumed, tearing the call down. The send path still gates 'connected'; consumers keep syncing and retrying.
+    void this.syncConsumersRetrying();
     await waitConnected(this.send);
     this.check();
     this.connected = true;
@@ -221,6 +227,7 @@ export class NativeMediaSession {
       // reacquiring the camera or multiplying the video budget across simulcast layers.
       encodings: [{ maxBitrate: NATIVE_CAMERA_MAX_BPS, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }] as never,
       appData: { source: 'camera', native: true },
+      stopTracks: false, // FX-062
     };
     try {
       const vp8 = preferredVP8(this.device?.rtpCapabilities);
@@ -338,6 +345,24 @@ export class NativeMediaSession {
     if (this.recv) await this.restartIce(this.recv, 'recv');
   }
 
+  /** FX-062: consumer:resume is idempotent on the SFU; a slow cellular round trip must not leave the remote video paused. */
+  private async resumeConsumer(id: string) {
+    for (let i = 0; ; i++) {
+      try { await this.r('ms:consumer:resume', { consumerId: id }); return; } catch (e) {
+        if (this.closed || i >= 3) throw e;
+        await new Promise((r) => setTimeout(r, 500 * (i + 1)));
+      }
+    }
+  }
+
+  private async syncConsumersRetrying() {
+    for (let i = 0; i < 6 && !this.closed; i++) {
+      try { await this.syncConsumers(); return; } catch {
+        await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+      }
+    }
+  }
+
   syncConsumers(): Promise<void> {
     if (this.closed || !this.recv || !this.device) return Promise.resolve();
     if (this.syncing) {
@@ -381,7 +406,7 @@ export class NativeMediaSession {
               }, { once: true });
             }
             this.consumers.set(c.id, c);
-            await this.r('ms:consumer:resume', { consumerId: c.id });
+            await this.resumeConsumer(c.id);
             if (c.kind === 'audio') this.emit({ state: 'remote-audio' });
             else if (this.nativeVideo) {
               this.emitVideoState();
@@ -564,6 +589,11 @@ export class NativeMediaController {
         const b = this.building;
         if (b && b.callId === callId && b.tcpOnly === tcpOnly) return b.p;
         cur?.close();
+        // FX-062: never hand a rebuild an ended mic (or camera): drop that capture so it is taken fresh below.
+        if (this.capture?.callId === callId && this.capture.stream.getTracks().some((t) => t.readyState === 'ended')) {
+          this.capture.stream.getTracks().forEach((t) => t.stop());
+          this.capture = null;
+        }
         const requestedVideo = cmd.video === true && cmd.nativeVideo === true;
         const existing = this.capture?.callId === callId ? this.capture : null;
         const nativeVideo = existing?.nativeVideo ?? requestedVideo;
