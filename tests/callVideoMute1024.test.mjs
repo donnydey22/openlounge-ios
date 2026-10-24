@@ -44,3 +44,16 @@ test('FX-064 outgoing start is CallKit-native: CXStartCallAction → startedConn
   assert.match(s, /reportOutgoingCall\(with: action\.callUUID, startedConnectingAt: Date\(\)\)/);
   assert.match(s, /reportOutgoingCall\(with: c\.uuid, connectedAt: Date\(\)\)/);
 });
+
+test('native video owns mic + camera: WebView capture is denied while app-owned call video is live', () => {
+  const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /mediaCapturePermissionGrantType=\{nativeVideo \? 'deny' : 'grantIfSameHostElseDeny'\}/);
+});
+
+test('native video layering: video under a transparent page, self-view pinned below the top bar, never the remote tile', () => {
+  const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
+  assert.match(app, /nativeVideoLayer: \{ \.\.\.StyleSheet\.absoluteFill, zIndex: 0 \}/);
+  assert.match(app, /nativeWebOverlay: \{ zIndex: 1 \}/);
+  assert.match(app, /const streamFor = \(kind: 'local' \| 'remote'\) => kind === 'local' \? null : remoteStream;/);
+  assert.match(app, /nativePipFrame\(windowFrame, insets, true\)/);
+});

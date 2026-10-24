@@ -909,7 +909,9 @@ function Shell() {
           // Audio rooms (LiveKit/WebRTC): WebKit itself runs AVAudioSession as playAndRecord with
           // defaultToSpeaker + Bluetooth (HFP/A2DP) + AirPlay while the mic is captured. Grant getUserMedia for
           // the page's own host only (openlounge.app), deny cross-origin frames, so WebKit never re-prompts.
-          mediaCapturePermissionGrantType="grantIfSameHostElseDeny"
+          // Native-video calls (spec v3): the app owns mic + camera, so the page may never grab either while app-owned
+          // call media is live (a WebKit capture would steal the mic / start a second camera and fight the RTCViews).
+          mediaCapturePermissionGrantType={nativeVideo ? 'deny' : 'grantIfSameHostElseDeny'}
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           allowsAirPlayForMediaPlayback
