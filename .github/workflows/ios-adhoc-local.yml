@@ -1,7 +1,7 @@
 name: iOS ad hoc build (eas --local on macOS)
 on:
   push:
-    branches: [feat/audio-route-udp-first]
+    branches: [feat/audio-route-udp-first, fix/native-video-1024]
     paths-ignore: ['**.md']
 permissions:
   contents: read
