@@ -367,7 +367,7 @@ export class NativeMediaSession {
   /** FX-062: consumer:resume is idempotent on the SFU; a slow cellular round trip must not leave the remote video paused. */
   private async resumeConsumer(id: string) {
     for (let i = 0; ; i++) {
-      try { await this.r('ms:consumer:resume', { consumerId: id }); return; } catch (e) {
+      try { await this.r('ms:consumer:resume', { consumerId: id }); this.resumed.add(id); return; } catch (e) {
         if (this.closed || i >= 3) throw e;
         await new Promise((r) => setTimeout(r, 500 * (i + 1)));
       }
@@ -382,8 +382,10 @@ export class NativeMediaSession {
       closed: () => this.closed,
     });
   }
+  /** FX-063b: consumers whose resume the SFU acknowledged; a consumed-but-paused one is not "remote media here". */
+  private resumed = new Set<string>();
   private hasRemote(kind: string) {
-    for (const c of this.consumers.values()) if (c.kind === kind) return true;
+    for (const c of this.consumers.values()) if (c.kind === kind && this.resumed.has(c.id)) return true;
     return false;
   }
   /** FX-063 diagnostics: app-side media events for the page to forward (ignored by pages that predate them). */
@@ -422,6 +424,10 @@ export class NativeMediaSession {
           if (!x.ok) throw new Error('Mediasoup consumer setup failed');
           const got = x.consumers ?? [];
           this.diag('consume-result', { n: got.length, kinds: got.map((p) => p.kind).join(',') });
+          // FX-063b: re-assert resume on any consumer whose earlier resume failed (it would otherwise stay paused).
+          for (const c of [...this.consumers.values()]) {
+            if (!this.closed && !this.resumed.has(c.id)) await this.resumeConsumer(c.id).catch(() => this.diag('resume-failed', { kinds: c.kind }));
+          }
           for (const p of x.consumers ?? []) {
             // A native-video grant consumes the matching video producer on this same connection; audio-only calls stay unchanged.
             if (this.closed || this.consumers.has(p.id) || (p.kind !== 'audio' && (!this.nativeVideo || p.kind !== 'video'))) continue;
@@ -450,7 +456,7 @@ export class NativeMediaSession {
               }, { once: true });
             }
             this.consumers.set(c.id, c);
-            await this.resumeConsumer(c.id);
+            await this.resumeConsumer(c.id).catch(() => this.diag('resume-failed', { kinds: c.kind }));
             if (c.kind === 'audio') this.emit({ state: 'remote-audio' });
             else if (this.nativeVideo) {
               void this.watchFirstFrame(c);
