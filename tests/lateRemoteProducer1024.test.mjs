@@ -38,3 +38,14 @@ test('nativeMedia wires the poller and diagnostics', () => {
   assert.match(s, /void this\.watchFirstFrame\(c\)/);
   assert.match(s, /this\.syncAgain = true;\n\s*return this\.syncing/); // consumerAvailable during a slow consume re-runs
 });
+// Held behaviour: replay of the Oct 23 successful iPhone video calls (c4c780d7: first consume empty, Keiko's audio
+// +1.7 s, video +3.1 s; 89a7c572 / 8ea1c4ac: both ready at the first consume). Both must still end with audio+video.
+test('Oct 23 successful-call timelines still produce audio + video', async () => {
+  for (const [audioAt, videoAt] of [[1_700, 3_100], [0, 0]]) {
+    let t = 0; const have = new Set();
+    const ok = await pollConsumers({
+      sync: async () => { t += 120; if (t >= audioAt) have.add('audio'); if (t >= videoAt) have.add('video'); },
+      now: () => t, sleep: async (ms) => { t += ms; }, closed: () => false, done: () => have.has('audio') && have.has('video') });
+    assert.equal(ok, true); assert.ok(t < 6_000, `held timeline took ${t} ms`);
+  }
+});
