@@ -29,6 +29,6 @@ test('ladder on layers: low always active >= 15 fps; upper layers only within bu
 });
 test('wiring: connect cmd sets the flag; publishCamera + ladder use the layered helpers', () => {
   assert.match(src, /s\.simulcast = cmd\.simulcast === true; \/\/ FX-080/);
-  assert.match(src, /encodings: \(this\.simulcast \? nativeCameraEncodings\(true, NATIVE_CAMERA_MAX_BPS\)/);
+  assert.match(src, /\.\.\.\(this\.simulcast \? \{ encodings: nativeCameraEncodings\(true, NATIVE_CAMERA_MAX_BPS\)/);
   assert.match(src, /const plan = layers\.length > 1 \? nativeSimulcastLadder/);
 });

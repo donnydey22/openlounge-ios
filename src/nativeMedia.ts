@@ -251,9 +251,9 @@ export class NativeMediaSession {
       ...(this.streamId ? { streamId: this.streamId } : {}),
       // One proven VP8 encoding. The quality ladder adapts this sender in place (bitrate, resolution and fps) without
       // reacquiring the camera or multiplying the video budget across simulcast layers.
-      // FX-080: 3 layers only when the page asked (connect simulcast:true); else exactly the single encoding above.
-      encodings: (this.simulcast ? nativeCameraEncodings(true, NATIVE_CAMERA_MAX_BPS)
-        : [{ maxBitrate: NATIVE_CAMERA_MAX_BPS, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]) as never,
+      encodings: [{ maxBitrate: NATIVE_CAMERA_MAX_BPS, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }] as never,
+      // FX-080: 3 layers only when the page asked (connect simulcast:true); otherwise the single encoding above, unchanged.
+      ...(this.simulcast ? { encodings: nativeCameraEncodings(true, NATIVE_CAMERA_MAX_BPS) as never } : {}),
       appData: { source: 'camera', native: true },
       stopTracks: false, // FX-062
     };
