@@ -11,12 +11,14 @@ const root = path.resolve(__dirname, '..');
 const origResolve = Module._resolveFilename;
 Module._resolveFilename = function (req, ...rest) {
   if (req === 'expo-constants') return 'expo-constants-stub';
+  if (req === 'expo-application') return 'expo-application-stub';
   return origResolve.call(this, req, ...rest);
 };
 require.cache['expo-constants-stub'] = {
   id: 'expo-constants-stub', filename: 'expo-constants-stub', loaded: true,
   exports: { default: { expoConfig: { version: '0.2.3', extra: { startUrl: 'https://openlounge.app' } } } },
 };
+require.cache['expo-application-stub'] = { id: 'expo-application-stub', filename: 'expo-application-stub', loaded: true, exports: { nativeBuildVersion: null } };
 require.extensions['.ts'] = (m, filename) => {
   const out = ts.transpileModule(fs.readFileSync(filename, 'utf8'), {
     compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020, esModuleInterop: true },
