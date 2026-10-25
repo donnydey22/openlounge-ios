@@ -19,6 +19,27 @@ import { pollConsumers } from './consumeUntil';
 import { mediaDevices, MediaStream, registerGlobals, type MediaStreamTrack } from '@stream-io/react-native-webrtc';
 import { CHATSWAP_RTC } from './callMediaProfile';
 
+// FX-079 anti-freeze, kept in step with the web lane's src/lib/calls/antiFreeze.ts
+export const FREEZE = { minFps: 15, degradationPreference: 'maintain-framerate', keyframeAfterMs: 1_500, resumeAfterMs: 4_000, resyncAfterMs: 8_000, sampleMs: 500 } as const;
+export type FreezeAction = 'keyframe' | 'resume' | 'resync';
+export class FrozenFrameWatchdog {
+  private lastFrames = -1;
+  private lastFrameAt = 0;
+  private done = new Set<FreezeAction>();
+  stalls = 0;
+  push(at: number, frames: number): FreezeAction | null {
+    if (this.lastFrames < 0 || frames > this.lastFrames) { this.lastFrames = frames; this.lastFrameAt = at; this.done.clear(); return null; }
+    const gap = at - this.lastFrameAt;
+    if (gap >= FREEZE.resyncAfterMs && !this.done.has('resync')) { this.done.add('resync'); return 'resync'; }
+    if (gap >= FREEZE.resumeAfterMs && !this.done.has('resume')) { this.done.add('resume'); return 'resume'; }
+    if (gap >= FREEZE.keyframeAfterMs && !this.done.has('keyframe')) { this.done.add('keyframe'); this.stalls++; return 'keyframe'; }
+    if (this.done.has('resync') && gap >= FREEZE.resyncAfterMs * 2) { this.lastFrameAt = at; this.done.clear(); }
+    return null;
+  }
+}
+/** FX-078: the SFU's reply when our session is gone (detach grace expired / SFU restarted). */
+export const isSessionGone = (err: unknown) => /unknown media session/i.test(String(err ?? ''));
+
 type Req = <T>(event: string, data: Record<string, unknown>) => Promise<T>;
 export const RESTART_ICE_TIMEOUT_MS = 4_000;
 type Emit = (detail: Record<string, unknown>) => void;
@@ -329,7 +350,27 @@ export class NativeMediaSession {
     });
   }
 
-  private async restartIce(t: Transport, direction: string) {
+  /** FX-078: one ICE restart per direction at a time (call bbbe198f: overlapping restarts from keepRestarting,
+   *  restartIceAll and the page raced each other); a second caller joins the in-flight one. */
+  private iceRestartInFlight = new Map<string, Promise<void>>();
+  private restartIce(t: Transport, direction: string): Promise<void> {
+    const running = this.iceRestartInFlight.get(direction);
+    if (running) { this.diag('ice-restart-coalesced', { direction }); return running; }
+    const p = this.restartIceOnce(t, direction).finally(() => this.iceRestartInFlight.delete(direction));
+    this.iceRestartInFlight.set(direction, p);
+    return p;
+  }
+  /** FX-078: the SFU no longer has our session (grace expired): ICE restarts can never work, the page must rejoin. */
+  private sessionGone = false;
+  private markGone(direction: string) {
+    if (this.sessionGone || this.closed) return;
+    this.sessionGone = true;
+    this.iceRestarted.clear();
+    this.diag('session-gone', { direction });
+    this.emit({ state: 'failed', gone: true });
+  }
+  private async restartIceOnce(t: Transport, direction: string) {
+    if (this.sessionGone) return;
     try {
       // FX-063: a stalled page socket (call c0f559f2: 8 s 'Request timed out') must not hold up the next attempt.
       let timer: ReturnType<typeof setTimeout> | null = null;
@@ -338,12 +379,16 @@ export class NativeMediaSession {
         new Promise<never>((_, rej) => { timer = setTimeout(() => rej(new Error('restartIce timed out')), RESTART_ICE_TIMEOUT_MS); }),
       ]).finally(() => { if (timer) clearTimeout(timer); });
       if (x.ok && x.iceParameters && !this.closed) await t.restartIce({ iceParameters: x.iceParameters });
-    } catch {}
+      else if (!x.ok && isSessionGone((x as { error?: unknown }).error)) this.markGone(direction);
+    } catch (e) {
+      if (isSessionGone(e instanceof Error ? e.message : e)) this.markGone(direction);
+    }
   }
 
   private async keepRestarting(t: Transport, direction: string) {
     const delays = [0, 500, 1000, 2000, 4000]; // back on UDP sooner (web parity, Oct 16)
     for (let i = 0; !this.closed && this.iceRestarted.has(direction); i++) {
+      if (this.sessionGone) return; // FX-078: page rejoins instead
       await new Promise((r) => setTimeout(r, delays[Math.min(i, delays.length - 1)]));
       if (this.closed || !this.iceRestarted.has(direction) || t.connectionState === 'connected') return;
       await this.restartIce(t, direction);
@@ -399,12 +444,37 @@ export class NativeMediaSession {
       try {
         const stats = await (c as unknown as { getStats(): Promise<Map<string, Record<string, unknown>>> }).getStats();
         for (const r of stats.values()) {
-          if (r.type === 'inbound-rtp' && Number(r.framesDecoded ?? 0) > 0) { this.diag('first-remote-video-frame', { ms: Date.now() - t0 }); return; }
+          if (r.type === 'inbound-rtp' && Number(r.framesDecoded ?? 0) > 0) { this.diag('first-remote-video-frame', { ms: Date.now() - t0 }); void this.watchFrozen(c); return; }
         }
       } catch {}
       await new Promise((r) => setTimeout(r, 500));
     }
     if (!this.closed && this.consumers.has(c.id)) this.diag('no-remote-video-frame', { ms: Date.now() - t0 });
+  }
+
+  /** FX-079: frozen-frame watchdog for the whole call ("the video feed should do its best not to freeze ever").
+   *  No new decoded frame for 1.5 s → keyframe request (PLI via the SFU); 4 s → re-resume; 8 s → re-sync consumers. */
+  private async watchFrozen(c: Consumer) {
+    const dog = new FrozenFrameWatchdog();
+    while (!this.closed && this.consumers.has(c.id)) {
+      await new Promise((r) => setTimeout(r, FREEZE.sampleMs));
+      if (this.closed || !this.consumers.has(c.id)) return;
+      if ((c as unknown as { paused?: boolean; producerPaused?: boolean }).producerPaused) continue; // peer camera off
+      let frames: number | null = null;
+      try {
+        const stats = await (c as unknown as { getStats(): Promise<Map<string, Record<string, unknown>>> }).getStats();
+        for (const r of stats.values()) if (r.type === 'inbound-rtp') frames = Number(r.framesDecoded ?? 0);
+      } catch {}
+      if (frames === null) continue;
+      const action = dog.push(Date.now(), frames);
+      if (!action) continue;
+      this.diag('frame-stall', { action, stalls: dog.stalls });
+      try {
+        if (action === 'keyframe') await this.r('ms:consumer:requestKeyFrame', { consumerId: c.id });
+        else if (action === 'resume') await this.r('ms:consumer:resume', { consumerId: c.id });
+        else await this.syncConsumers();
+      } catch {}
+    }
   }
 
   syncConsumers(): Promise<void> {
@@ -491,6 +561,8 @@ export class NativeMediaSession {
     const parameters = sender.getParameters();
     if (!parameters.encodings?.length) parameters.encodings = [{}];
     parameters.encodings.forEach((encoding: SenderEncoding, index: number) => update(encoding, index));
+    // FX-079: under pressure shed resolution, keep motion (no frozen picture on the far end)
+    if (producer === this.videoProducer) (parameters as { degradationPreference?: string }).degradationPreference = FREEZE.degradationPreference;
     await sender.setParameters(parameters);
     return true;
   }
@@ -512,7 +584,7 @@ export class NativeMediaSession {
       audioBps: Number.isFinite(step.voiceBps) ? Math.max(32_000, Math.min(64_000, Math.round(step.voiceBps!)))
         : tier ? tier.audioBps : Math.max(16_000, Math.round(step.audioBps || 48_000)),
       ...(Number.isFinite(step.videoBps) ? { videoBps: Math.min(NATIVE_CAMERA_MAX_BPS, Math.max(1_000, Math.round(step.videoBps!))) } : {}),
-      ...(Number.isFinite(step.videoFps) ? { videoFps: Math.max(8, Math.min(30, Math.round(step.videoFps!))) } : {}),
+      ...(Number.isFinite(step.videoFps) ? { videoFps: Math.max(FREEZE.minFps, Math.min(30, Math.round(step.videoFps!))) } : {}),
       ...(Number.isFinite(step.videoScale) ? { videoScale: Math.max(1, Math.min(4, Number(step.videoScale))) } : {}),
     };
     if (this.ladderTask) return this.ladderTask;
