@@ -18,6 +18,7 @@ import { pollConsumers } from './consumeUntil';
 // m125 WebRTC ChatSwap ships. No LiveKit native code in the call lane.
 import { mediaDevices, MediaStream, registerGlobals, type MediaStreamTrack } from '@stream-io/react-native-webrtc';
 import { CHATSWAP_RTC } from './callMediaProfile';
+import { nativeCameraEncodings, nativeSimulcastLadder } from './simulcast';
 
 // FX-079 anti-freeze, kept in step with the web lane's src/lib/calls/antiFreeze.ts
 export const FREEZE = { minFps: 15, degradationPreference: 'maintain-framerate', keyframeAfterMs: 1_500, resumeAfterMs: 4_000, resyncAfterMs: 8_000, sampleMs: 500 } as const;
@@ -119,6 +120,8 @@ export class NativeMediaSession {
   private device: { rtpCapabilities: unknown; load(o: unknown): Promise<void>; createSendTransport(o: unknown): Transport; createRecvTransport(o: unknown): Transport } | null = null;
   private producer: Producer | null = null;
   private videoProducer: Producer | null = null;
+  /** FX-080 rollout flag from the page's connect command. */
+  simulcast = false;
   private localVideo: MediaStream | null = null;
   private remoteVideo: MediaStream | null = null;
   private facing: 'user' | 'environment' = 'user';
@@ -248,7 +251,9 @@ export class NativeMediaSession {
       ...(this.streamId ? { streamId: this.streamId } : {}),
       // One proven VP8 encoding. The quality ladder adapts this sender in place (bitrate, resolution and fps) without
       // reacquiring the camera or multiplying the video budget across simulcast layers.
-      encodings: [{ maxBitrate: NATIVE_CAMERA_MAX_BPS, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }] as never,
+      // FX-080: 3 layers only when the page asked (connect simulcast:true); else exactly the single encoding above.
+      encodings: (this.simulcast ? nativeCameraEncodings(true, NATIVE_CAMERA_MAX_BPS)
+        : [{ maxBitrate: NATIVE_CAMERA_MAX_BPS, maxFramerate: 30, scaleResolutionDownBy: 1, priority: 'high', networkPriority: 'high' }]) as never,
       appData: { source: 'camera', native: true },
       stopTracks: false, // FX-062
     };
@@ -595,7 +600,12 @@ export class NativeMediaSession {
         this.pendingLadder = null;
         try {
           const audio = await this.setSenderParameters(this.producer, (encoding) => { encoding.maxBitrate = next.audioBps; });
-          const video = await this.setSenderParameters(this.videoProducer, (encoding) => {
+          // FX-080: a layered (simulcast) sender keeps each layer's resolution; layers switch on bottom-up within budget
+          const layers = this.videoProducer?.rtpSender?.getParameters?.().encodings ?? [];
+          const plan = layers.length > 1 ? nativeSimulcastLadder(layers.map((e: object) => ({ ...e })), next) : null;
+          const video = plan
+            ? await this.setSenderParameters(this.videoProducer, (encoding, index) => { Object.assign(encoding, plan[index] ?? {}); })
+            : await this.setSenderParameters(this.videoProducer, (encoding) => {
             if (next.videoBps !== undefined) encoding.maxBitrate = next.videoBps;
             if (next.videoFps !== undefined) encoding.maxFramerate = next.videoFps;
             if (next.videoScale !== undefined) encoding.scaleResolutionDownBy = next.videoScale;
@@ -735,6 +745,7 @@ export class NativeMediaController {
         }, (state) => {
           if (this.session === s) this.emitVideo(state);
         });
+        s.simulcast = cmd.simulcast === true; // FX-080
         this.session = s;
         const tok = {};
         const p = (async () => {
