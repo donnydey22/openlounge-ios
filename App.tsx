@@ -874,7 +874,7 @@ function Shell() {
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
       {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
         <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={bigFit(nativeBigLayout.kind)} mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
+          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView key={`big-${nativeBigLayout.kind}-${streamFor(nativeBigLayout.kind)!.toURL()}`} streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={bigFit(nativeBigLayout.kind)} mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
           {pipTile && nativeVideo?.local && (
             <View style={[styles.nativePipFrame, pipTile]}>
               <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="contain" mirror={nativeVideo.facing === 'user'} />

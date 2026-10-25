@@ -1,4 +1,4 @@
-// FX-065 must-pass: the build in the UA / call logs is the real CFBundleVersion, not app.json's static buildNumber.
+// FX-076 (was FX-065; renumbered to avoid the web registry id) must-pass: the build in the UA / call logs is the real CFBundleVersion, not app.json's static buildNumber.
 import test from 'node:test'; import assert from 'node:assert/strict'; import fs from 'node:fs';
 test('APP_BUILD prefers expo-application nativeBuildVersion', () => {
   const s = fs.readFileSync(new URL('../src/config.ts', import.meta.url), 'utf8');

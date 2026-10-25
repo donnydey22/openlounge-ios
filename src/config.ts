@@ -31,7 +31,7 @@ export const APP_HOSTS = new Set([
 
 export const APP_VERSION = Constants.expoConfig?.version ?? '0';
 /** Native build number (CFBundleVersion / eas buildNumber). */
-// FX-065 (Oct 24): Constants.nativeBuildVersion is deprecated and empty here, so every EAS build reported app.json's
+// FX-076 (was FX-065; renumbered to avoid the web registry id) (Oct 24): Constants.nativeBuildVersion is deprecated and empty here, so every EAS build reported app.json's
 // static "20" (b67 logged as 'ios 0.3.19 (20)'). expo-application reads the real CFBundleVersion.
 export const APP_BUILD =
   Application.nativeBuildVersion ??

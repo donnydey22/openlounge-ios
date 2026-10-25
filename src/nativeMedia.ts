@@ -445,6 +445,8 @@ export class NativeMediaSession {
               // stale and cannot transiently clear the remote-video UI state during a producer replacement.
               const previousRemote = this.remoteVideo;
               this.remoteVideo = new MediaStream([c.track]);
+              // FX-077: a replaced remote video gets a new stream URL; App.tsx keys the RTCView on it so the renderer re-binds.
+              if (previousRemote) this.diag('remote-video-replaced', { kinds: 'video' });
               previousRemote?.getTracks().forEach((t) => t.stop());
               (c.track as unknown as { addEventListener(type: 'ended', cb: () => void, opts?: { once?: boolean }): void }).addEventListener('ended', () => {
                 if (!this.remoteVideo?.getVideoTracks().some((track) => track === c.track)) return;
@@ -457,6 +459,7 @@ export class NativeMediaSession {
             }
             this.consumers.set(c.id, c);
             await this.resumeConsumer(c.id).catch(() => this.diag('resume-failed', { kinds: c.kind }));
+            if (this.resumed.has(c.id)) this.diag('consumer-resumed', { kinds: c.kind });
             if (c.kind === 'audio') this.emit({ state: 'remote-audio' });
             else if (this.nativeVideo) {
               void this.watchFirstFrame(c);
