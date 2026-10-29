@@ -10,6 +10,12 @@
 //                                       | 'soft' | 'rigid' | 'selection' | 'success' | 'warning' | 'error'
 //     openAuth(url: string):     Promise<void>   Google/Apple start URL → ASWebAuthenticationSession
 //     openExternal(url: string): void   https URL → SFSafariViewController
+//     haptics(type: string):     void   0.3.0 cross-platform contract (/workspace/native/HAPTICS_BRIDGE.md):
+//                                       'light' | 'medium' | 'heavy' | 'success' | 'warning' | 'error' | 'selection'
+//     openBrowser(url: string):  void   0.3.0 cross-platform contract (/workspace/native/BROWSER_BRIDGE.md):
+//                                       external https → SFSafariViewController; openlounge.app → stays in the app
+//     biometrics: { isAvailable(): Promise<boolean>, getEnabled(): Promise<boolean>,
+//                   setEnabled(on: boolean): Promise<boolean> }   opt-in app lock; setEnabled(true) prompts first
 //     __expo: true, platform: 'ios', version: '0.2.3', capabilities: string[]
 //   }
 //
@@ -65,15 +71,85 @@ export type BridgeRequest =
   | { __ol: 1; id: string; method: 'setSession'; value: string }
   | { __ol: 1; id: string; method: 'clearSession' }
   | { __ol: 1; id: string; method: 'openAuth'; value: string }
+  | { __ol: 1; id: string; method: 'bioIsAvailable' }
+  | { __ol: 1; id: string; method: 'bioGetEnabled' }
+  | { __ol: 1; id: string; method: 'bioSetEnabled'; value: boolean }
   | { __ol: 1; method: 'theme'; value: 'dark' | 'light' }
   | { __ol: 1; method: 'ready'; value?: string }
   | { __ol: 1; method: 'haptic'; value: HapticKind }
-  | { __ol: 1; method: 'openExternal'; value: string };
+  | { __ol: 1; method: 'openExternal'; value: string }
+  | { __ol: 1; method: 'share'; value: { text: string; url: string } }
+  | { __ol: 1; method: 'requestContacts' }
+  | { __ol: 1; method: 'openAppSettings' }
+  | { __ol: 1; method: 'requestNotificationPermission' }
+  | { __ol: 1; method: 'setBadge'; value: number }
+  | { __ol: 1; method: 'phoneAuthStart'; value: { id: string; phone: string } }
+  | { __ol: 1; method: 'phoneAuthConfirm'; value: { id: string; code: string } }
+  | { __ol: 1; method: 'call'; value: PageCallMessage }
+  /** native call media (src/nativeMedia.ts): page → app command, answered via resolveScript */
+  | { __ol: 1; id: string; method: 'nativeMedia'; value: Record<string, unknown> }
+  /** page's answer to an app-originated ms:* signaling request (window.__olNativeMsReq) */
+  | { __ol: 1; method: 'msReply'; value: { id: string; ok: boolean; result: unknown; error?: string } };
+
+/** Page → native call messages (NATIVE_SPEC.md §5), sent as plain {type:"call:*"} JSON (no __ol envelope). */
+export type PageCallMessage =
+  | { type: 'call:incoming'; callId: string; name: string; video: boolean; photo?: string; expiresAt?: number }
+  | { type: 'call:outgoing'; callId: string; name: string; video: boolean; /** server-issued current-call native video grant */ nativeMedia?: boolean }
+  | { type: 'call:connected'; callId: string }
+  | { type: 'call:ended'; callId: string }
+  | { type: 'call:muted'; muted: boolean }
+  | { type: 'call:audioRoute'; speaker: boolean; route?: string; deviceId?: string; user?: boolean }
+  | { type: 'call:ringbackStop' }
+  | { type: 'call:ringtonePrepare' };
+
+const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
+
+function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
+  const id = typeof m.callId === 'string' && CALL_ID.test(m.callId) ? m.callId : '';
+  const wrap = (value: PageCallMessage): BridgeRequest => ({ __ol: 1, method: 'call', value });
+  switch (m.type) {
+    case 'call:incoming':
+      return id
+        ? wrap({
+            type: 'call:incoming',
+            callId: id,
+            name: typeof m.name === 'string' ? m.name.slice(0, 80) : '',
+            video: m.video === true,
+            photo: typeof m.photo === 'string' ? m.photo.slice(0, 500) : undefined,
+            expiresAt: typeof m.expiresAt === 'number' ? m.expiresAt : undefined,
+          })
+        : null;
+    case 'call:outgoing':
+      return id ? wrap({ type: 'call:outgoing', callId: id, name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', video: m.video === true, ...(m.nativeMedia === true ? { nativeMedia: true } : {}) }) : null;
+    case 'call:connected':
+    case 'call:ended':
+      // callId may be missing on old pages; '' means "the current call"
+      return typeof m.callId === 'string' && !id ? null : wrap({ type: m.type, callId: id });
+    case 'call:muted':
+      return typeof m.muted === 'boolean' ? wrap({ type: 'call:muted', muted: m.muted }) : null;
+    case 'call:audioRoute':
+      if (typeof m.speaker !== 'boolean') return null;
+      return wrap({
+        type: 'call:audioRoute', speaker: m.speaker,
+        ...(typeof m.route === 'string' && /^(speaker|earpiece|wired|bluetooth|usb|car)$/.test(m.route) ? { route: m.route } : {}),
+        ...(typeof m.deviceId === 'string' && m.deviceId.length <= 96 ? { deviceId: m.deviceId } : {}),
+        ...(m.user === true ? { user: true } : {}),
+      });
+    case 'call:ringbackStop':
+      // the page's web ringback took over (native did not confirm playing): native must stay silent
+      return wrap({ type: 'call:ringbackStop' });
+    case 'call:ringtonePrepare':
+      // incoming ringtone about to play: native re-prepares the ring/speaker audio session
+      return wrap({ type: 'call:ringtonePrepare' });
+  }
+  return null;
+}
 
 export function parseBridgeMessage(data: string): BridgeRequest | null {
   try {
     if (typeof data !== 'string' || data.length > 200_000) return null;
     const m = JSON.parse(data) as Record<string, unknown>;
+    if (m && typeof m === 'object' && m.__ol === undefined && typeof m.type === 'string' && m.type.startsWith('call:')) return parseCallMessage(m);
     if (!m || m.__ol !== 1 || typeof m.method !== 'string') return null;
     switch (m.method) {
       case 'theme':
@@ -84,9 +160,47 @@ export function parseBridgeMessage(data: string): BridgeRequest | null {
         return typeof m.value === 'string' && HAPTICS.has(m.value) ? (m as BridgeRequest) : null;
       case 'openExternal':
         return typeof m.value === 'string' && m.value.length <= 4096 ? (m as BridgeRequest) : null;
+      case 'share': {
+        const v = m.value as { text?: unknown; url?: unknown } | null;
+        return v && typeof v.text === 'string' && typeof v.url === 'string' && v.text.length <= 1000 && v.url.length <= 2048
+          ? { __ol: 1, method: 'share', value: { text: v.text, url: v.url } }
+          : null;
+      }
+      case 'phoneAuthStart': {
+        const v = m.value as { id?: unknown; phone?: unknown } | null;
+        return v && typeof v.id === 'string' && v.id.length <= 100 && typeof v.phone === 'string' && /^\+[0-9]{6,16}$/.test(v.phone)
+          ? { __ol: 1, method: 'phoneAuthStart', value: { id: v.id, phone: v.phone } }
+          : null;
+      }
+      case 'phoneAuthConfirm': {
+        const v = m.value as { id?: unknown; code?: unknown } | null;
+        return v && typeof v.id === 'string' && v.id.length <= 100 && typeof v.code === 'string' && /^[0-9]{4,8}$/.test(v.code)
+          ? { __ol: 1, method: 'phoneAuthConfirm', value: { id: v.id, code: v.code } }
+          : null;
+      }
+      case 'setBadge':
+        return typeof m.value === 'number' && Number.isFinite(m.value) && m.value >= 0
+          ? { __ol: 1, method: 'setBadge', value: Math.min(9999, Math.floor(m.value)) }
+          : null;
+      case 'requestContacts':
+      case 'openAppSettings':
+      case 'requestNotificationPermission':
+        return { __ol: 1, method: m.method } as BridgeRequest;
+    }
+    if (m.method === 'msReply') {
+      const v = m.value as { id?: unknown; ok?: unknown; result?: unknown; error?: unknown } | null;
+      return v && typeof v.id === 'string' && v.id.length <= 64
+        ? { __ol: 1, method: 'msReply', value: { id: v.id, ok: v.ok === true, result: v.result ?? null, error: typeof v.error === 'string' ? v.error.slice(0, 200) : undefined } }
+        : null;
     }
     if (typeof m.id !== 'string' || m.id.length > 64) return null;
+    if (m.method === 'nativeMedia') {
+      const v = m.value as Record<string, unknown> | null;
+      return v && typeof v === 'object' && typeof v.op === 'string' ? { __ol: 1, id: m.id, method: 'nativeMedia', value: v } : null;
+    }
     if (m.method === 'getSession' || m.method === 'clearSession') return m as BridgeRequest;
+    if (m.method === 'bioIsAvailable' || m.method === 'bioGetEnabled') return { __ol: 1, id: m.id, method: m.method } as BridgeRequest;
+    if (m.method === 'bioSetEnabled' && typeof m.value === 'boolean') return { __ol: 1, id: m.id, method: 'bioSetEnabled', value: m.value };
     if ((m.method === 'setSession' || m.method === 'openAuth') && typeof m.value === 'string') return m as BridgeRequest;
     return null;
   } catch {
@@ -130,11 +244,12 @@ export function audioResumeScript(reason: string): string {
   var els=document.querySelectorAll('audio,video');
   for(var j=0;j<els.length;j++){var el=els[j];
     if(el.srcObject&&el.paused&&!el.ended&&!el.muted&&el.autoplay){try{var p=el.play();if(p&&p.catch)p.catch(function(){});n++;}catch(e){}}}
+  if(window.__olRingResume){try{window.__olRingResume();n++;}catch(e){}}
   window.dispatchEvent(new CustomEvent('openlounge:native-audio-resume',{detail:{reason:${JSON.stringify(reason)},kicked:n}}));
 }catch(e){}})();true;`;
 }
 
-export function injectedBeforeContentLoaded(platform: string, appVersion: string): string {
+export function injectedBeforeContentLoaded(platform: string, appVersion: string, nativeCalls = false, appBuild = ''): string {
   return `(function(){
   try {
     if (window.OpenLoungeNative && window.OpenLoungeNative.__expo) return;
@@ -145,14 +260,14 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       if (!bridge || typeof bridge.postMessage !== 'function') return false;
       try { bridge.postMessage(JSON.stringify(msg)); return true; } catch (e) { return false; }
     }
-    function call(method, value) {
+    function call(method, value, timeoutMs) {
       return new Promise(function (resolve, reject) {
         var bridge = window.ReactNativeWebView;
         if (!bridge || typeof bridge.postMessage !== 'function') { reject(new Error('OpenLoungeNative unavailable')); return; }
         var id = 'ol' + Date.now().toString(36) + '_' + (++seq);
         var timer = setTimeout(function () {
           if (pending[id]) { delete pending[id]; reject(new Error('OpenLoungeNative ' + method + ' timed out')); }
-        }, 10000);
+        }, timeoutMs || 10000);
         pending[id] = { resolve: resolve, reject: reject, timer: timer };
         var msg = { __ol: 1, id: id, method: method };
         if (value !== undefined) msg.value = value;
@@ -183,7 +298,25 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       __expo: true,
       platform: ${JSON.stringify(platform)},
       version: ${JSON.stringify(appVersion)},
-      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'openAuth', 'openExternal']),
+      buildNumber: ${JSON.stringify(appBuild)},
+      getVersion: function () { return ${JSON.stringify(appVersion)}; },
+      getBuildNumber: function () { return ${JSON.stringify(appBuild)}; },
+      // nativeVideo is deliberately separate from nativeMedia: legacy audio-only wrappers must retain WebView video.
+      // nativeQualityV1 gates serialized app-owned camera adaptation to this paired-media wrapper release.
+      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'" : ''}]),
+      // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
+      nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
+      msReply: function (id, ok, result, error) { post({ __ol: 1, method: 'msReply', value: { id: String(id), ok: !!ok, result: result === undefined ? null : result, error: error ? String(error) : undefined } }); },
+      getPlatform: function () { return ${JSON.stringify(platform)}; },
+      // the native side sets window.__olExpoPushToken and calls window.__olPushToken(token) when FCM hands one out
+      getPushToken: function () { return typeof window.__olExpoPushToken === 'string' ? window.__olExpoPushToken : ''; },
+      share: function (text, url) { post({ __ol: 1, method: 'share', value: { text: String(text || ''), url: String(url || '') } }); },
+      // the page shows its explainer first; the result arrives via window.__olContacts(json)
+      requestContacts: function () { post({ __ol: 1, method: 'requestContacts' }); },
+      contactsPermission: function () { return 'prompt'; },
+      openAppSettings: function () { post({ __ol: 1, method: 'openAppSettings' }); },
+      requestNotificationPermission: function () { post({ __ol: 1, method: 'requestNotificationPermission' }); },
+      setBadge: function (n) { post({ __ol: 1, method: 'setBadge', value: Number(n) || 0 }); },
       getSession: function () {
         return call('getSession').then(function (v) { return typeof v === 'string' ? v : null; });
       },
@@ -194,9 +327,30 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       clearSession: function () { return call('clearSession').then(function () {}); },
       ready: function () { ready('page'); },
       haptic: function (kind) { post({ __ol: 1, method: 'haptic', value: String(kind || 'light') }); },
+      // 0.3.0 contract: same transport, the 7 portable types (unknown types are ignored natively); returns true if sent
+      haptics: function (type) { return post({ __ol: 1, method: 'haptic', value: String(type || 'light') }); },
+      openBrowser: function (url) { return post({ __ol: 1, method: 'openExternal', value: absolute(url) }); },
       openAuth: function (url) { return call('openAuth', absolute(url)).then(function () {}); },
-      openExternal: function (url) { post({ __ol: 1, method: 'openExternal', value: absolute(url) }); }
+      openExternal: function (url) { post({ __ol: 1, method: 'openExternal', value: absolute(url) }); },
+      biometrics: Object.freeze({
+        isAvailable: function () { return call('bioIsAvailable').then(function (v) { return v === true; }); },
+        getEnabled: function () { return call('bioGetEnabled').then(function (v) { return v === true; }); },
+        // waits for the Face ID / passcode sheet → generous timeout
+        setEnabled: function (on) { return call('bioSetEnabled', !!on, 120000).then(function (v) { return v === true; }); }
+      }),
+      // native Firebase phone verification (silent APNs, no web reCAPTCHA); results via window.__olPhoneAuth(json)
+      phoneAuthAvailable: function () { return true; },
+      phoneAuthStart: function (id, phone) { post({ __ol: 1, method: 'phoneAuthStart', value: { id: String(id), phone: String(phone) } }); },
+      phoneAuthConfirm: function (id, code) { post({ __ol: 1, method: 'phoneAuthConfirm', value: { id: String(id), code: String(code) } }); },
+      // NATIVE_SPEC §5: raw JSON string messages ({type:"call:*"}), same transport as ReactNativeWebView.postMessage
+      postMessage: function (s) {
+        var bridge = window.ReactNativeWebView;
+        if (!bridge || typeof bridge.postMessage !== 'function') return false;
+        try { bridge.postMessage(String(s)); return true; } catch (e) { return false; }
+      }
     };
+    // build 18+: the page posts call:* messages and CallKit drives openlounge:native-call (engine.ts postNative)
+    if (${nativeCalls ? 'true' : 'false'}) { try { window.__olNativeCalls = 1; window.__olNativeRingback = 2; } catch (e) {} }
     Object.defineProperty(window, 'OpenLoungeNative', { configurable: false, enumerable: true, writable: false, value: Object.freeze(api) });
 
     // Remember AudioContexts so audio can be resumed after an interruption (see audioResumeScript).
@@ -222,7 +376,13 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       + 'a,img,svg,video,button,[role=button],[role=tab],[role=menuitem],[role=link],nav,header,label'
       + '{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}'
       + 'input,textarea,select,[contenteditable],[contenteditable] *,[data-selectable],[data-selectable] *'
-      + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}';
+      + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}'
+      // Native iPhone caller video: the page's self-view tile is a transparent placeholder over the native RTCView,
+      // so its drop shadow drew a ghost rectangle over the remote video. Scoped to native-video mode only.
+      + '[class*="__nativeVideoScreen"] [class*="__pip"]{box-shadow:none!important}'
+      // Hangup: the page drops __nativeVideoScreen when ui becomes "ended" while the self-view tile stays mounted, so
+      // its bg-zinc-950 + .pip shadow briefly drew a dark rectangle at top right. Hide the tile on the ended screen.
+      + '[data-testid="call-screen"][data-ui="ended"] [class*="__pip"]{visibility:hidden!important;box-shadow:none!important}';
     function lockViewport() {
       var head = document.head || document.getElementsByTagName('head')[0];
       if (!head) return;

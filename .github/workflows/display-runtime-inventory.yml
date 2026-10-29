@@ -1,0 +1,30 @@
+name: iPhone display runtime inventory
+on:
+  push:
+    branches: [fix/iphone-outgoing-display-20261021]
+permissions:
+  contents: read
+jobs:
+  inventory:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Record available Xcode and Simulator runtimes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          ls -d /Applications/Xcode*.app > out/xcode-apps.txt
+          xcodebuild -version > out/xcode-version.txt
+          xcrun simctl list --json > out/simulator-inventory.json
+          xcrun simctl list devices available > out/available-devices.txt
+          xcrun simctl list runtimes > out/runtimes.txt
+          printf '%s\n' 'Availability inventory only. No model has passed a connected-call or screenshot test.' > out/ACCEPTANCE-NOT-RUN.txt
+          cat out/xcode-version.txt out/runtimes.txt out/available-devices.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: iphone-display-runtime-inventory
+          path: out
+          retention-days: 14

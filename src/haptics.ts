@@ -6,6 +6,12 @@ let lastAt = 0;
 
 /** Light, throttled haptics for key actions (page calls OpenLoungeNative.haptic(kind)). */
 export function playHaptic(kind: HapticKind): void {
+  try {
+    playHapticUnsafe(kind);
+  } catch {}
+}
+
+function playHapticUnsafe(kind: HapticKind): void {
   const now = Date.now();
   if (now - lastAt < 60) return;
   lastAt = now;

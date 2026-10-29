@@ -14,7 +14,8 @@
       },
       "ios": {
         "buildConfiguration": "Release",
-        "enterpriseProvisioning": "adhoc"
+        "enterpriseProvisioning": "adhoc",
+        "credentialsSource": "local"
       }
     },
     "production": {
@@ -25,7 +26,22 @@
         "EXPO_NO_TELEMETRY": "1"
       },
       "ios": {
-        "buildConfiguration": "Release"
+        "buildConfiguration": "Release",
+        "credentialsSource": "local"
+      }
+    },
+    "staging": {
+      "extends": "preview",
+      "env": {
+        "EXPO_NO_TELEMETRY": "1",
+        "OL_START_URL": "https://openlounge-staging-native-media-staging.up.railway.app"
+      }
+    },
+    "staging-store": {
+      "extends": "production",
+      "env": {
+        "EXPO_NO_TELEMETRY": "1",
+        "OL_START_URL": "https://openlounge-staging-native-media-staging.up.railway.app"
       }
     }
   },
