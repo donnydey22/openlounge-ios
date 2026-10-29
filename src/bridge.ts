@@ -85,16 +85,22 @@ export type BridgeRequest =
   | { __ol: 1; method: 'setBadge'; value: number }
   | { __ol: 1; method: 'phoneAuthStart'; value: { id: string; phone: string } }
   | { __ol: 1; method: 'phoneAuthConfirm'; value: { id: string; code: string } }
-  | { __ol: 1; method: 'call'; value: PageCallMessage };
+  | { __ol: 1; method: 'call'; value: PageCallMessage }
+  /** native call media (src/nativeMedia.ts): page → app command, answered via resolveScript */
+  | { __ol: 1; id: string; method: 'nativeMedia'; value: Record<string, unknown> }
+  /** page's answer to an app-originated ms:* signaling request (window.__olNativeMsReq) */
+  | { __ol: 1; method: 'msReply'; value: { id: string; ok: boolean; result: unknown; error?: string } };
 
 /** Page → native call messages (NATIVE_SPEC.md §5), sent as plain {type:"call:*"} JSON (no __ol envelope). */
 export type PageCallMessage =
   | { type: 'call:incoming'; callId: string; name: string; video: boolean; photo?: string; expiresAt?: number }
-  | { type: 'call:outgoing'; callId: string; name: string; video: boolean }
+  | { type: 'call:outgoing'; callId: string; name: string; video: boolean; /** server-issued current-call native video grant */ nativeMedia?: boolean }
   | { type: 'call:connected'; callId: string }
   | { type: 'call:ended'; callId: string }
   | { type: 'call:muted'; muted: boolean }
-  | { type: 'call:audioRoute'; speaker: boolean };
+  | { type: 'call:audioRoute'; speaker: boolean; route?: string; deviceId?: string; user?: boolean }
+  | { type: 'call:ringbackStop' }
+  | { type: 'call:ringtonePrepare' };
 
 const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -114,7 +120,7 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
           })
         : null;
     case 'call:outgoing':
-      return id ? wrap({ type: 'call:outgoing', callId: id, name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', video: m.video === true }) : null;
+      return id ? wrap({ type: 'call:outgoing', callId: id, name: typeof m.name === 'string' ? m.name.slice(0, 80) : '', video: m.video === true, ...(m.nativeMedia === true ? { nativeMedia: true } : {}) }) : null;
     case 'call:connected':
     case 'call:ended':
       // callId may be missing on old pages; '' means "the current call"
@@ -122,7 +128,19 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
     case 'call:muted':
       return typeof m.muted === 'boolean' ? wrap({ type: 'call:muted', muted: m.muted }) : null;
     case 'call:audioRoute':
-      return typeof m.speaker === 'boolean' ? wrap({ type: 'call:audioRoute', speaker: m.speaker }) : null;
+      if (typeof m.speaker !== 'boolean') return null;
+      return wrap({
+        type: 'call:audioRoute', speaker: m.speaker,
+        ...(typeof m.route === 'string' && /^(speaker|earpiece|wired|bluetooth|usb|car)$/.test(m.route) ? { route: m.route } : {}),
+        ...(typeof m.deviceId === 'string' && m.deviceId.length <= 96 ? { deviceId: m.deviceId } : {}),
+        ...(m.user === true ? { user: true } : {}),
+      });
+    case 'call:ringbackStop':
+      // the page's web ringback took over (native did not confirm playing): native must stay silent
+      return wrap({ type: 'call:ringbackStop' });
+    case 'call:ringtonePrepare':
+      // incoming ringtone about to play: native re-prepares the ring/speaker audio session
+      return wrap({ type: 'call:ringtonePrepare' });
   }
   return null;
 }
@@ -169,7 +187,17 @@ export function parseBridgeMessage(data: string): BridgeRequest | null {
       case 'requestNotificationPermission':
         return { __ol: 1, method: m.method } as BridgeRequest;
     }
+    if (m.method === 'msReply') {
+      const v = m.value as { id?: unknown; ok?: unknown; result?: unknown; error?: unknown } | null;
+      return v && typeof v.id === 'string' && v.id.length <= 64
+        ? { __ol: 1, method: 'msReply', value: { id: v.id, ok: v.ok === true, result: v.result ?? null, error: typeof v.error === 'string' ? v.error.slice(0, 200) : undefined } }
+        : null;
+    }
     if (typeof m.id !== 'string' || m.id.length > 64) return null;
+    if (m.method === 'nativeMedia') {
+      const v = m.value as Record<string, unknown> | null;
+      return v && typeof v === 'object' && typeof v.op === 'string' ? { __ol: 1, id: m.id, method: 'nativeMedia', value: v } : null;
+    }
     if (m.method === 'getSession' || m.method === 'clearSession') return m as BridgeRequest;
     if (m.method === 'bioIsAvailable' || m.method === 'bioGetEnabled') return { __ol: 1, id: m.id, method: m.method } as BridgeRequest;
     if (m.method === 'bioSetEnabled' && typeof m.value === 'boolean') return { __ol: 1, id: m.id, method: 'bioSetEnabled', value: m.value };
@@ -273,7 +301,12 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       buildNumber: ${JSON.stringify(appBuild)},
       getVersion: function () { return ${JSON.stringify(appVersion)}; },
       getBuildNumber: function () { return ${JSON.stringify(appBuild)}; },
-      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls'" : ''}]),
+      // nativeVideo is deliberately separate from nativeMedia: legacy audio-only wrappers must retain WebView video.
+      // nativeQualityV1 gates serialized app-owned camera adaptation to this paired-media wrapper release.
+      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'" : ''}]),
+      // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
+      nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
+      msReply: function (id, ok, result, error) { post({ __ol: 1, method: 'msReply', value: { id: String(id), ok: !!ok, result: result === undefined ? null : result, error: error ? String(error) : undefined } }); },
       getPlatform: function () { return ${JSON.stringify(platform)}; },
       // the native side sets window.__olExpoPushToken and calls window.__olPushToken(token) when FCM hands one out
       getPushToken: function () { return typeof window.__olExpoPushToken === 'string' ? window.__olExpoPushToken : ''; },
@@ -317,7 +350,7 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       }
     };
     // build 18+: the page posts call:* messages and CallKit drives openlounge:native-call (engine.ts postNative)
-    if (${nativeCalls ? 'true' : 'false'}) { try { window.__olNativeCalls = 1; } catch (e) {} }
+    if (${nativeCalls ? 'true' : 'false'}) { try { window.__olNativeCalls = 1; window.__olNativeRingback = 2; } catch (e) {} }
     Object.defineProperty(window, 'OpenLoungeNative', { configurable: false, enumerable: true, writable: false, value: Object.freeze(api) });
 
     // Remember AudioContexts so audio can be resumed after an interruption (see audioResumeScript).
@@ -343,7 +376,13 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       + 'a,img,svg,video,button,[role=button],[role=tab],[role=menuitem],[role=link],nav,header,label'
       + '{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}'
       + 'input,textarea,select,[contenteditable],[contenteditable] *,[data-selectable],[data-selectable] *'
-      + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}';
+      + '{-webkit-touch-callout:default;-webkit-user-select:text;user-select:text}'
+      // Native iPhone caller video: the page's self-view tile is a transparent placeholder over the native RTCView,
+      // so its drop shadow drew a ghost rectangle over the remote video. Scoped to native-video mode only.
+      + '[class*="__nativeVideoScreen"] [class*="__pip"]{box-shadow:none!important}'
+      // Hangup: the page drops __nativeVideoScreen when ui becomes "ended" while the self-view tile stays mounted, so
+      // its bg-zinc-950 + .pip shadow briefly drew a dark rectangle at top right. Hide the tile on the ended screen.
+      + '[data-testid="call-screen"][data-ui="ended"] [class*="__pip"]{visibility:hidden!important;box-shadow:none!important}';
     function lockViewport() {
       var head = document.head || document.getElementsByTagName('head')[0];
       if (!head) return;

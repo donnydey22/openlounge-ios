@@ -6,7 +6,8 @@ import { StatusBar } from 'expo-status-bar';
 import * as SystemUI from 'expo-system-ui';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AppState, type AppStateStatus, Keyboard, Linking, Platform, Share, StyleSheet, View } from 'react-native';
+import { AppState, type AppStateStatus, Keyboard, type LayoutChangeEvent, Linking, Platform, Share, StyleSheet, View } from 'react-native';
+import { RTCView } from '@stream-io/react-native-webrtc';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
@@ -51,9 +52,11 @@ import {
   forwardPageCallMessage,
   nativeCallsAvailable,
   postVoipToken,
+  sanitizeAudioRoute,
   startNativeCalls,
   syncCallAuthFromSession,
 } from './src/calls';
+import { NativeMediaController, type NativeVideoState } from './src/nativeMedia';
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
 
@@ -65,6 +68,71 @@ try {
 } catch {}
 
 const themeColor = (t: Theme) => (t === 'light' ? COLORS.light : COLORS.dark);
+
+type NativeTileRect = { x: number; y: number; width: number; height: number };
+type NativeVideoLayout = {
+  callId: string;
+  hidden: boolean;
+  big: { kind: 'local' | 'remote'; rect: NativeTileRect; fit: 'cover' | 'contain' } | null;
+  pip: { kind: 'local' | 'remote'; rect: NativeTileRect; mirror: boolean } | null;
+};
+type WebFrame = { x: number; y: number; width: number; height: number };
+type NativeInsets = { top: number; right: number; bottom: number; left: number };
+const NATIVE_PIP_MARGIN = 12;
+const NATIVE_PIP_ASPECT = 3 / 4;
+
+/** Fixed local self-view for the paired native iPhone call. Coordinates share WebView's native parent.
+ * In non-edge-to-edge mode `webFrame.y` already starts below the status area, so top is not added twice. */
+// Self-view top offset below the safe-area top: the larger of Donny's 48 pt and the call screen's own top bar
+// (CallOverlay h-14 = 56 pt: minimize button + quality bars), so the self-view sits just below those controls.
+const NATIVE_PIP_TOP_CLEARANCE = Math.max(48, 56);
+export function nativePipFrame(webFrame: WebFrame, insets: NativeInsets, edgeToEdgeTop: boolean) {
+  const leftBound = webFrame.x + Math.max(0, insets.left);
+  const rightBound = webFrame.x + webFrame.width - Math.max(0, insets.right);
+  const topBound = webFrame.y + (edgeToEdgeTop ? Math.max(0, insets.top) : 0);
+  const bottomBound = webFrame.y + webFrame.height - Math.max(0, insets.bottom);
+  const availableWidth = Math.max(0, rightBound - leftBound);
+  const availableHeight = Math.max(0, bottomBound - topBound);
+  const maxWidth = Math.max(0, availableWidth - NATIVE_PIP_MARGIN * 2);
+  const maxHeight = Math.max(0, availableHeight - NATIVE_PIP_TOP_CLEARANCE - NATIVE_PIP_MARGIN);
+  const width = Math.min(maxWidth, Math.max(88, Math.min(144, Math.floor(availableWidth * 0.38))));
+  const height = Math.min(maxHeight, Math.max(118, Math.round(width / NATIVE_PIP_ASPECT)));
+  return {
+    left: Math.max(leftBound + NATIVE_PIP_MARGIN, rightBound - width - NATIVE_PIP_MARGIN),
+    top: topBound + NATIVE_PIP_TOP_CLEARANCE,
+    width,
+    height,
+  };
+}
+
+const finiteUnitRect = (value: unknown): NativeTileRect | null => {
+  if (!value || typeof value !== 'object') return null;
+  const r = value as Record<string, unknown>;
+  const n = (key: string) => typeof r[key] === 'number' && Number.isFinite(r[key]) ? r[key] as number : NaN;
+  const x = n('x'); const y = n('y'); const width = n('width'); const height = n('height');
+  return x >= 0 && y >= 0 && width > 0 && height > 0 && x + width <= 1.001 && y + height <= 1.001 ? { x, y, width, height } : null;
+};
+
+const parseNativeVideoLayout = (value: unknown): NativeVideoLayout | null => {
+  if (!value || typeof value !== 'object') return null;
+  const v = value as Record<string, unknown>;
+  if (v.op !== 'videoLayout' || v.version !== 1 || typeof v.callId !== 'string' || !/^[A-Za-z0-9_-]{1,64}$/.test(v.callId) || typeof v.hidden !== 'boolean') return null;
+  if (v.hidden) return { callId: v.callId, hidden: true, big: null, pip: null };
+  const readTile = (value: unknown) => {
+    if (!value || typeof value !== 'object') return null;
+    const tile = value as Record<string, unknown>;
+    const kind: 'local' | 'remote' | null = tile.kind === 'local' || tile.kind === 'remote' ? tile.kind : null;
+    const fit: 'cover' | 'contain' | null = tile.fit === 'cover' || tile.fit === 'contain' ? tile.fit : null;
+    const rect = finiteUnitRect(tile.rect);
+    return kind && fit && rect ? { kind, fit, rect, mirror: tile.mirror === true } : null;
+  };
+  const big = readTile(v.big);
+  const pip = readTile(v.pip);
+  if (!big) return null;
+  // Donny's native caller-video policy is uncropped aspect-fit. Accept the existing page's cover metadata for
+  // compatibility, but never use it to crop or stretch either native video view.
+  return { callId: v.callId, hidden: v.hidden, big: { kind: big.kind, fit: 'contain', rect: big.rect }, pip: pip ? { kind: pip.kind, rect: pip.rect, mirror: pip.mirror } : null };
+};
 
 // WebKit errors that are not "the page could not be loaded".
 const IGNORED_LOAD_ERRORS = new Set([
@@ -97,6 +165,12 @@ function Shell() {
   const [offline, setOffline] = useState(false);
   const [webKey, setWebKey] = useState(0);
   const [sourceUri, setSourceUri] = useState(START_URL);
+  // Native iPhone video is intentionally held outside the WebView. Streams never cross the JS bridge; the page
+  // remains the call-control overlay while RTCView owns only the actual camera/remote pixels.
+  const [nativeVideo, setNativeVideo] = useState<NativeVideoState>(null);
+  const [nativeVideoLayout, setNativeVideoLayout] = useState<NativeVideoLayout | null>(null);
+  const [webFrame, setWebFrame] = useState<WebFrame | null>(null);
+  const [windowFrame, setWindowFrame] = useState<WebFrame | null>(null);
   const [kbHeight, setKbHeight] = useState(0);
 
   const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD), []);
@@ -292,10 +366,20 @@ function Shell() {
   }, [hideSplash, scheduleRetry, setOfflineBoth]);
 
   // Network comes back → retry immediately (NWPathMonitor via expo-network).
+  const netTypeRef = useRef<string | null>(null);
+  const nativeMediaRef = useRef<NativeMediaController | null>(null);
   useEffect(() => {
     let sub: { remove: () => void } = { remove: () => {} };
     try {
     sub = Network.addNetworkStateListener((s) => {
+      // Wi-Fi ⇄ cellular handoff → the page restarts ICE in place (native-only call adaptation, netAdapt.ts)
+      if (s.isConnected !== false && s.type) {
+        // native call media restarts ICE itself (no page round trip; works mid page-reload too)
+        const t = String(s.type).toLowerCase();
+        if (netTypeRef.current && netTypeRef.current !== t) nativeMediaRef.current?.onNetworkChange();
+        netTypeRef.current = t;
+        webRef.current?.injectJavaScript(`try{window.__olNetworkChanged&&window.__olNetworkChanged(${JSON.stringify(String(s.type).toLowerCase())})}catch(e){};true;`);
+      }
       if (!offlineRef.current || s.isConnected === false || s.isInternetReachable === false) return;
       if (Date.now() - lastRetryAt.current < 1500) return; // path updates arrive in bursts
       retryNow();
@@ -441,9 +525,16 @@ function Shell() {
   );
   const onCallAction = useCallback(
     (a: CallAction, coldStart: boolean) => {
+      if ((a as { type: string }).type === 'ringback') {
+        // native ringback status → page (0.3.13+): the web ring takes over if native is not actually playing
+        const playing = !!(a as unknown as { playing?: boolean }).playing;
+        if (!coldStart && everLoaded.current)
+          inject(`(function(){try{window.dispatchEvent(new CustomEvent('openlounge:native-ringback',{detail:{playing:${playing}}}))}catch(e){}})();true;`);
+        return;
+      }
       if ((a as { type: string }).type === 'audioRoute') {
-        const r = a as unknown as { headset?: boolean; port?: string; name?: string; reason?: number };
-        const detail = JSON.stringify({ headset: !!r.headset, port: String(r.port || ''), name: String(r.name || ''), reason: Number(r.reason || 0) });
+        // kind/id/routes feed the call screen's route picker (Speaker / Phone / Headphones / AirPods …)
+        const detail = JSON.stringify(sanitizeAudioRoute(a as unknown as Record<string, unknown>));
         if (!coldStart && everLoaded.current)
           inject(`(function(){try{window.dispatchEvent(new CustomEvent('openlounge:native-audio-route',{detail:${detail}}))}catch(e){}})();true;`);
         return;
@@ -453,12 +544,24 @@ function Shell() {
         return;
       }
       if (a.type === 'answer') {
+        // native call media: grab the mic + load WebRTC while the page accepts (CallKit activation then just flips audio on)
+        void nativeMedia.current?.handle({ op: 'prewarm' }).catch(() => {});
         unlockForCall();
         setIncomingCard(null);
-        navigate(acceptUrl(appOrigin(), a.callId)); // /call/<id>?accept=1: the web layer joins instantly
+        const url = acceptUrl(appOrigin(), a.callId);
+        // Page already loaded (push-woken ring): accept in place — no reload, keeps the warm socket/session (~7 s
+        // faster accept→audio). The page falls back to the /call/<id>?accept=1 navigation itself if it can't.
+        if (!coldStart && everLoaded.current) {
+          inject(`(function(){try{if(window.__olAcceptCall&&window.__olAcceptCall(${JSON.stringify(a.callId)}))return;}catch(e){}location.assign(${JSON.stringify(url)});})();true;`);
+        } else navigate(url); // /call/<id>?accept=1: the web layer joins instantly
         return;
       }
-      if (a.type === 'decline' || a.type === 'hangup') setIncomingCard(null);
+      if (a.type === 'decline' || a.type === 'hangup') {
+        setIncomingCard(null);
+        // CallKit can end while WKWebView is cold, terminated, or reloading. App-owned capture is independent of
+        // page delivery, so stop it eagerly before the best-effort signaling injection below.
+        nativeMedia.current?.closeAll();
+      }
       if (coldStart || !everLoaded.current) return; // nothing to tell a page that isn't loaded
       const detail = a.type === 'mute' ? { type: 'call:mute', muted: a.muted } : { type: a.type === 'decline' ? 'call:decline' : 'call:hangup' };
       inject(nativeEventScript('openlounge:native-call', detail));
@@ -513,11 +616,11 @@ function Shell() {
     const show = Keyboard.addListener('keyboardWillShow', (e) => {
       const h = e.endCoordinates.height;
       inject(keyboardScript(true, h, e.duration ?? 250));
-      if (KEYBOARD_MODE === 'resize') setKbHeight(h);
+      setKbHeight(h);
     });
     const hide = Keyboard.addListener('keyboardWillHide', (e) => {
       inject(keyboardScript(false, 0, e.duration ?? 250));
-      if (KEYBOARD_MODE === 'resize') setKbHeight(0);
+      setKbHeight(0);
     });
     return () => {
       show.remove();
@@ -530,6 +633,29 @@ function Shell() {
     (id: string, ok: boolean, result?: unknown, err?: string) => inject(resolveScript(id, ok, result, err)),
     [inject],
   );
+
+  // ---------------- native call media (src/nativeMedia.ts) ----------------
+  const msPending = useRef(new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>());
+  const msSeq = useRef(0);
+  const nativeMedia = useRef<NativeMediaController | null>(null);
+  if (!nativeMedia.current && nativeCallsAvailable()) {
+    nativeMedia.current = new NativeMediaController(
+      // app → page: ms:* signaling relayed over the page's authenticated realtime socket
+      (event, data) =>
+        new Promise((resolve, reject) => {
+          const id = `nm${Date.now().toString(36)}_${++msSeq.current}`;
+          const timer = setTimeout(() => {
+            msPending.current.delete(id);
+            reject(new Error(`${event} timed out`));
+          }, 8_000);
+          msPending.current.set(id, { resolve, reject, timer });
+          inject(`(function(){try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)});}catch(e){window.OpenLoungeNative&&window.OpenLoungeNative.msReply(${JSON.stringify(id)},false,null,'no relay');}})();true;`);
+        }),
+      (detail) => inject(nativeEventScript('openlounge:native-media', detail)),
+      (state) => setNativeVideo(state),
+    );
+  }
+  nativeMediaRef.current = nativeMedia.current;
 
   const onMessage = useCallback(
     async (e: WebViewMessageEvent) => {
@@ -575,8 +701,40 @@ function Shell() {
             })
             .catch(() => {});
           return;
+        case 'nativeMedia': {
+          // This is visual placement only. Streams remain native and never cross the WebView bridge.
+          const layout = parseNativeVideoLayout(msg.value);
+          if (layout) {
+            setNativeVideoLayout(layout);
+            reply(msg.id, true, true);
+            return;
+          }
+          const ctl = nativeMedia.current;
+          if (!ctl) {
+            reply(msg.id, false, null, 'nativeMedia unavailable');
+            return;
+          }
+          ctl.handle(msg.value).then(
+            (r) => reply(msg.id, true, r),
+            (err: unknown) => reply(msg.id, false, null, String((err as Error)?.message ?? err)),
+          );
+          return;
+        }
+        case 'msReply': {
+          const p = msPending.current.get(msg.value.id);
+          if (!p) return;
+          msPending.current.delete(msg.value.id);
+          clearTimeout(p.timer);
+          if (msg.value.ok) p.resolve(msg.value.result);
+          else p.reject(new Error(msg.value.error || 'signaling failed'));
+          return;
+        }
         case 'call': {
           const v = msg.value as { type?: string; callId?: string; name?: string; video?: boolean };
+          if (v?.type === 'call:ended') {
+            nativeMedia.current?.closeAll();
+            setNativeVideoLayout(null);
+          }
           forwardPageCallMessage(msg.value);
           if (v?.type === 'call:incoming' && typeof v.callId === 'string' && lockRef.current !== 'unlocked') {
             // Fallback card above LockScreen if CallKit is delayed / refused; CallKit still gets the page message.
@@ -671,13 +829,63 @@ function Shell() {
   }, []);
 
   const bg = themeColor(theme);
+  const nativeBigLayout = nativeVideoLayout?.hidden ? null : nativeVideoLayout?.big ?? null;
+  const visibleNativeVideo = !!nativeVideo && !!nativeVideoLayout && nativeVideo.callId === nativeVideoLayout.callId && !!nativeBigLayout && !!webFrame;
+  const mapTile = (rect: NativeTileRect | null) => {
+    if (!rect || !webFrame) return null;
+    const left = webFrame.x + rect.x * webFrame.width;
+    const top = webFrame.y + rect.y * webFrame.height;
+    const width = rect.width * webFrame.width;
+    // `rect` is already normalized to the current WebView visual call surface. In overlay keyboard mode, subtracting
+    // the native keyboard height a second time clips the native full-screen tile; in resize mode the WebView itself
+    // has already resized. Preserve the page-owned rectangle in either mode.
+    const height = rect.height * webFrame.height;
+    return width > 0 && height > 0 ? { left, top, width, height } : null;
+  };
+  const fullStageRemote = nativeBigLayout?.kind === 'remote' && nativeBigLayout.rect.x === 0 && nativeBigLayout.rect.y === 0 && nativeBigLayout.rect.width === 1 && nativeBigLayout.rect.height === 1;
+  // Only the granted caller's full-stage remote tile leaves WebView coordinates. Partial/local tiles keep the
+  // existing mapping; the root's actual onLayout dimensions include the screen's status and home-indicator areas.
+  const bigTile = visibleNativeVideo && fullStageRemote && windowFrame
+    ? { left: 0, top: 0, width: windowFrame.width, height: windowFrame.height }
+    : visibleNativeVideo ? mapTile(nativeBigLayout?.rect ?? null) : null;
+  // Native iPhone caller pattern: remote full-screen and fixed local self-view at the safe top-right. Unlike the
+  // DOM PiP, this view is not a transparent layout placeholder and cannot be dragged/swapped through WKWebView. Keep
+  // the real local tile pinned through a temporary remote-camera loss rather than replacing it with a ghost box.
+  const pipTile = visibleNativeVideo && nativeVideo?.local && windowFrame
+    ? nativePipFrame(windowFrame, insets, true)
+    : null;
+  // FX-061: the remote tile only ever renders a stream that carries none of this phone's own camera tracks. If the
+  // remote slot is empty (or would alias the local capture) it stays unrendered: the page paints the placeholder.
+  const localTrackIds = new Set((nativeVideo?.local?.getTracks?.() ?? []).map((t: any) => t.id));
+  const remoteStream = nativeVideo?.remote && !(nativeVideo.remote.getTracks?.() ?? []).some((t: any) => localTrackIds.has(t.id)) && (!nativeVideo.local || nativeVideo.remote.toURL() !== nativeVideo.local.toURL()) ? nativeVideo.remote : null;
+  const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? null : remoteStream;
+  // Fill edge to edge like FaceTime/Telegram. Only a known landscape source (wider than tall) on the big tile falls
+  // back to aspect-fit so a rotated/landscape caller is not over-cropped; unknown dimensions default to cover.
+  const bigFit = (kind: 'local' | 'remote'): 'cover' | 'contain' => {
+    const s = (streamFor(kind)?.getVideoTracks?.()[0] as any)?.getSettings?.() ?? {};
+    return typeof s.width === 'number' && typeof s.height === 'number' && s.width > s.height * 1.1 ? 'contain' : 'cover';
+  };
 
   return (
-    <View style={[styles.root, { backgroundColor: bg }]}>
+    <View style={[styles.root, { backgroundColor: bg }]} onLayout={(e: LayoutChangeEvent) => {
+      const { width, height } = e.nativeEvent.layout;
+      setWindowFrame({ x: 0, y: 0, width, height });
+    }}>
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
+      {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
+        <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
+          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView key={`big-${nativeBigLayout.kind}-${streamFor(nativeBigLayout.kind)!.toURL()}`} streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={bigFit(nativeBigLayout.kind)} mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
+          {pipTile && nativeVideo?.local && (
+            <View style={[styles.nativePipFrame, pipTile]}>
+              <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="contain" mirror={nativeVideo.facing === 'user'} />
+            </View>
+          )}
+        </View>
+      )}
       <View
         style={[
           styles.root,
+          visibleNativeVideo && styles.nativeWebOverlay,
           { paddingTop: EDGE_TO_EDGE_TOP ? 0 : insets.top, paddingBottom: KEYBOARD_MODE === 'resize' ? kbHeight : 0 },
         ]}
       >
@@ -685,8 +893,9 @@ function Shell() {
           key={webKey}
           ref={webRef}
           source={{ uri: sourceUri, headers: { 'Cache-Control': 'no-cache' } }}
-          style={[styles.root, { backgroundColor: bg }]}
-          containerStyle={{ backgroundColor: bg }}
+          style={styles.webView}
+          containerStyle={{ backgroundColor: 'transparent' }}
+          onLayout={(e: LayoutChangeEvent) => setWebFrame(e.nativeEvent.layout)}
           // Safe areas: no automatic insets; the page sees real env(safe-area-inset-*) values (bottom: home
           // indicator; top is 0 because the WebView starts below the status bar unless EDGE_TO_EDGE_TOP).
           contentInsetAdjustmentBehavior="never"
@@ -700,7 +909,9 @@ function Shell() {
           // Audio rooms (LiveKit/WebRTC): WebKit itself runs AVAudioSession as playAndRecord with
           // defaultToSpeaker + Bluetooth (HFP/A2DP) + AirPlay while the mic is captured. Grant getUserMedia for
           // the page's own host only (openlounge.app), deny cross-origin frames, so WebKit never re-prompts.
-          mediaCapturePermissionGrantType="grantIfSameHostElseDeny"
+          // Native-video calls (spec v3): the app owns mic + camera, so the page may never grab either while app-owned
+          // call media is live (a WebKit capture would steal the mic / start a second camera and fight the RTCViews).
+          mediaCapturePermissionGrantType={nativeVideo ? 'deny' : 'grantIfSameHostElseDeny'}
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           allowsAirPlayForMediaPlayback
@@ -797,5 +1008,16 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1 },
+  root: { flex: 1, position: 'relative' },
+  // The page remains the interactive control layer. It makes only native-video pixels transparent, exposing this
+  // underlying RTC layer at the exact measured tile rectangles.
+  webView: { flex: 1, zIndex: 1, backgroundColor: 'transparent' },
+  // zIndex orders siblings, so explicitly place the granted caller's WebView container over its native underlay.
+  nativeWebOverlay: { zIndex: 1 },
+  nativeVideoLayer: { ...StyleSheet.absoluteFill, zIndex: 0 },
+  nativeTile: { position: 'absolute', zIndex: 0, backgroundColor: 'transparent' },
+  // UIKit uses sibling z-index/order; RTCView's zOrder prop is not exported on iOS by this installed WebRTC package.
+  // Keep the established rounded PiP, but never paint a separate rectangle/shadow behind or beyond its video.
+  nativePipFrame: { position: 'absolute', zIndex: 1, borderRadius: 18, overflow: 'hidden', backgroundColor: 'transparent' },
+  nativeFill: { width: '100%', height: '100%' },
 });

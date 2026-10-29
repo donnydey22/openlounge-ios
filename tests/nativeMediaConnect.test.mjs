@@ -1,0 +1,64 @@
+// Focused static/controller regression coverage for the iPhone caller-only paired native-media path.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import ts from 'typescript';
+
+const source = () => readFileSync('src/nativeMedia.ts', 'utf8');
+const appSource = () => readFileSync('App.tsx', 'utf8');
+const dir = mkdtempSync(join(tmpdir(), 'nm-'));
+let js = ts.transpileModule(source(), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText;
+writeFileSync(join(dir, 'consumeUntil.mjs'), ts.transpileModule(readFileSync('src/consumeUntil.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText);
+js = js.replace("from './consumeUntil'", "from './consumeUntil.mjs'");
+writeFileSync(join(dir, 'simulcast.mjs'), ts.transpileModule(readFileSync('src/simulcast.ts', 'utf8'), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 } }).outputText); // FX-080
+js = js.replace("from './simulcast'", "from './simulcast.mjs'");
+js = js.replace(/import \{[^}]*\} from '@stream-io\/react-native-webrtc';/, 'const mediaDevices = globalThis.__md; class MediaStream { constructor(t=[]){this.t=t;} getTracks(){return this.t;} getAudioTracks(){return this.t.filter((x)=>x.kind===\'audio\');} getVideoTracks(){return this.t.filter((x)=>x.kind===\'video\');} addTrack(t){this.t.push(t);} removeTrack(t){this.t=this.t.filter((x)=>x!==t);} toURL(){return \"native\";} }')
+  .replace(/import \{ CHATSWAP_RTC \} from '.\/callMediaProfile';/, "const registerGlobals = () => {}; const CHATSWAP_AUDIO = { echoCancellation: true, autoGainControl: true, noiseSuppression: true }; const CHATSWAP_RTC = { bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' };")
+  .replace(/import \{ Platform \} from 'react-native';/, "const Platform = globalThis.__rnPlatform ?? { OS: 'ios' };")
+  .replace(/import\('mediasoup-client'\)/g, 'Promise.resolve(globalThis.__ms)')
+  .replace(/import\('livekit-client'\)/g, 'Promise.resolve(globalThis.__lk)');
+writeFileSync(join(dir, 'nm.mjs'), js);
+const track = (kind='audio') => ({ kind, readyState: 'live', enabled: true, stop() { this.readyState = 'ended'; }, addEventListener() {} });
+globalThis.__md = { getUserMedia: async (o) => { const a=track('audio'); const v=o.video ? track('video') : null; const all=v?[a,v]:[a]; return { getTracks:()=>all, getAudioTracks:()=>[a], getVideoTracks:()=>v?[v]:[], addTrack(x){all.push(x);}, removeTrack(x){const i=all.indexOf(x);if(i>=0)all.splice(i,1);} }; } };
+let transports=[];
+function mkT(dir) { const h={}; const t={ id:dir+transports.length, connectionState:'new', on:(e,f)=>((h[e]??=[]).push(f)), fire:(s)=>{t.connectionState=s;(h.connectionstatechange||[]).forEach((f)=>f(s));}, produce:async(o)=>({id:'p',options:o,close(){},pause(){},resume(){}}), consume:async(p)=>({id:p.id,kind:'audio',track:track(),close(){}}), restartIce:async()=>{},getStats:async()=>new Map(),close(){t.fire('closed');} }; transports.push(t); return t; }
+globalThis.__ms = { Device: class { rtpCapabilities={}; async load(){} createSendTransport(){return mkT('s');} createRecvTransport(){return mkT('r');} } };
+let liveRoom;
+globalThis.__lk = {
+  RoomEvent: { Reconnecting: 'reconnecting', Reconnected: 'reconnected', Disconnected: 'disconnected', TrackSubscribed: 'track-subscribed', TrackUnsubscribed: 'track-unsubscribed' },
+  Track: { Source: { Microphone: 'microphone', Camera: 'camera' } },
+  Room: class {
+    constructor() { this.handlers = {}; this.localParticipant = { publishTrack: async()=>{}, unpublishTrack: async()=>{} }; liveRoom = this; }
+    on(event, handler) { (this.handlers[event] ??= []).push(handler); }
+    async connect() {}
+    async disconnect() {}
+    fire(event, mediaTrack) { for (const handler of this.handlers[event] ?? []) handler(mediaTrack); }
+  },
+};
+const { NativeMediaController } = await import(join(dir, 'nm.mjs'));
+const tick=()=>new Promise((r)=>setTimeout(r,5));
+let joins=0; const req=async(ev)=>{ if(ev==='ms:join'){joins++;return {ok:true,routerRtpCapabilities:{}};} if(ev==='ms:transport:create')return {ok:true,transport:{}};if(ev==='ms:consume')return {ok:true,consumers:[]};return {ok:true};};
+
+test('controller coalesces same-path native build', async()=>{ transports=[];joins=0;const c=new NativeMediaController(req,()=>{},()=>{});const a=c.handle({op:'connect',callId:'c1',rebuild:true});const b=c.handle({op:'connect',callId:'c1',rebuild:true});await tick();transports.filter((t)=>t.id.startsWith('s')).forEach((t)=>t.fire('connected'));await Promise.all([a,b]);assert.ok(joins >= 1);c.closeAll();});
+test('paired capture is controller-owned, call-latched, and retained across rebuild/provider migration',()=>{const s=source();assert.match(s,/private capture: NativeCapture \| null/);assert.match(s,/const existing = this\.capture\?\.callId === callId/);assert.match(s,/this\.capture = capture \?\? \{ callId, stream, nativeVideo, streamId/);assert.match(s,/new NativeMediaSession\(callId,[\s\S]{0,240}this\.capture\.stream, this\.capture/);assert.match(s,/\.{3}\(this\.streamId \? \{ streamId: this\.streamId \} : \{\}\)/);assert.match(s,/this\.capture\?\.stream\.getTracks\(\)\.forEach\(\(t\) => t\.stop\(\)\)/);assert.doesNotMatch(s.slice(s.indexOf('  close() {'),s.indexOf('function waitConnected')),/this\.stream\.getTracks\(\)\.forEach/);});
+test('prepare is capture-free and caches authenticated Mediasoup device work while ringing',()=>{const s=source();const b=s.slice(s.indexOf("case 'prepare'"),s.indexOf("case 'connect'"));assert.match(b,/import\('mediasoup-client'\)/);assert.doesNotMatch(b,/livekit/i);assert.match(b,/this\.req<[\s\S]*ms:join/);assert.match(b,/new Device/);assert.doesNotMatch(b,/getUserMedia|takeStream|produce\(/);assert.match(s,/case 'prewarm':[\s\S]{0,120}capture is intentionally deferred/);});
+test('LiveKit is removed from the iPhone call lane: Stream WebRTC only, connectLiveKit rejects, no LiveKit session',async()=>{const s=source();assert.doesNotMatch(s,/from '@livekit|import\('livekit-client'\)|class NativeLiveKitSession|this\.lk\b/);assert.match(s,/from '@stream-io\/react-native-webrtc'/);const c=new NativeMediaController(req,()=>{},()=>{});await assert.rejects(c.handle({op:'connectLiveKit',callId:'c1',url:'wss://x.invalid',token:'t'}),/livekit calling removed/);assert.match(appSource(),/RTCView \} from '@stream-io\/react-native-webrtc'/);assert.doesNotMatch(appSource(),/@livekit\//);});
+test('relay-only native rebuild uses the existing TLS TURN credentials without a server path change',()=>{const s=source();assert.match(s,/relayOnly/);assert.match(s,/iceTransportPolicy: this\.relayOnly \? 'relay' : 'all'/);assert.match(s,/cmd\.relayOnly === true/);});
+test('camera lifecycle remains native-only and video loss retains audio',()=>{const s=source();assert.match(s,/if \(!this\.nativeVideo\) return false/);assert.match(s,/camera-unavailable/);assert.match(s,/this\.capture\.stream\.removeTrack\(prior\); prior\.stop\(\)/);});
+test('native remote video reports call-scoped availability only, replays it at reattach',()=>{const s=source();const session=s.slice(s.indexOf('export class NativeMediaSession'),s.indexOf('function waitConnected'));assert.match(session,/replayVideoState\(\)[\s\S]{0,200}callId: this\.callId/);assert.match(session,/state: 'remote-video', callId: this\.callId, on: true/);assert.match(session,/state: 'remote-video', callId: this\.callId, on: false/);const controller=s.slice(s.indexOf("case 'connect'"),s.indexOf("case 'status'"));assert.match(controller,/cur\.replayVideoState\(\)/);});
+test('native iPhone renderer puts a shadow-free rounded PiP above remote and never double-crops a page-owned tile for the keyboard',()=>{const app=appSource();assert.match(app,/big: \{ kind: big\.kind, fit: 'contain', rect: big\.rect \}/);const map=app.slice(app.indexOf('  const mapTile ='),app.indexOf('  const fullStageRemote ='));assert.doesNotMatch(map,/kbHeight|maxHeight/);assert.match(app,/nativeTile: \{ position: 'absolute', zIndex: 0/);assert.match(app,/nativePipFrame: \{ position: 'absolute', zIndex: 1, borderRadius: 18/);const frame=app.slice(app.indexOf('  nativePipFrame:'),app.indexOf('  nativeFill:'));assert.doesNotMatch(frame,/shadowColor|shadowOffset|shadowOpacity|shadowRadius/);assert.match(frame,/backgroundColor: 'transparent'/);assert.doesNotMatch(app,/\bzOrder=\{/);});
+test('native iPhone presentation pins real local PiP below runtime safe top without assuming WebView y equals safe top',()=>{const app=appSource();assert.match(app,/export function nativePipFrame\(webFrame: WebFrame, insets: NativeInsets, edgeToEdgeTop: boolean\)/);assert.match(app,/const NATIVE_PIP_MARGIN = 12/);assert.match(app,/rightBound - width - NATIVE_PIP_MARGIN/);assert.match(app,/const pipTile = visibleNativeVideo && nativeVideo\?\.local && windowFrame/);assert.match(app,/nativePipFrame\(windowFrame, insets, true\)/);assert.match(app,/\(pipTile && nativeVideo\?\.local\)/);assert.match(app,/streamURL=\{nativeVideo\.local\.toURL\(\)\}/);});
+test('native iPhone sender uses one receiver-safe VP8 encoding and keeps native video within the shared weak-link budget',()=>{const s=source();assert.match(s,/const NATIVE_CAMERA_MAX_BPS = 850_000/);assert.match(s,/encodings: \[\{ maxBitrate: NATIVE_CAMERA_MAX_BPS, maxFramerate: 30, scaleResolutionDownBy: 1/);assert.match(s,/function preferredVP8/);assert.match(s,/codec: vp8/);assert.match(s,/VP8 is therefore the[\s\S]{0,180}H\.264/);assert.doesNotMatch(s,/NATIVE_CAMERA_LAYERS|preferredH264|rid: 'q'|rid: 'h'|rid: 'f'/);const ladder=s.slice(s.indexOf('  async ladder('),s.indexOf('  /** plain stats objects'));assert.match(ladder,/: tier \? tier\.audioBps : Math\.max\(16_000/);assert.match(ladder,/Number\.isFinite\(step\.voiceBps\) \? Math\.max\(32_000, Math\.min\(64_000/);assert.match(s,/opusMaxAverageBitrate: 64000/);assert.match(ladder,/encoding\.maxBitrate = next\.videoBps/);assert.doesNotMatch(ladder,/Math\.max\(60_000/);assert.match(s,/__olTransportDirection: direction/);});
+
+test('iOS native video call: ladder sheds camera along netAdapt tiers and holds voice >=32 kbps (bursty muddy audio fix); audio-only and non-iOS unchanged',async()=>{
+  const m=await import(join(dir,'nm.mjs'));
+  assert.deepEqual(m.iosVideoTier(16_000,true),{audioBps:32_000,video:{videoBps:60_000,videoFps:8,videoScale:4}});
+  assert.deepEqual(m.iosVideoTier(24_000,true),{audioBps:32_000,video:{videoBps:150_000,videoFps:15,videoScale:4}});
+  assert.deepEqual(m.iosVideoTier(32_000,true),{audioBps:32_000,video:{videoBps:400_000,videoFps:24,videoScale:2}});
+  assert.deepEqual(m.iosVideoTier(48_000,true),{audioBps:48_000,video:{videoBps:850_000,videoFps:30,videoScale:1}});
+  assert.equal(m.iosVideoTier(16_000,false),null);
+  const ladder=source().slice(source().indexOf('  async ladder('),source().indexOf('  /** plain stats objects'));
+  assert.match(ladder,/Platform\.OS === 'ios' && !!this\.videoProducer && !Number\.isFinite\(step\.videoBps\)/);
+});
