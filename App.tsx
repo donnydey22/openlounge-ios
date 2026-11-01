@@ -525,6 +525,15 @@ function Shell() {
   );
   const onCallAction = useCallback(
     (a: CallAction, coldStart: boolean) => {
+      if (a.type === 'incomingFallback') {
+        setIncomingCard({ callId: a.callId, name: a.name, video: a.video === true });
+        return;
+      }
+      if (a.type === 'callFailure') {
+        console.warn('[calls] native incoming call failure:', a.reason);
+        setIncomingCard(null);
+        return;
+      }
       if ((a as { type: string }).type === 'ringback') {
         // native ringback status → page (0.3.13+): the web ring takes over if native is not actually playing
         const playing = !!(a as unknown as { playing?: boolean }).playing;
@@ -544,8 +553,8 @@ function Shell() {
         return;
       }
       if (a.type === 'answer') {
-        // native call media: grab the mic + load WebRTC while the page accepts (CallKit activation then just flips audio on)
-        void nativeMedia.current?.handle({ op: 'prewarm' }).catch(() => {});
+        // Incoming audio preparation belongs to the CallKit-owned native coordinator. The
+        // WebView is notified only so it can display the call UI after the canonical action.
         unlockForCall();
         setIncomingCard(null);
         const url = acceptUrl(appOrigin(), a.callId);
@@ -985,6 +994,7 @@ function Shell() {
           video={incomingCard.video}
           onAccept={() => {
             const id = incomingCard.callId;
+            forwardPageCallMessage({ type: 'call:answering', callId: id, video: incomingCard.video });
             unlockForCall();
             setIncomingCard(null);
             navigate(acceptUrl(appOrigin(), id));

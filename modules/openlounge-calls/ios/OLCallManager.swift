@@ -19,31 +19,6 @@ import UIKit
 // defaultToSpeaker + Bluetooth, so ringback and the call never land on the earpiece unexpectedly;
 // the previous category is restored afterwards. All state lives on the main queue.
 
-final class OLCall {
-  let callId: String
-  let uuid: UUID
-  let incoming: Bool
-  var video: Bool
-  /// True only for an explicitly server-granted outgoing iPhone native-video call.
-  let nativeMedia: Bool
-  var answered = false
-  var answeredInPage = false
-  var connected = false
-  var ended = false
-  var expiresAt: Date?
-  var declineToken: String?
-  var expiryTimer: Timer?
-  var pollTimer: Timer?
-
-  init(callId: String, uuid: UUID, incoming: Bool, video: Bool, nativeMedia: Bool = false) {
-    self.callId = callId
-    self.uuid = uuid
-    self.incoming = incoming
-    self.video = video
-    self.nativeMedia = nativeMedia
-  }
-}
-
 enum OLCallAuth {
   private static let service = "com.donnydey.openlounge.calls"
   private static let account = "access"
@@ -94,8 +69,20 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private static let idPattern = "^[A-Za-z0-9_-]{1,64}$"
   private static let declineTokenPattern = "^v1\\.[A-Za-z0-9_-]{8,500}\\.[A-Za-z0-9_-]{20,100}$"
 
+  /// Only a short-lived canonical CallKit identity is persisted. Credentials and decline tokens
+  /// are deliberately never stored here; a fresh VoIP delivery supplies those when needed.
+  private struct PersistedIncomingIdentity: Codable {
+    let uuid: String
+    let expiresAt: TimeInterval
+  }
+  private static let incomingIdentityKey = "ol.incomingCallIdentities.v1"
+  private var incomingIdentities: [String: PersistedIncomingIdentity] = {
+    guard let data = UserDefaults.standard.data(forKey: OLCallManager.incomingIdentityKey),
+          let value = try? JSONDecoder().decode([String: PersistedIncomingIdentity].self, from: data) else { return [:] }
+    return value
+  }()
+
   private var started = false
-  private var registry: PKPushRegistry?
   private var provider: CXProvider?
   private let controller = CXCallController()
   private var calls: [UUID: OLCall] = [:]
@@ -146,15 +133,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLNativeAudio.setUp()
     if started { return }
     started = true
-    let cfg = CXProviderConfiguration()
-    cfg.supportsVideo = true
-    cfg.maximumCallGroups = 1
-    cfg.maximumCallsPerCallGroup = 1
-    cfg.supportedHandleTypes = [.generic]
-    cfg.includesCallsInRecents = false
-    let p = CXProvider(configuration: cfg)
-    p.setDelegate(self, queue: nil) // main queue
-    provider = p
+    provider = OLTelecomRegistration.shared.start(providerDelegate: self, pushDelegate: self)
 
     NotificationCenter.default.addObserver(
       self, selector: #selector(onRouteChange(_:)),
@@ -163,12 +142,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       self, selector: #selector(onInterruption(_:)),
       name: AVAudioSession.interruptionNotification, object: nil)
     prepareHeadsetSession()
-
-    let r = PKPushRegistry(queue: DispatchQueue.main)
-    r.delegate = self
-    r.desiredPushTypes = [.voIP]
-    registry = r
-    NSLog("[OLCalls] PushKit + CallKit ready")
+    NSLog("[OLCalls] PushKit + CallKit ready through telecom core")
 
     // Simulator CI only (simctl launch with SIMCTL_CHILD_OL_SIM_RING=1): ring once through the normal push path.
     if ProcessInfo.processInfo.environment["OL_SIM_RING"] == "1" {
@@ -246,23 +220,141 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   private var hasLiveCall: Bool { calls.values.contains { !$0.ended } }
 
+  private func saveIncomingIdentities() {
+    let now = Date().timeIntervalSince1970
+    incomingIdentities = incomingIdentities.filter { $0.value.expiresAt > now - 5 }
+    if incomingIdentities.count > 16 {
+      let keep = incomingIdentities.sorted { $0.value.expiresAt > $1.value.expiresAt }.prefix(16)
+      incomingIdentities = Dictionary(uniqueKeysWithValues: keep)
+    }
+    if let data = try? JSONEncoder().encode(incomingIdentities) {
+      UserDefaults.standard.set(data, forKey: Self.incomingIdentityKey)
+    }
+  }
+
+  private func persistCanonicalIdentity(_ c: OLCall) {
+    guard c.incoming, c.reported, Self.valid(c.callId) else { return }
+    let expires = c.expiresAt?.timeIntervalSince1970 ?? Date().addingTimeInterval(60).timeIntervalSince1970
+    incomingIdentities[c.callId] = PersistedIncomingIdentity(uuid: c.uuid.uuidString, expiresAt: expires)
+    saveIncomingIdentities()
+  }
+
+  private func canonicalUUID(for callId: String, now: Date = Date()) -> UUID? {
+    guard let stored = incomingIdentities[callId] else { return nil }
+    guard stored.expiresAt > now.timeIntervalSince1970 - 5, let uuid = UUID(uuidString: stored.uuid) else {
+      incomingIdentities[callId] = nil
+      saveIncomingIdentities()
+      return nil
+    }
+    return uuid
+  }
+
+  private func removeCanonicalIdentity(_ c: OLCall) {
+    guard c.incoming else { return }
+    incomingIdentities[c.callId] = nil
+    saveIncomingIdentities()
+  }
+
+  /// Provider callbacks and native reporting share one redacted diagnostic shape.
+  private func traceProviderCallback(_ event: String, uuid: UUID? = nil) {
+    let c = uuid.flatMap { calls[$0] }
+    let sinceSignalMs = c.map { Int(Date().timeIntervalSince($0.signalingAt) * 1000) } ?? -1
+    let snapshot = c?.redactedSnapshot() ?? "missing"
+    NSLog("[OLCalls] client-diag callback=%@ uuid=%@ sinceSignalMs=%d session={%@}", event, uuid?.uuidString ?? "-", sinceSignalMs, snapshot)
+  }
+
+  private func finishIncomingReport(_ c: OLCall) {
+    c.reportWatchdog?.cancel()
+    c.reportWatchdog = nil
+    let completions = c.reportCompletions
+    c.reportCompletions.removeAll()
+    for completion in completions { completion() }
+  }
+
+  private func armIncomingReportWatchdog(_ c: OLCall) {
+    let work = DispatchWorkItem { [weak self, weak c] in
+      guard let self, let c, self.calls[c.uuid] === c, c.reporting, !c.reported else { return }
+      c.fallbackShown = true
+      self.traceProviderCallback("incoming-report-watchdog", uuid: c.uuid)
+      NSLog("[OLCalls] WATCHDOG: incoming CallKit report has not completed within 2 s; showing native fallback")
+      self.emit(["type": "incomingFallback", "callId": c.callId, "name": c.callerName, "video": c.video])
+    }
+    c.reportWatchdog = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: work)
+  }
+
+  /// The initial report runs immediately in PushKit's delivery turn. Only a failed report is retried,
+  /// on the same canonical UUID, with bounded backoff. Successful duplicate ingress never reports again.
+  private func reportIncoming(_ c: OLCall, update: CXCallUpdate, stale: Bool, busy: Bool) {
+    guard let provider else {
+      c.reporting = false
+      finishIncomingReport(c)
+      calls[c.uuid] = nil
+      emit(["type": "callFailure", "callId": c.callId, "reason": "callkit-provider-missing"])
+      return
+    }
+    let attempt = c.reportAttempts
+    c.reportAttempts += 1
+    c.reporting = true
+    traceProviderCallback("report-incoming-attempt-\(attempt + 1)", uuid: c.uuid)
+    provider.reportNewIncomingCall(with: c.uuid, update: update) { [weak self, weak c] error in
+      DispatchQueue.main.async {
+        guard let self, let c, self.calls[c.uuid] === c else { return }
+        if let error {
+          let backoff: [TimeInterval] = [0.20, 0.60]
+          if attempt < backoff.count {
+            let delay = backoff[attempt]
+            NSLog("[OLCalls] incoming report attempt %d failed (%@); retrying in %.2f s", attempt + 1, error.localizedDescription, delay)
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak c] in
+              guard let self, let c, self.calls[c.uuid] === c, !c.reported else { return }
+              self.reportIncoming(c, update: update, stale: stale, busy: busy)
+            }
+            return
+          }
+          c.reporting = false
+          self.finishIncomingReport(c)
+          self.calls[c.uuid] = nil
+          self.traceProviderCallback("report-incoming-failed", uuid: c.uuid)
+          NSLog("[OLCalls] incoming call report failed after %d attempts: %@", c.reportAttempts, error.localizedDescription)
+          self.emit(["type": "callFailure", "callId": c.callId, "reason": "callkit-report-failed"])
+          return
+        }
+
+        c.reporting = false
+        c.reported = true
+        if !stale && !busy { self.persistCanonicalIdentity(c) }
+        self.finishIncomingReport(c)
+        self.traceProviderCallback("report-incoming-success", uuid: c.uuid)
+        NSLog("[OLCalls] incoming call reported once (stale=%d busy=%d)", stale ? 1 : 0, busy ? 1 : 0)
+        if stale || busy {
+          self.provider?.reportCall(with: c.uuid, endedAt: nil, reason: busy ? .unanswered : .remoteEnded)
+          if busy { self.declineOnServer(c.callId, declineToken: c.declineToken) }
+          self.calls[c.uuid] = nil
+          return
+        }
+        self.armRinging(c)
+      }
+    }
+  }
+
   /// Stale-call clearing (Oct 17): before a new incoming call is reported, end anything CallKit still shows that is not
   /// a real live call, so a leftover ring/orphan never makes the new call look "busy" or stack behind a dead one.
   ///  - tracked incoming calls that were never answered and are >5 s past expiresAt → reportCall(ended, .unanswered)
   ///  - CallKit calls of this app (CXCallObserver) that are not ended and not in `calls` (orphaned UUIDs, e.g. after a
   ///    JS reload or a lost end event) → CXEndCallAction via CXCallController; reportCall(ended) if the request fails
   /// Answered/connected and outgoing calls are never touched.
-  private func clearStaleCalls(now: Date = Date()) {
+  private func clearStaleCalls(now: Date = Date(), preserving preservedUUID: UUID? = nil) {
     for c in Array(calls.values) where c.incoming && !c.answered && !c.ended {
       if let e = c.expiresAt, now.timeIntervalSince(e) > 5 {
         NSLog("[OLCalls] clearing expired unanswered call before new incoming")
         c.ended = true
         stopTimers(c)
+        removeCanonicalIdentity(c)
         calls[c.uuid] = nil
         provider?.reportCall(with: c.uuid, endedAt: nil, reason: .unanswered)
       }
     }
-    for obs in controller.callObserver.calls where !obs.hasEnded && calls[obs.uuid] == nil {
+    for obs in controller.callObserver.calls where !obs.hasEnded && obs.uuid != preservedUUID && calls[obs.uuid] == nil {
       let uuid = obs.uuid
       NSLog("[OLCalls] ending orphaned CallKit call before new incoming")
       controller.request(CXTransaction(action: CXEndCallAction(call: uuid))) { [weak self] error in
@@ -299,7 +391,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   private func handleIncoming(_ d: [String: String], completion: @escaping () -> Void) {
-    guard let provider = provider else { completion(); return }
+    guard provider != nil else { completion(); return }
     let callId = d["callId"] ?? ""
     let ok = Self.valid(callId)
     var name = String((d["callerName"] ?? "").prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
@@ -319,41 +411,48 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     update.supportsUngrouping = false
     update.supportsDTMF = false
 
-    // Duplicate push for a call that's already ringing: it still has to be reported (same UUID → harmless error).
+    let persistedUUID = ok ? canonicalUUID(for: callId) : nil
+    clearStaleCalls(preserving: persistedUUID) // orphans / expired rings must not make this call look busy
+
+    // A PushKit/page race or APNs redelivery reuses the canonical CallSession/UUID. It must
+    // complete this push delivery but must never call reportNewIncomingCall a second time.
     if ok, let existing = call(callId) {
-      provider.reportNewIncomingCall(with: existing.uuid, update: update) { _ in DispatchQueue.main.async { completion() } }
+      existing.callerName = name
+      existing.video = video
+      if let expires { existing.expiresAt = expires }
+      if let declineToken { existing.declineToken = declineToken }
+      traceProviderCallback("incoming-duplicate", uuid: existing.uuid)
+      completion()
       return
     }
 
-    clearStaleCalls() // orphans / expired rings must not make this call look busy
     // Every VoIP push must produce a reported call, even ones we won't ring for (then it's ended right away).
     let stale = !ok || (d["type"] ?? "call_incoming") != "call_incoming" || (expires.map { $0.timeIntervalSinceNow <= 1 } ?? false)
+    if !stale, let uuid = persistedUUID, !hasLiveCall {
+      let recovered = OLCall(callId: callId, uuid: uuid, incoming: true, video: video)
+      recovered.callerName = name
+      recovered.expiresAt = expires
+      recovered.declineToken = declineToken
+      recovered.reported = true
+      calls[uuid] = recovered
+      armRinging(recovered)
+      traceProviderCallback("incoming-recovered", uuid: uuid)
+      NSLog("[OLCalls] recovered canonical incoming UUID after relaunch; no second CallKit report")
+      completion()
+      return
+    }
     let busy = !stale && hasLiveCall
     let uuid = UUID()
     let c = OLCall(callId: ok ? callId : "", uuid: uuid, incoming: true, video: video)
+    c.callerName = name
     c.expiresAt = expires
     c.declineToken = declineToken
-    if !stale && !busy { calls[uuid] = c }
-
-    provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
-      DispatchQueue.main.async {
-        completion()
-        guard let self = self else { return }
-        if let error = error {
-          // Do Not Disturb / blocked / call limit: nothing rings.
-          NSLog("[OLCalls] incoming call not shown: %@", error.localizedDescription)
-          self.calls[uuid] = nil
-          return
-        }
-        NSLog("[OLCalls] incoming call reported (stale=%d busy=%d)", stale ? 1 : 0, busy ? 1 : 0)
-        if stale || busy {
-          self.provider?.reportCall(with: uuid, endedAt: nil, reason: busy ? .unanswered : .remoteEnded)
-          if busy { self.declineOnServer(callId, declineToken: declineToken) } // already in a call → reject as busy
-          return
-        }
-        self.armRinging(c)
-      }
-    }
+    c.reportCompletions.append(completion)
+    // Keep every report attempt in the canonical table until it completes. This also prevents
+    // a second invalid/busy delivery from creating a second concurrent CallKit report.
+    calls[uuid] = c
+    armIncomingReportWatchdog(c)
+    reportIncoming(c, update: update, stale: stale, busy: busy)
   }
 
   private func armRinging(_ c: OLCall) {
@@ -374,28 +473,28 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     c.pollTimer?.invalidate(); c.pollTimer = nil
   }
 
-  /// Answered on the page's ring screen while the app was in the foreground: no VoIP push, so no CallKit call and
-  /// no didActivate — the session was never made live and the mic sent silence (Oct 29–31: e8e37ac8, 06460792,
-  /// 696dbe7f, 0d363cbd). Mirror the working CallKit answer path once: configure, activate, enable the audio unit.
-  private func activateInAppAnswer(_ m: [String: Any]) {
-      if let v = m["video"] as? Bool { callVideo = v }
-      configureAudio()
-      let session = AVAudioSession.sharedInstance()
-      if (try? session.setActive(true)) != nil {
-        NSLog("[OLCalls] in-app answer: audio session activated (video=%d)", callVideo ? 1 : 0)
-        if !callVideo || ((m["nativeMedia"] as? Bool) ?? false) { nativeAudioOn = true; OLNativeAudio.didActivate(session, video: callVideo) }
-        for delay in [0.0, 0.35, 1.2] {
-          DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-            self?.emit(["type": "audio", "reason": "inapp-activate"])
-          }
-        }
-      }
+  /// Terminal native cleanup always operates on the complete local call set. This avoids
+  /// leaving an orphaned ringing UUID behind after a provider reset or global failure.
+  private func endAllCalls(reason: CXCallEndedReason, reportToProvider: Bool) {
+    let targets = Array(calls.values)
+    for c in targets {
+      c.ended = true
+      stopTimers(c)
+      c.reportWatchdog?.cancel()
+      c.reportWatchdog = nil
+      finishIncomingReport(c)
+      removeCanonicalIdentity(c)
+      if c.answered || !c.incoming { emit(["type": "hangup", "callId": c.callId]) }
+      if reportToProvider { provider?.reportCall(with: c.uuid, endedAt: Date(), reason: reason) }
+      calls[c.uuid] = nil
+    }
   }
 
   private func endRinging(_ c: OLCall, reason: CXCallEndedReason) {
     guard calls[c.uuid] === c, !c.ended, !c.answered else { return }
     c.ended = true
     stopTimers(c)
+    removeCanonicalIdentity(c)
     calls[c.uuid] = nil
     provider?.reportCall(with: c.uuid, endedAt: nil, reason: reason)
     resetAudioState("ring-end")
@@ -468,22 +567,21 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   // MARK: - CallKit
 
   public func providerDidReset(_ provider: CXProvider) {
-    for c in calls.values {
-      stopTimers(c)
-      if c.answered || !c.incoming { emit(["type": "hangup", "callId": c.callId]) }
-    }
-    calls.removeAll()
+    traceProviderCallback("provider-reset")
+    endAllCalls(reason: .failed, reportToProvider: false)
     resetAudioState("provider-reset")
     restoreAudioIfIdle()
   }
 
   public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+    traceProviderCallback("answer-action", uuid: action.callUUID)
     guard let c = calls[action.callUUID], !c.ended else { action.fail(); return }
     c.answered = true
     markAnsweredHere(c.callId)
     stopTimers(c)
     callVideo = c.video
-    configureAudio()
+    // Incoming CallKit owns the audio session. Outgoing behavior is retained exactly as before.
+    if !c.incoming { configureAudio() }
     let s73 = AVAudioSession.sharedInstance()
     NSLog("[OLCalls] answer action: category=%@ mode=%@ inPage=%d", s73.category.rawValue, s73.mode.rawValue, c.answeredInPage ? 1 : 0)
     action.fulfill()
@@ -491,9 +589,11 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+    traceProviderCallback("end-action", uuid: action.callUUID)
     guard let c = calls[action.callUUID] else { action.fulfill(); return }
     c.ended = true
     stopTimers(c)
+    removeCanonicalIdentity(c)
     calls[action.callUUID] = nil
     pageMuted = nil; pendingPageMutes = [] // FX-063: no stale mute echo leaks into the next call's start
     if c.incoming && !c.answered {
@@ -509,6 +609,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+    traceProviderCallback("mute-action", uuid: action.callUUID)
     action.fulfill()
     if let i = pendingPageMutes.firstIndex(of: action.isMuted) { pendingPageMutes.removeSubrange(0...i); return } // echo of a page tap
     if pageMuted == action.isMuted { return } // already the page's state
@@ -517,6 +618,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    traceProviderCallback("start-action", uuid: action.callUUID)
     guard let c = calls[action.callUUID] else { action.fail(); return }
     callVideo = c.video
     configureAudio()
@@ -525,16 +627,20 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+    traceProviderCallback("hold-action", uuid: action.callUUID)
     action.fail() // holding isn't supported
   }
 
   public func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
+    traceProviderCallback("timed-out-action", uuid: action.uuid)
     action.fulfill()
   }
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    traceProviderCallback("did-activate")
     callKitAudioActive = true
-    configureAudio()
+    let incomingCallIsLive = calls.values.contains { !$0.ended && $0.incoming }
+    if !incomingCallIsLive { configureAudio() }
     NSLog("[OLCalls] CallKit didActivate: category=%@ mode=%@ nativeAudioOn=%d", audioSession.category.rawValue, audioSession.mode.rawValue, nativeAudioOn ? 1 : 0)
     // Ungranted video calls retain the established WKWebView-media behavior, so their native WebRTC audio unit must
     // remain off. The explicit native-video caller marker is the sole video exception: its one app-owned mic+camera
@@ -550,22 +656,21 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
-    // CallKit activating the session (outgoing CXStartCallAction, or answer) interrupts WebKit's AudioContext and
-    // pauses the page's ring <audio>: the web ringback went silent the moment the call was mirrored into CallKit.
-    // Tell JS so it re-runs the page's audio resume (AudioContext + ring element) on the new session.
-    emit(["type": "audio", "reason": "callkit-activate"])
-    // WebKit re-binds its audio units a few hundred ms after CallKit hands over the session; a single kick can land
-    // before that and the ring <audio> / remote voice stays paused (ring "plays briefly then stops", silent audio-only
-    // call). Re-kick twice more — the page side is idempotent.
-    for delay in [0.35, 1.2] {
-      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-        guard let self = self, self.hasLiveCall else { return }
-        self.emit(["type": "audio", "reason": "callkit-activate-settle"])
+    // Incoming audio never wakes WebKit. The existing page-audio notifications remain only for
+    // untouched outgoing behavior.
+    if !incomingCallIsLive {
+      emit(["type": "audio", "reason": "callkit-activate"])
+      for delay in [0.35, 1.2] {
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+          guard let self = self, self.hasLiveCall else { return }
+          self.emit(["type": "audio", "reason": "callkit-activate-settle"])
+        }
       }
     }
   }
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    traceProviderCallback("did-deactivate")
     // b74: a late didDeactivate after resetAudioState() already ran is a no-op for our state (only WebRTC's session
     // bookkeeping is told); a new call's flags are never touched by the previous call's deactivation
     if !hasLiveCall && !callKitAudioActive && !nativeAudioOn {
@@ -593,7 +698,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// b74: safety net (call:connected) and the optional server nudge (call:audioRecover). Audio calls only: a live
   /// CallKit call with an active session but the unit off → enable it once and log it. Transport is never touched.
   private func ensureAudioEnabled(_ why: String) {
-    guard !callVideo, hasLiveCall, callKitAudioActive, !OLNativeAudio.isEnabled else { return }
+    guard let current = calls.values.first(where: { !$0.ended }), !current.incoming,
+          !callVideo, callKitAudioActive, !OLNativeAudio.isEnabled else { return }
     NSLog("[OLCalls] b74 force-enable native audio (%@): nativeAudioOn=%d (stale flag / missed didActivate)", why, nativeAudioOn ? 1 : 0)
     nativeAudioOn = true
     OLNativeAudio.didActivate(AVAudioSession.sharedInstance(), video: false)
@@ -609,45 +715,20 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let callId = (m["callId"] as? String) ?? ""
     switch type {
     case "call:incoming":
-      // Page got call:incoming over WS while App Lock is up — report CallKit the same way a VoIP push would.
-      clearStaleCalls()
-      guard Self.valid(callId), call(callId) == nil, !hasLiveCall else { return }
       let video = (m["video"] as? Bool) ?? false
       var name = String(((m["name"] as? String) ?? "").prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
       if name.isEmpty { name = "Open Lounge" }
-      let expires: Date? = {
-        if let ms = m["expiresAt"] as? Double { return Date(timeIntervalSince1970: ms / 1000) }
-        if let ms = m["expiresAt"] as? Int { return Date(timeIntervalSince1970: Double(ms) / 1000) }
-        return Date().addingTimeInterval(45)
-      }()
-      let uuid = UUID()
-      let c = OLCall(callId: callId, uuid: uuid, incoming: true, video: video)
-      c.expiresAt = expires
-      calls[uuid] = c
-      let update = CXCallUpdate()
-      update.remoteHandle = CXHandle(type: .generic, value: name)
-      update.localizedCallerName = name
-      update.hasVideo = video
-      update.supportsHolding = false
-      update.supportsGrouping = false
-      update.supportsUngrouping = false
-      update.supportsDTMF = false
-      provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
-        DispatchQueue.main.async {
-          guard let self = self else { return }
-          if let error = error {
-            NSLog("[OLCalls] page incoming CallKit refused: %@", error.localizedDescription)
-            self.calls[uuid] = nil
-            return
-          }
-          self.armRinging(c)
-        }
-      }
+      var incoming: [String: String] = ["type": "call_incoming", "callId": callId, "callerName": name, "video": video ? "1" : "0"]
+      if let ms = m["expiresAt"] as? Double { incoming["expiresAt"] = String(Int(ms)) }
+      if let ms = m["expiresAt"] as? Int { incoming["expiresAt"] = String(ms) }
+      // Page/WS is a fallback ingress only. It shares the same CallSession/UUID as PushKit.
+      handleIncoming(incoming, completion: {})
 
     case "call:ringtonePrepare":
-      // page is about to play the incoming ringtone (tones.ts): ring/speaker session, not a left-over call session
+      // CallKit owns the incoming ringtone/session. Retain b74 reset semantics but do not activate
+      // or configure AVAudioSession from the WebView path.
       resetAudioState("ringtone-prepare") // b74: no-op while a call is live
-      prepareRingtoneSession()
+      NSLog("[OLCalls] incoming ringtone preparation deferred to CallKit")
 
     case "call:outgoing":
       let video = (m["video"] as? Bool) ?? false
@@ -699,19 +780,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       markAnsweredHere(callId)
       if let c = call(callId), c.incoming, !c.answered, !c.ended {
         c.answeredInPage = true
-        // build 73: foreground ring left the session active app-side (page ringtone / call:ringtonePrepare), so CallKit
-        // never handed it over on the in-app answer → no didActivate → native mic silent (722bf235, 1331bf6c). Release
-        // the app-owned session (configure-don't-activate) so CallKit's answer activates it and didActivate starts the mic.
         stopRingback()
-        nativeAudioOn = false // b74
-        if !callKitAudioActive {
-          do {
-            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-            NSLog("[OLCalls] b73 in-app answer: released app-owned session before CallKit answer")
-          } catch {
-            NSLog("[OLCalls] b73 in-app answer: release skipped: %@", error.localizedDescription)
-          }
-        }
+        // The fallback card and the in-page UI share this one CallKit action. No incoming
+        // AVAudioSession activation occurs here; didActivate is the audio boundary.
         controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { err in
           if let err = err { NSLog("[OLCalls] b73 in-app CXAnswerCallAction failed: %@", err.localizedDescription) }
         }
@@ -719,6 +790,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
     case "call:connected":
       stopRingback()
+      let incomingCall = call(callId)?.incoming == true
       if let c = call(callId) {
         c.connected = true
         stopTimers(c)
@@ -731,12 +803,15 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
           provider?.reportOutgoingCall(with: c.uuid, connectedAt: Date())
         }
       } else if !hasLiveCall && !callKitAudioActive {
-        activateInAppAnswer(m)
+        NSLog("[OLCalls] refusing page-only incoming audio activation without a live CallKit session")
+        emit(["type": "callFailure", "callId": callId, "reason": "missing-callkit-session"])
       }
       // ringback player released the session's output: have the page re-check its mic (captured at dial time, before
       // CallKit activated the session — WebKit can leave it muted → the callee hears nothing) and remote audio
-      emit(["type": "audio", "reason": "connected"])
-      ensureAudioEnabled("connected")
+      if !incomingCall && hasLiveCall {
+        emit(["type": "audio", "reason": "connected"])
+        ensureAudioEnabled("connected")
+      }
       // session was configured once at CallKit activation; adjusting it again after connect re-ran the voice
       // processing unit mid-call (volume pumping). Only a real device change or a speaker tap touches it now.
 
@@ -745,6 +820,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       for c in targets {
         c.ended = true
         stopTimers(c)
+        removeCanonicalIdentity(c)
         calls[c.uuid] = nil
         if (m["reason"] as? String) == "failed" { provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .failed); continue }
         provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .remoteEnded)
@@ -1028,9 +1104,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
       if self.wantRingback { self.playRingback() }
-      // GSM call / Siri / alarm over: WebKit leaves the remote <audio> paused and the mic muted. Kick the page so it
-      // resumes playback and recaptures the mic (checkMicAlive) — the call otherwise stays silent both ways.
-      if self.hasLiveCall { self.emit(["type": "audio", "reason": "interruption-ended"]) }
+      // Incoming audio is native-only. The legacy WebView recovery remains for untouched outgoing calls.
+      if self.calls.values.contains(where: { !$0.ended && !$0.incoming }) {
+        self.emit(["type": "audio", "reason": "interruption-ended"])
+      }
     }
   }
 
@@ -1041,19 +1118,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     ringback = nil
     if ringbackReported == true { emit(["type": "ringback", "playing": false]) }
     ringbackReported = nil
-  }
-
-  /// before the incoming ringtone: native audio engine stopped, playAndRecord/.default/.defaultToSpeaker re-applied
-  /// and the loudspeaker forced (no headset) — ringtone only, never while a call is live
-  // b74: foreground ring = the app owns the session from here; a stale callKitAudioActive from the previous call made
-  // call:answering skip the release → no didActivate → silent mic (Keiko 07:54:13Z / 07:54:51Z, both foreground rings)
-  private func prepareRingtoneSession() {
-    guard !hasLiveCall else { return }
-    OLNativeAudio.stopIdle()
-    prepareHeadsetSession()
-    let s = AVAudioSession.sharedInstance()
-    try? s.setActive(true)
-    try? s.overrideOutputAudioPort(Self.headsetAttached() ? .none : .speaker)
   }
 
   private func restoreAudioIfIdle(force: Bool = false) {

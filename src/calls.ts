@@ -9,6 +9,8 @@ export type CallAction =
   | { type: 'decline'; callId: string; at?: number }
   | { type: 'hangup'; callId: string; at?: number }
   | { type: 'mute'; muted: boolean; at?: number }
+  | { type: 'incomingFallback'; callId: string; name: string; video?: boolean; at?: number }
+  | { type: 'callFailure'; callId: string; reason: string; at?: number }
   /** CallKit activated the audio session: page audio (ringback / ringtone) must be resumed */
   | { type: 'audio'; reason: string; at?: number };
 
@@ -61,6 +63,12 @@ export function parseCallAction(raw: unknown): CallAction | null {
     const a = (typeof raw === 'string' ? JSON.parse(raw) : raw) as Record<string, unknown>;
     if (!a || typeof a.type !== 'string') return null;
     if (a.type === 'audio') return { type: 'audio', reason: typeof a.reason === 'string' ? a.reason.slice(0, 40) : 'callkit' };
+    if (a.type === 'incomingFallback' && typeof a.callId === 'string' && CALL_ID.test(a.callId)) {
+      return { type: 'incomingFallback', callId: a.callId, name: typeof a.name === 'string' ? a.name.slice(0, 80) : 'Incoming call', video: a.video === true };
+    }
+    if (a.type === 'callFailure' && typeof a.callId === 'string') {
+      return { type: 'callFailure', callId: a.callId.slice(0, 64), reason: typeof a.reason === 'string' ? a.reason.slice(0, 80) : 'native-call-failed' };
+    }
     // Actual output route (Speaker/Phone button truth). Previously dropped here, so the page never learned the route.
     if (a.type === 'audioRoute') return { type: 'audioRoute', ...sanitizeAudioRoute(a) } as unknown as CallAction;
     if (a.type === 'mute') return typeof a.muted === 'boolean' ? { type: 'mute', muted: a.muted } : null;
@@ -88,6 +96,12 @@ export function startNativeCalls(onAction: (a: CallAction) => void, onToken: (to
   } catch (e) {
     console.warn('[calls] listeners failed (ignored):', e);
   }
+  // PushKit can provide a credential before Expo installs listeners on a cold start.
+  // Replaying the retained value here flows through syncVoip's existing de-dupe.
+  try {
+    const retainedToken = n.getVoipToken();
+    if (retainedToken) onToken(retainedToken);
+  } catch {}
   let pending: CallAction[] = [];
   try {
     const arr = JSON.parse(n.ready()) as unknown[];
