@@ -630,6 +630,22 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         } else if !c.incoming {
           provider?.reportOutgoingCall(with: c.uuid, connectedAt: Date())
         }
+      } else if !hasLiveCall && !callKitAudioActive {
+        // Answered on the page's ring screen while the app was in the foreground: no VoIP push, so no CallKit call and
+        // no didActivate — the session was never made live and the mic sent silence (Oct 29–31: e8e37ac8, 06460792,
+        // 696dbe7f, 0d363cbd). Do what the working CallKit answer path does: configure, activate, enable the audio unit.
+        if let v = m["video"] as? Bool { callVideo = v }
+        configureAudio()
+        let session = AVAudioSession.sharedInstance()
+        if (try? session.setActive(true)) != nil {
+          NSLog("[OLCalls] in-app answer: audio session activated (video=%d)", callVideo ? 1 : 0)
+          if !callVideo || ((m["nativeMedia"] as? Bool) ?? false) { OLNativeAudio.didActivate(session, video: callVideo) }
+          for delay in [0.0, 0.35, 1.2] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+              self?.emit(["type": "audio", "reason": "inapp-activate"])
+            }
+          }
+        }
       }
       // ringback player released the session's output: have the page re-check its mic (captured at dial time, before
       // CallKit activated the session — WebKit can leave it muted → the callee hears nothing) and remote audio

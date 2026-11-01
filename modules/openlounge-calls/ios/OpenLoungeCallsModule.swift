@@ -40,6 +40,18 @@ public final class OpenLoungeCallsModule: Module {
 }
 
 public final class OpenLoungeCallsAppDelegate: ExpoAppDelegateSubscriber {
+  // call_cancel (caller hung up / answered elsewhere / timeout) arrives as a background data push. Ending the CallKit
+  // ring here is native, so it works even when the JS bundle is not running (app launched by PushKit, then killed).
+  public func application(_ application: UIApplication, didReceiveRemoteNotification userInfo: [AnyHashable: Any], fetchCompletionHandler completionHandler: @escaping (UIBackgroundFetchResult) -> Void) {
+    if (userInfo["type"] as? String) == "call_cancel", let callId = userInfo["callId"] as? String {
+      let reason = (userInfo["reason"] as? String) ?? ""
+      DispatchQueue.main.async { OLCallManager.shared.endExternally(callId: callId, reason: reason) }
+      completionHandler(.newData)
+      return
+    }
+    completionHandler(.noData)
+  }
+
   // PushKit must be registered at launch: iOS relaunches a killed app in the background to deliver a VoIP push and
   // requires a CallKit call to be reported before the delegate's completion handler returns.
   public func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
