@@ -688,7 +688,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         c.ended = true
         stopTimers(c)
         calls[c.uuid] = nil
-        provider?.reportCall(with: c.uuid, endedAt: Date(), reason: (m["reason"] as? String) == "failed" ? .failed : .remoteEnded)
+        if (m["reason"] as? String) == "failed" { provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .failed); continue }
+        provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .remoteEnded)
       }
       pageMuted = nil
       pendingPageMutes = []
