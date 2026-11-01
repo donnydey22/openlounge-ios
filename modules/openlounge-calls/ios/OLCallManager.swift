@@ -130,6 +130,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private var ringbackReported: Bool?
   /// CallKit owns activation while it has the session; activating it ourselves mid-call re-routes WebKit's capture
   private var callKitAudioActive = false
+  /// b73: native WebRTC audio unit enabled for the current CallKit activation
+  private var nativeAudioOn = false
   /// the page's web ringback owns the tone for this call (call:ringbackStop) → native stays silent
   private var webOwnsRingback = false
   private var pageMuted: Bool?
@@ -480,6 +482,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     stopTimers(c)
     callVideo = c.video
     configureAudio()
+    let s73 = AVAudioSession.sharedInstance()
+    NSLog("[OLCalls] answer action: category=%@ mode=%@ inPage=%d", s73.category.rawValue, s73.mode.rawValue, c.answeredInPage ? 1 : 0)
     action.fulfill()
     if !c.answeredInPage { emit(["type": "answer", "callId": c.callId, "video": c.video]) }
   }
@@ -528,12 +532,14 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     callKitAudioActive = true
     configureAudio()
+    NSLog("[OLCalls] CallKit didActivate: category=%@ mode=%@ nativeAudioOn=%d", audioSession.category.rawValue, audioSession.mode.rawValue, nativeAudioOn ? 1 : 0)
     // Ungranted video calls retain the established WKWebView-media behavior, so their native WebRTC audio unit must
     // remain off. The explicit native-video caller marker is the sole video exception: its one app-owned mic+camera
     // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
     // remain unchanged.
     let nativeVideo = calls.values.contains(where: { !$0.ended && $0.nativeMedia })
-    if !callVideo || nativeVideo {
+    if (!callVideo || nativeVideo) && !nativeAudioOn {
+      nativeAudioOn = true // b73: idempotent per activation; cleared in didDeactivate
       OLNativeAudio.didActivate(audioSession, video: nativeVideo)
     }
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
@@ -556,6 +562,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     callKitAudioActive = false
+    nativeAudioOn = false
+    NSLog("[OLCalls] CallKit didDeactivate audio session")
     OLNativeAudio.didDeactivate(audioSession)
   }
 
@@ -657,7 +665,20 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       markAnsweredHere(callId)
       if let c = call(callId), c.incoming, !c.answered, !c.ended {
         c.answeredInPage = true
-        controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { _ in }
+        // build 73: foreground ring left the session active app-side (page ringtone / call:ringtonePrepare), so CallKit
+        // never handed it over on the in-app answer → no didActivate → native mic silent (722bf235, 1331bf6c). Release
+        // the app-owned session (configure-don't-activate) so CallKit's answer activates it and didActivate starts the mic.
+        if !callKitAudioActive {
+          do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+            NSLog("[OLCalls] b73 in-app answer: released app-owned session before CallKit answer")
+          } catch {
+            NSLog("[OLCalls] b73 in-app answer: release skipped: %@", error.localizedDescription)
+          }
+        }
+        controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { err in
+          if let err = err { NSLog("[OLCalls] b73 in-app CXAnswerCallAction failed: %@", err.localizedDescription) }
+        }
       }
 
     case "call:connected":
