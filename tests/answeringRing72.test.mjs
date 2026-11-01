@@ -8,3 +8,11 @@ test('bridge passes call:answering with callId', () => assert.match(bridge, /cas
 test('manager answers CallKit on call:answering', () => assert.match(mgr, /case "call:answering":[\s\S]{0,900}pageAnswered\.insert\(callId\)[\s\S]{0,300}c\.answeredInPage = true\s*controller\.request\(CXTransaction\(action: CXAnswerCallAction/));
 test('answered cancel ignored on the device that answered', () => assert.match(mgr, /func endExternally[\s\S]{0,400}if reason == "answered" && pageAnswered\.contains\(callId\) \{ return \}/));
 test('connected path unchanged', () => assert.match(mgr, /case "call:connected":\s*stopRingback\(\)/));
+test('answered-here flag persists and covers the CallKit UI answer', () => {
+  assert.match(mgr, /UserDefaults\.standard\.stringArray\(forKey: "ol\.answeredHere"\)/);
+  assert.match(mgr, /perform action: CXAnswerCallAction[\s\S]{0,200}markAnsweredHere\(c\.callId\)/);
+});
+test('page failure ends CallKit as .failed', () => {
+  assert.match(mgr, /"failed" \? \.failed : \.remoteEnded/);
+  assert.match(bridge, /m\.reason === 'failed'/);
+});

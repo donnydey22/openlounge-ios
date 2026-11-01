@@ -98,7 +98,7 @@ export type PageCallMessage =
   | { type: 'call:connected'; callId: string }
   /** build 72: Accept tapped on the page ring screen — native answers CallKit immediately */
   | { type: 'call:answering'; callId: string; video: boolean }
-  | { type: 'call:ended'; callId: string }
+  | { type: 'call:ended'; callId: string; reason?: 'failed' }
   | { type: 'call:muted'; muted: boolean }
   | { type: 'call:audioRoute'; speaker: boolean; route?: string; deviceId?: string; user?: boolean }
   | { type: 'call:ringbackStop' }
@@ -128,7 +128,9 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
     case 'call:connected':
     case 'call:ended':
       // callId may be missing on old pages; '' means "the current call"
-      return typeof m.callId === 'string' && !id ? null : wrap({ type: m.type, callId: id });
+      if (typeof m.callId === 'string' && !id) return null;
+      // build 72: call:ended may carry reason "failed" (media never came up after an early CallKit answer)
+      return m.type === 'call:ended' && m.reason === 'failed' ? wrap({ type: 'call:ended', callId: id, reason: 'failed' }) : wrap({ type: m.type, callId: id });
     case 'call:muted':
       return typeof m.muted === 'boolean' ? wrap({ type: 'call:muted', muted: m.muted }) : null;
     case 'call:audioRoute':

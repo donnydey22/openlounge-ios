@@ -100,7 +100,15 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private let controller = CXCallController()
   private var calls: [UUID: OLCall] = [:]
   /// callIds answered on this device's page ring screen (call:answering), so the server's "answered" cancel is ignored
-  private var pageAnswered: Set<String> = []
+  private var pageAnswered: Set<String> = Set(UserDefaults.standard.stringArray(forKey: "ol.answeredHere") ?? []) {
+    didSet { UserDefaults.standard.set(Array(pageAnswered.suffix(16)), forKey: "ol.answeredHere") }
+  }
+  /// this device answered callId (page Accept or CallKit UI): the server's "answered" cancel must not end it here
+  private func markAnsweredHere(_ callId: String) {
+    guard Self.valid(callId) else { return }
+    pageAnswered.insert(callId)
+    if pageAnswered.count > 16 { pageAnswered.removeFirst() }
+  }
 
   // shared with the JS thread
   private let lock = NSLock()
@@ -468,6 +476,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
     guard let c = calls[action.callUUID], !c.ended else { action.fail(); return }
     c.answered = true
+    markAnsweredHere(c.callId)
     stopTimers(c)
     callVideo = c.video
     configureAudio()
@@ -645,8 +654,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       // activates the session the same way the CallKit answer path does) instead of at call:connected, which waited for
       // media (~1.5–12 s) and let CallKit ring over the live call.
       guard Self.valid(callId) else { return }
-      pageAnswered.insert(callId)
-      if pageAnswered.count > 16 { pageAnswered.removeFirst() }
+      markAnsweredHere(callId)
       if let c = call(callId), c.incoming, !c.answered, !c.ended {
         c.answeredInPage = true
         controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { _ in }
@@ -680,7 +688,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         c.ended = true
         stopTimers(c)
         calls[c.uuid] = nil
-        provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .remoteEnded)
+        provider?.reportCall(with: c.uuid, endedAt: Date(), reason: (m["reason"] as? String) == "failed" ? .failed : .remoteEnded)
       }
       pageMuted = nil
       pendingPageMutes = []
