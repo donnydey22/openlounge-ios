@@ -44,6 +44,15 @@ enum OLNativeAudio {
     #endif
   }
 
+  /// b74: the real state of WebRTC's manual audio unit (source of truth; OLCallManager.nativeAudioOn is only a hint)
+  static var isEnabled: Bool {
+    #if canImport(WebRTC)
+    return RTCAudioSession.sharedInstance().isAudioEnabled
+    #else
+    return false
+    #endif
+  }
+
   /// idle after a call: WebRTC's audio unit fully stopped so nothing keeps the session in voice-processing/call shape
   /// (that left-over state made the next ringtone thin and quiet on iPhone b39)
   static func stopIdle() {

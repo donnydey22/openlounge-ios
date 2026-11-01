@@ -102,7 +102,8 @@ export type PageCallMessage =
   | { type: 'call:muted'; muted: boolean }
   | { type: 'call:audioRoute'; speaker: boolean; route?: string; deviceId?: string; user?: boolean }
   | { type: 'call:ringbackStop' }
-  | { type: 'call:ringtonePrepare' };
+  | { type: 'call:ringtonePrepare' }
+  | { type: 'call:audioRecover'; callId: string };
 
 const CALL_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
@@ -144,6 +145,9 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
     case 'call:ringbackStop':
       // the page's web ringback took over (native did not confirm playing): native must stay silent
       return wrap({ type: 'call:ringbackStop' });
+    case 'call:audioRecover':
+      // b74: one-shot server "no outbound audio" nudge; iOS re-enables the native audio unit only if a CallKit call is live
+      return wrap({ type: 'call:audioRecover', callId: id });
     case 'call:ringtonePrepare':
       // incoming ringtone about to play: native re-prepares the ring/speaker audio session
       return wrap({ type: 'call:ringtonePrepare' });

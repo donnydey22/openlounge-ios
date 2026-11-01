@@ -383,7 +383,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       let session = AVAudioSession.sharedInstance()
       if (try? session.setActive(true)) != nil {
         NSLog("[OLCalls] in-app answer: audio session activated (video=%d)", callVideo ? 1 : 0)
-        if !callVideo || ((m["nativeMedia"] as? Bool) ?? false) { OLNativeAudio.didActivate(session, video: callVideo) }
+        if !callVideo || ((m["nativeMedia"] as? Bool) ?? false) { nativeAudioOn = true; OLNativeAudio.didActivate(session, video: callVideo) }
         for delay in [0.0, 0.35, 1.2] {
           DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.emit(["type": "audio", "reason": "inapp-activate"])
@@ -398,6 +398,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     stopTimers(c)
     calls[c.uuid] = nil
     provider?.reportCall(with: c.uuid, endedAt: nil, reason: reason)
+    resetAudioState("ring-end")
     restoreAudioIfIdle()
   }
 
@@ -472,6 +473,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       if c.answered || !c.incoming { emit(["type": "hangup", "callId": c.callId]) }
     }
     calls.removeAll()
+    resetAudioState("provider-reset")
     restoreAudioIfIdle()
   }
 
@@ -502,6 +504,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       emit(["type": "hangup", "callId": c.callId])
     }
     action.fulfill()
+    resetAudioState("end-action")
     restoreAudioIfIdle()
   }
 
@@ -538,8 +541,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
     // remain unchanged.
     let nativeVideo = calls.values.contains(where: { !$0.ended && $0.nativeMedia })
-    if (!callVideo || nativeVideo) && !nativeAudioOn {
-      nativeAudioOn = true // b73: idempotent per activation; cleared in didDeactivate
+    // b74: skip only when the unit is REALLY on for a live call; the flag alone went stale across rapid redials
+    // (Keiko → iPhone 2nd/3rd call within ~40 s: packets in, nothing played, mic never started)
+    if (!callVideo || nativeVideo) && !(nativeAudioOn && OLNativeAudio.isEnabled && hasLiveCall) {
+      nativeAudioOn = true
       OLNativeAudio.didActivate(audioSession, video: nativeVideo)
     }
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
@@ -561,10 +566,38 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    // b74: a late didDeactivate after resetAudioState() already ran is a no-op for our state (only WebRTC's session
+    // bookkeeping is told); a new call's flags are never touched by the previous call's deactivation
+    if !hasLiveCall && !callKitAudioActive && !nativeAudioOn {
+      NSLog("[OLCalls] CallKit didDeactivate (late, already reset): no-op")
+      OLNativeAudio.didDeactivate(audioSession)
+      return
+    }
     callKitAudioActive = false
     nativeAudioOn = false
     NSLog("[OLCalls] CallKit didDeactivate audio session")
     OLNativeAudio.didDeactivate(audioSession)
+  }
+
+  /// b74: the single call-end reset (local/remote hangup, timeout, decline, cancel, error, provider reset). Runs even
+  /// when didDeactivate never arrives, so the next call's didActivate always enables the unit.
+  private func resetAudioState(_ why: String) {
+    guard !hasLiveCall else { return }
+    NSLog("[OLCalls] b74 resetAudioState(%@): nativeAudioOn=%d callKitAudioActive=%d unit=%d", why, nativeAudioOn ? 1 : 0, callKitAudioActive ? 1 : 0, OLNativeAudio.isEnabled ? 1 : 0)
+    nativeAudioOn = false
+    callKitAudioActive = false
+    stopRingback() // b74: ring/ringback never outlives the call (answer, cancel, end all land here or in stopRingback)
+    OLNativeAudio.stopIdle()
+  }
+
+  /// b74: safety net (call:connected) and the optional server nudge (call:audioRecover). Audio calls only: a live
+  /// CallKit call with an active session but the unit off → enable it once and log it. Transport is never touched.
+  private func ensureAudioEnabled(_ why: String) {
+    guard !callVideo, hasLiveCall, callKitAudioActive, !OLNativeAudio.isEnabled else { return }
+    NSLog("[OLCalls] b74 force-enable native audio (%@): nativeAudioOn=%d (stale flag / missed didActivate)", why, nativeAudioOn ? 1 : 0)
+    nativeAudioOn = true
+    OLNativeAudio.didActivate(AVAudioSession.sharedInstance(), video: false)
+    emit(["type": "audio", "reason": "force-enable"])
   }
 
   // MARK: - page → native (src/calls.ts forwards {type:"call:*"} bridge messages)
@@ -613,6 +646,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
     case "call:ringtonePrepare":
       // page is about to play the incoming ringtone (tones.ts): ring/speaker session, not a left-over call session
+      resetAudioState("ringtone-prepare") // b74: no-op while a call is live
       prepareRingtoneSession()
 
     case "call:outgoing":
@@ -668,6 +702,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         // build 73: foreground ring left the session active app-side (page ringtone / call:ringtonePrepare), so CallKit
         // never handed it over on the in-app answer → no didActivate → native mic silent (722bf235, 1331bf6c). Release
         // the app-owned session (configure-don't-activate) so CallKit's answer activates it and didActivate starts the mic.
+        stopRingback()
+        nativeAudioOn = false // b74
         if !callKitAudioActive {
           do {
             try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
@@ -700,6 +736,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       // ringback player released the session's output: have the page re-check its mic (captured at dial time, before
       // CallKit activated the session — WebKit can leave it muted → the callee hears nothing) and remote audio
       emit(["type": "audio", "reason": "connected"])
+      ensureAudioEnabled("connected")
       // session was configured once at CallKit activation; adjusting it again after connect re-ran the voice
       // processing unit mid-call (volume pumping). Only a real device change or a speaker tap touches it now.
 
@@ -715,7 +752,12 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       pageMuted = nil
       pendingPageMutes = []
       stopRingback()
+      resetAudioState("page-ended")
       restoreAudioIfIdle(force: true)
+
+    case "call:audioRecover":
+      // b74 (optional): one-shot server nudge relayed by the page — same path as the call:connected safety net
+      ensureAudioEnabled("server-recover")
 
     case "call:muted":
       guard let muted = m["muted"] as? Bool else { return }
@@ -1003,6 +1045,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   /// before the incoming ringtone: native audio engine stopped, playAndRecord/.default/.defaultToSpeaker re-applied
   /// and the loudspeaker forced (no headset) — ringtone only, never while a call is live
+  // b74: foreground ring = the app owns the session from here; a stale callKitAudioActive from the previous call made
+  // call:answering skip the release → no didActivate → silent mic (Keiko 07:54:13Z / 07:54:51Z, both foreground rings)
   private func prepareRingtoneSession() {
     guard !hasLiveCall else { return }
     OLNativeAudio.stopIdle()
@@ -1024,6 +1068,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     try? s.overrideOutputAudioPort(.none)
     try? s.setCategory(saved.0, mode: saved.1, options: saved.2)
     OLNativeAudio.stopIdle()
+    nativeAudioOn = false
     prepareHeadsetSession()
     _ = force
   }
