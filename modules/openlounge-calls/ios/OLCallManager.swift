@@ -99,6 +99,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private var provider: CXProvider?
   private let controller = CXCallController()
   private var calls: [UUID: OLCall] = [:]
+  /// callIds answered on this device's page ring screen (call:answering), so the server's "answered" cancel is ignored
+  private var pageAnswered: Set<String> = []
 
   // shared with the JS thread
   private let lock = NSLock()
@@ -411,6 +413,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   /// From JS: FCM call_cancel {callId, reason} (background data message) → stop the ring.
   func endExternally(callId: String, reason: String) {
+    // build 72: the server's accept cancel ("answered") also reaches the iPhone that answered on the page. Ending its
+    // CallKit call there deactivated the session mid-connect (mic 0, 7b24cedb). Only the page knows it answered here.
+    if reason == "answered" && pageAnswered.contains(callId) { return }
     guard let c = call(callId), c.incoming, !c.answered else { return }
     let r: CXCallEndedReason
     switch reason {
@@ -633,6 +638,18 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
           u.supportsDTMF = false
           self.provider?.reportCall(with: c.uuid, updated: u)
         }
+      }
+
+    case "call:answering":
+      // build 72: Accept tapped on the page's ring screen. Answer the CallKit call NOW (stops the system ring at the tap,
+      // activates the session the same way the CallKit answer path does) instead of at call:connected, which waited for
+      // media (~1.5–12 s) and let CallKit ring over the live call.
+      guard Self.valid(callId) else { return }
+      pageAnswered.insert(callId)
+      if pageAnswered.count > 16 { pageAnswered.removeFirst() }
+      if let c = call(callId), c.incoming, !c.answered, !c.ended {
+        c.answeredInPage = true
+        controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { _ in }
       }
 
     case "call:connected":
