@@ -9,7 +9,6 @@ type LaneNative = {
   laneConnect(callId: string, nativeConn: string, iceJson: string): Promise<boolean>;
   msResponse(id: string, ok: boolean, json: string, error: string): void;
   laneControl(op: string, flag: boolean): boolean;
-  laneStats?(): Promise<string>;
   addListener(event: 'onMsRequest', fn: (e: { id: string; event: string; json: string }) => void): Sub;
   addListener(event: 'onLaneEvent', fn: (e: Record<string, unknown>) => void): Sub;
 };
@@ -100,12 +99,6 @@ export class SwiftLane {
     await n.laneConnect(callId, nativeConn, JSON.stringify(iceServers ?? []));
     this.connected = true;
     return { attached: false, lane: 'swift' };
-  }
-  /** b83: [[send stats], [recv stats]] from the native lane's RTCPeerConnections (same shape as NativeMediaSession.stats). */
-  async stats(): Promise<Array<Array<Record<string, unknown>>>> {
-    const n = laneNative();
-    if (!n?.laneStats) return [];
-    try { const v = JSON.parse(await n.laneStats()); return Array.isArray(v) ? v : []; } catch { return []; }
   }
   control(op: 'mute' | 'close' | 'sync', flag = false) {
     if (op === 'close') { forgetCall(this.callId); this.callId = null; this.connected = false; }
