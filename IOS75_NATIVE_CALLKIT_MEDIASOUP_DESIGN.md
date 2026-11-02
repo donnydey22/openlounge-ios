@@ -63,6 +63,8 @@ The release is therefore **rejected for co-installation**. This branch must not 
 
 The remaining acceptable input is a thin, source-verified m125 adapter that links only to the existing official `StreamWebRTC` `125.6422.070` framework and contains no static `libwebrtc-full.a` or defined `RTC*` Objective-C classes. Its supplier must prove that with a link map/`nm` audit for all device and simulator slices, provide a compatibility build against the Stream pod, and include all required third-party notices. Only then can this branch implement and device-validate the native mediasoup lane.
 
+The complete build, API, linkage, audit, and acceptance contract is in [`THIN_M125_ADAPTER_SPEC.md`](THIN_M125_ADAPTER_SPEC.md).
+
 ### Native call flow after the gate passes
 
 1. At launch, create the telecom core and native media coordinator. When a valid native access token is available, preconnect the raw `wss://…/ws` session and prewarm router RTP capabilities, Device, cached ICE candidates, and a liveness-checked warm transport reservation.
