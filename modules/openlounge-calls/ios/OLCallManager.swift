@@ -653,6 +653,12 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       nativeAudioOn = true
       OLNativeAudio.didActivate(audioSession, video: nativeVideo)
     }
+    // b79 Swift lane: category/mode/speaker, session active, audio unit on, tracks resumed — before media plays.
+    if let lane = OLNativeAudioLane.live {
+      nativeAudioOn = true
+      OLNativeAudio.laneActivate(audioSession)
+      lane.resumeAudioTracks()
+    }
     // b75 Swift lane (Android → iPhone incoming audio): CallKit didActivate is its only media green light.
     OLNativeAudioLane.callKitActivated()
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
@@ -702,11 +708,12 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// Never activates a session itself; does nothing until didActivate has happened.
   func laneEnsureAudio() {
     DispatchQueue.main.async { [weak self] in
-      guard let self = self, self.callKitAudioActive, !OLNativeAudio.isEnabled,
+      guard let self = self, self.callKitAudioActive,
             self.calls.values.contains(where: { !$0.ended && $0.incoming }) else { return }
-      NSLog("[OLCalls] b78 lane enable native audio (session already active)")
+      NSLog("[OLCalls] b79 lane audio activate (session already active)")
       self.nativeAudioOn = true
-      OLNativeAudio.didActivate(AVAudioSession.sharedInstance(), video: false)
+      OLNativeAudio.laneActivate()
+      OLNativeAudioLane.live?.resumeAudioTracks()
     }
   }
 

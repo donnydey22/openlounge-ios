@@ -44,6 +44,28 @@ enum OLNativeAudio {
     #endif
   }
 
+  /// b79 Swift lane (Android → iPhone incoming audio): the CallKit didActivate sequence, before any media plays:
+  /// playAndRecord + voiceChat + speaker/Bluetooth, session active, then WebRTC's manual audio unit on.
+  static func laneActivate(_ session: AVAudioSession = AVAudioSession.sharedInstance()) {
+    #if canImport(WebRTC)
+    let rtc = RTCAudioSession.sharedInstance()
+    rtc.lockForConfiguration()
+    defer { rtc.unlockForConfiguration() }
+    rtc.useManualAudio = true
+    do {
+      try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+      try session.setActive(true)
+    } catch { NSLog("[OLCalls] b79 lane session setup failed: %@", error.localizedDescription) }
+    let cfg = RTCAudioSessionConfiguration.webRTC()
+    cfg.category = AVAudioSession.Category.playAndRecord.rawValue
+    cfg.mode = AVAudioSession.Mode.voiceChat.rawValue
+    cfg.categoryOptions = [.defaultToSpeaker, .allowBluetooth]
+    RTCAudioSessionConfiguration.setWebRTC(cfg)
+    rtc.audioSessionDidActivate(session)
+    rtc.isAudioEnabled = true
+    #endif
+  }
+
   /// b74: the real state of WebRTC's manual audio unit (source of truth; OLCallManager.nativeAudioOn is only a hint)
   static var isEnabled: Bool {
     #if canImport(WebRTC)

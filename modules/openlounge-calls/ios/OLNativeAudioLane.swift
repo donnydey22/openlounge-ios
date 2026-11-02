@@ -277,6 +277,16 @@ final class OLNativeAudioLane: NSObject {
     #endif
   }
 
+  /// b79: the live Swift lane (not closed), if any.
+  static var live: OLNativeAudioLane? { if let l = shared, !l.closed { return l }; return nil }
+  /// b79: after the audio unit starts, make sure the mic and every remote audio track are enabled.
+  func resumeAudioTracks() {
+    #if canImport(WebRTC)
+    micTrack?.isEnabled = !muted
+    for t in recvPc?.transceivers ?? [] where t.mediaType == .audio { t.receiver.track?.isEnabled = true }
+    #endif
+  }
+
   // MARK: - controls
   func setMuted(_ m: Bool) {
     muted = m
