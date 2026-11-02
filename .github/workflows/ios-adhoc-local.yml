@@ -1,7 +1,7 @@
 name: iOS ad hoc build (eas --local on macOS)
 on:
   push:
-    branches: [feat/audio-route-udp-first, ios75-native-streamwebrtc]
+    branches: [feat/audio-route-udp-first, ios75-native-streamwebrtc, ios84-b82-incoming]
     paths-ignore: ['**.md']
 permissions:
   contents: read
