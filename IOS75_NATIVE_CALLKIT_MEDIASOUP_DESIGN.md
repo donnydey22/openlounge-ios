@@ -53,16 +53,15 @@ Neither requested client can be used unchanged with Stream WebRTC m125 (`StreamW
 
 The required implementation is a source-controlled fork of the VLprojects wrapper plus libmediasoupclient compiled against the **exact same Stream m125 WebRTC source, patch set, GN arguments, visibility, C++ library, and architectures** as the app’s `StreamWebRTC`. Its m140 binary is forbidden. The final app must contain exactly one WebRTC implementation.
 
-### Mandatory build gate
+### Mandatory build gate — verified release result
 
-The published Stream dependency is binary-only. It identifies `StreamWebRTC` `125.6422.070`, but it does not provide the exact WebRTC source revision, Stream patch set, or GN build arguments needed to compile a safe m125-compatible libmediasoupclient wrapper. The official libmediasoupclient documentation currently supports m140, not m125.
+The supplied release `m125-stream-125.6422.070-run41370196047` was downloaded and verified against its published `SHA256SUMS`; GitHub SLSA verification also passed for `Mediasoup.xcframework.zip`. It supplies an m125 wrapper and the three required iOS architecture families, but it does **not** satisfy the app integration gate.
 
-Therefore the native mediasoup client cannot truthfully be marked buildable or device-validated until one of the following is available:
+`Mediasoup.framework` contains a static full WebRTC copy while also dynamically loading `@rpath/WebRTC.framework/WebRTC`. The existing app already loads Stream’s official `StreamWebRTC` `125.6422.070` pod, whose import module is also `WebRTC`. Binary review found duplicate `RTC*` Objective-C definitions (including `RTCPeerConnectionFactory`, `RTCPeerConnection`, and `RTCAudioSession`) in the two framework images. Objective-C class registration is process-wide, so isolating wrapper calls to the native incoming path cannot make this safe. The custom release’s WebRTC byte hashes also differ from Stream’s published framework; its documented source relation is lineage, not a byte-identical reproduction.
 
-- Stream’s exact m125 source provenance and build configuration, or
-- a Stream-compatible, source-verified m125 `libmediasoupclient`/wrapper artifact with arm64-device and arm64-simulator support.
+The release is therefore **rejected for co-installation**. This branch must not choose the release note’s “native lane only” option, add its `Mediasoup.framework` to the app target, replace `StreamWebRTC` with the custom WebRTC, link a second WebRTC framework, or retain the JavaScript mediasoup path as an invisible fallback.
 
-Until this gate is satisfied, this build must not link VL’s m140 framework, link two WebRTC frameworks, or retain the JavaScript mediasoup call path as an invisible fallback. The app must present an explicit native-media failure state instead.
+The remaining acceptable input is a thin, source-verified m125 adapter that links only to the existing official `StreamWebRTC` `125.6422.070` framework and contains no static `libwebrtc-full.a` or defined `RTC*` Objective-C classes. Its supplier must prove that with a link map/`nm` audit for all device and simulator slices, provide a compatibility build against the Stream pod, and include all required third-party notices. Only then can this branch implement and device-validate the native mediasoup lane.
 
 ### Native call flow after the gate passes
 
@@ -105,3 +104,4 @@ The final device test remains: “Keiko calls from Pixel 10 audio-only, Donny an
 - [VLprojects/mediasoup-client-swift](https://github.com/VLprojects/mediasoup-client-swift), MIT licensed source baseline only.
 - [ethand91/mediasoup-ios-client](https://github.com/ethand91/mediasoup-ios-client), rejected for outdated WebRTC integration.
 - [libmediasoupclient installation guidance](https://mediasoup.org/documentation/v3/libmediasoupclient/installation/), which documents a matched WebRTC/libmediasoupclient build and currently targets m140.
+- [Verified wrapper release](https://github.com/donnydey22/stream-webrtc-m125-build/releases/tag/m125-stream-125.6422.070-run41370196047), rejected for co-installation because it embeds a second WebRTC runtime.
