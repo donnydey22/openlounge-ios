@@ -26,9 +26,12 @@ test('no libmediasoupclient / second WebRTC', () => {
   assert.match(pod, /'StreamWebRTC', '~> 125\.6422\.070'/);
   assert.doesNotMatch(swift, /import Mediasoup|Mediasoup\w*Client/);
 });
-test('mic produced only after CallKit didActivate', () => {
-  assert.match(swift, /waitForActivation\(timeout: 15\)[\s\S]*produceMic\(\)/);
+test('b78: mic produced without waiting; CallKit didActivate (or already-active session) enables audio', () => {
+  assert.doesNotMatch(swift, /await Self\.waitForActivation/);
+  assert.match(swift, /useManualAudio[\s\S]*produceMic\(\)[\s\S]*laneEnsureAudio\(\)/);
   assert.match(mgr, /didActivate audioSession[\s\S]*OLNativeAudioLane\.callKitActivated\(\)/);
+  assert.match(mgr, /func laneEnsureAudio\(\)[\s\S]*callKitAudioActive/);
+  assert.match(swift, /if let l = shared, !l\.closed/);
   assert.doesNotMatch(swift, /setCategory|setActive\(|AVAudioSession\.sharedInstance\(\)\.set/);
 });
 test('Opus 48k, DTLS client role, ICE-lite SDP', () => {

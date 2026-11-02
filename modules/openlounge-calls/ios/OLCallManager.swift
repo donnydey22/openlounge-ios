@@ -698,6 +698,18 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLNativeAudio.stopIdle()
   }
 
+  /// b78 Swift lane: if CallKit already activated the session before the lane produced, enable the unit now.
+  /// Never activates a session itself; does nothing until didActivate has happened.
+  func laneEnsureAudio() {
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, self.callKitAudioActive, !OLNativeAudio.isEnabled,
+            self.calls.values.contains(where: { !$0.ended && $0.incoming }) else { return }
+      NSLog("[OLCalls] b78 lane enable native audio (session already active)")
+      self.nativeAudioOn = true
+      OLNativeAudio.didActivate(AVAudioSession.sharedInstance(), video: false)
+    }
+  }
+
   /// b74: safety net (call:connected) and the optional server nudge (call:audioRecover). Audio calls only: a live
   /// CallKit call with an active session but the unit off → enable it once and log it. Transport is never touched.
   private func ensureAudioEnabled(_ why: String) {
