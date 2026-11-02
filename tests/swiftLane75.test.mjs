@@ -20,7 +20,7 @@ for (const [name, x] of [
   ['Android device', { os: 'android', video: false, incoming: true, peerPlatform: 'ios' }],
 ]) test(`${name} stays on existing path`, () => assert.equal(route(x), false));
 test('only incoming payloads feed the routing map', () => assert.match(src, /v\?\.type !== 'call:incoming'/));
-test('non-connect ops only divert when the lane is active', () => assert.match(nm, /cmd\.op === 'connect' \|\| cmd\.op === 'prepare' \|\| this\.swiftActive\(\)/));
+test('non-connect ops only divert when the lane is active', () => assert.match(nm, /cmd\.op === 'connect' \|\| this\.swiftActive\(\)/));
 test('no libmediasoupclient / second WebRTC', () => {
   assert.doesNotMatch(pod, /mediasoup|libwebrtc|Mediasoup\.xcframework/i);
   assert.match(pod, /'StreamWebRTC', '~> 125\.6422\.070'/);
@@ -34,7 +34,6 @@ test('b80: audio starts ONLY in CallKit didActivate for Android callers; no conn
   assert.match(mgr, /callerPlatform[\s\S]*markAndroidCall/);
   assert.match(swift, /if let l = shared, !l\.closed/);
   assert.doesNotMatch(swift, /setCategory|setActive\(|AVAudioSession\.sharedInstance\(\)\.set/);
-  assert.match(nm, /case 'prepare': return CALL_ID\.test\(callId\) && shouldUseSwiftLane\(cmd\) \? true : undefined;/);
 });
 test('Opus 48k, DTLS client role, ICE-lite SDP', () => {
   assert.match(swift, /opus\/48000\/2/);

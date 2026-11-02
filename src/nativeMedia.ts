@@ -699,7 +699,7 @@ export class NativeMediaController {
   async handle(cmd: Record<string, unknown>): Promise<unknown> {
     const callId = typeof cmd.callId === 'string' ? cmd.callId : '';
     // b75 single path: Android caller → this iPhone, audio-only, incoming → Swift lane. Everything else falls through.
-    if (this.swift && (cmd.op === 'connect' || cmd.op === 'prepare' || this.swiftActive())) {
+    if (this.swift && (cmd.op === 'connect' || this.swiftActive())) {
       const r = await this.handleSwift(cmd, callId);
       if (r !== undefined) return r;
     }
@@ -813,8 +813,6 @@ export class NativeMediaController {
   private async handleSwift(cmd: Record<string, unknown>, callId: string): Promise<unknown> {
     const lane = this.swift!;
     switch (cmd.op) {
-      // b80: Android → iPhone audio is native-only: no mediasoup-client JS Device/ms:join at ring time for it.
-      case 'prepare': return CALL_ID.test(callId) && shouldUseSwiftLane(cmd) ? true : undefined;
       case 'connect': {
         if (!CALL_ID.test(callId) || !shouldUseSwiftLane(cmd)) return undefined;
         if (lane.callId === callId && lane.connected && cmd.rebuild !== true) return { attached: true, lane: 'swift' };

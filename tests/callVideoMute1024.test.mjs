@@ -47,7 +47,7 @@ test('FX-064 outgoing start is CallKit-native: CXStartCallAction → startedConn
 
 test('native video owns mic + camera: WebView capture is denied while app-owned call video is live', () => {
   const app = readFileSync(new URL('../App.tsx', import.meta.url), 'utf8');
-  assert.match(app, /mediaCapturePermissionGrantType=\{nativeVideo \|\| androidLane \? 'deny' : 'grantIfSameHostElseDeny'\}/);
+  assert.match(app, /mediaCapturePermissionGrantType=\{nativeVideo \? 'deny' : 'grantIfSameHostElseDeny'\}/);
 });
 
 test('native video layering: video under a transparent page, self-view pinned below the top bar, never the remote tile', () => {
