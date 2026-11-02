@@ -43,3 +43,23 @@ test('Opus 48k, DTLS client role, ICE-lite SDP', () => {
   assert.match(swift, /setup: "passive"/);
   assert.match(swift, /setup: "actpass"/);
 });
+test('b81: Android lane in-app answer always via CallKit (report first if unreported)', () => {
+  assert.match(mgr, /case "call:answering":[\s\S]*call\(callId\) == nil, OLNativeAudioLane\.isAndroidCall\(callId\)[\s\S]*handleIncoming\([\s\S]*answerLaneViaCallKit\(callId\)/);
+  assert.match(mgr, /func answerLaneViaCallKit[\s\S]*CXAnswerCallAction\(call: c\.uuid\)/);
+});
+test('b81: persistence re-requests activation via CallKit unhold; audio still only in didActivate', () => {
+  assert.match(mgr, /func reactivateLane[\s\S]*CXSetHeldCallAction\(call: c\.uuid, onHold: true\)[\s\S]*CXSetHeldCallAction\(call: c\.uuid, onHold: false\)/);
+  const body = mgr.slice(mgr.indexOf('func reactivateLane'), mgr.indexOf('@objc private func onMediaServicesReset'));
+  assert.doesNotMatch(body, /laneActivate\(|isAudioEnabled|setActive|setCategory|resumeAudioTracks/);
+  assert.match(mgr, /mediaServicesWereResetNotification/);
+  assert.match(mgr, /didDeactivate audioSession[\s\S]{0,300}reactivateLane\("did-deactivate"\)/);
+  assert.match(mgr, /reactivateLane\("interruption-ended"\)/);
+  assert.match(mgr, /supportsHolding = OLNativeAudioLane\.isAndroidCall\(callId\)/);
+  assert.match(mgr, /CXSetHeldCallAction\) \{[\s\S]{0,400}isLaneCall\(c\.callId\)[\s\S]{0,200}action\.fulfill\(\); return/);
+});
+test('b81: lane ICE restart over ms:transport:restartIce on disconnected/failed', () => {
+  assert.match(swift, /"ms:transport:restartIce"/);
+  assert.match(swift, /s == \.failed \|\| s == \.disconnected[\s\S]{0,400}restartIce\(dir\)/);
+  const body = swift.slice(swift.indexOf('func restartIce'), swift.indexOf('// MARK: - controls'));
+  assert.doesNotMatch(body, /isAudioEnabled|setActive|setCategory/);
+});

@@ -82,6 +82,9 @@ final class OLNativeAudioLane: NSObject {
   private var consumers: [[String: Any]] = []   // consumer descriptors, in m-section order
   private var resumed = Set<String>()
   private var syncing = false
+  /// b81: the send m-section (re-used to answer an ICE-restart offer)
+  private var sendSection: OLSdp.Section?
+  private var restarting = Set<String>()
 
   init(callId: String, nativeConn: String, iceServers: [[String: Any]], req: @escaping Request, emit: @escaping Emit) {
     self.callId = callId; self.nativeConn = nativeConn; self.iceServers = iceServers; self.req = req; self.emit = emit
@@ -201,9 +204,10 @@ final class OLNativeAudioLane: NSObject {
     guard let pt = local.opusPt, let ssrc = local.ssrc else { throw err("local offer missing opus/ssrc") }
     let mid = local.mid ?? tr.mid
     let exts = local.extmaps.filter { e in routerAudioExts.contains { ($0["uri"] as? String) == e.uri } }
-    let answer = OLSdp.remote(transport: sendT, sections: [.init(mid: mid, pt: pt, fmtp: "minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;usedtx=0",
-                                                                extmaps: exts, direction: "recvonly", ssrc: nil, cname: nil)],
-                              setup: "passive")
+    let sec = OLSdp.Section(mid: mid, pt: pt, fmtp: "minptime=10;useinbandfec=1;stereo=0;sprop-stereo=0;usedtx=0",
+                            extmaps: exts, direction: "recvonly", ssrc: nil, cname: nil)
+    sendSection = sec
+    let answer = OLSdp.remote(transport: sendT, sections: [sec], setup: "passive")
     try await pc.olSetRemote(RTCSessionDescription(type: .answer, sdp: answer))
     // DTLS: local role is client (offer actpass → remote answer passive), same as mediasoup-client.
     guard let fp = OLSdp.fingerprint(pc.localDescription?.sdp ?? offer.sdp) else { throw err("no local fingerprint") }
@@ -297,6 +301,31 @@ final class OLNativeAudioLane: NSObject {
     #endif
   }
 
+  // MARK: - b81 persistence: ICE restart over the existing page socket (server ms:transport:restartIce)
+  @MainActor func restartIce(_ dir: String) async {
+    #if canImport(WebRTC)
+    guard !closed, connected, !restarting.contains(dir) else { return }
+    restarting.insert(dir); defer { restarting.remove(dir) }
+    let t = dir == "send" ? sendT : recvT
+    do {
+      let x = try await r("ms:transport:restartIce", ["direction": dir, "transportId": t["id"] ?? ""])
+      guard let ice = x["iceParameters"] as? [String: Any], !closed else { return }
+      if dir == "send" {
+        sendT["iceParameters"] = ice
+        guard let pc = sendPc, let sec = sendSection else { return }
+        pc.restartIce()
+        let offer = try await pc.olOffer()
+        try await pc.olSetLocal(offer)
+        try await pc.olSetRemote(RTCSessionDescription(type: .answer, sdp: OLSdp.remote(transport: sendT, sections: [sec], setup: "passive")))
+      } else {
+        recvT["iceParameters"] = ice
+        if !consumers.isEmpty { try await negotiateRecv() }
+      }
+      log("ice-restart", "dir=\(dir)")
+    } catch { log("ice-restart-failed", "dir=\(dir)") }
+    #endif
+  }
+
   // MARK: - controls
   func setMuted(_ m: Bool) {
     muted = m
@@ -330,7 +359,11 @@ extension OLNativeAudioLane: RTCPeerConnectionDelegate {
   func peerConnection(_ pc: RTCPeerConnection, didChange s: RTCIceConnectionState) {
     let dir = pc === sendPc ? "send" : "recv"
     NSLog("[OLCalls] lane ice %@=%ld callId=%@", dir, s.rawValue, callId)
-    if s == .failed || s == .disconnected { emit(["state": s == .failed ? "failed" : "disconnected", "dir": dir]) }
+    if s == .failed || s == .disconnected {
+      emit(["state": s == .failed ? "failed" : "disconnected", "dir": dir])
+      // b81: keep the call alive — fresh ICE from the SFU over the existing socket (no audio start here)
+      Task { @MainActor in await self.restartIce(dir) }
+    }
     if s == .connected, connected { emit(["state": "connected"]) }
   }
 }

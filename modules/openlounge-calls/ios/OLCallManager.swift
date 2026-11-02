@@ -141,6 +141,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     NotificationCenter.default.addObserver(
       self, selector: #selector(onInterruption(_:)),
       name: AVAudioSession.interruptionNotification, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(onMediaServicesReset(_:)),
+      name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
     prepareHeadsetSession()
     NSLog("[OLCalls] PushKit + CallKit ready through telecom core")
 
@@ -410,7 +413,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     update.remoteHandle = CXHandle(type: .generic, value: String(handle.prefix(80)))
     update.localizedCallerName = name
     update.hasVideo = video
-    update.supportsHolding = false
+    update.supportsHolding = OLNativeAudioLane.isAndroidCall(callId) // b81: lane reactivation via CallKit unhold only
     update.supportsGrouping = false
     update.supportsUngrouping = false
     update.supportsDTMF = false
@@ -632,6 +635,12 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
     traceProviderCallback("hold-action", uuid: action.callUUID)
+    // b81: Android lane only — hold/unhold is how a live lane call asks CallKit to re-activate its session, so the
+    // unhold makes iOS deliver didActivate again (which runs the one audio-start sequence).
+    if let c = calls[action.callUUID], !c.ended, c.incoming, isLaneCall(c.callId) {
+      NSLog("[OLCalls] b81 lane hold=%d callId=%@", action.isOnHold ? 1 : 0, c.callId)
+      action.fulfill(); return
+    }
     action.fail() // holding isn't supported
   }
 
@@ -656,6 +665,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // didActivate + isAudioEnabled → local+remote audio tracks on. No other path, timer or socket event starts it.
     if calls.values.contains(where: { !$0.ended && $0.incoming && OLNativeAudioLane.isAndroidCall($0.callId) }) {
       nativeAudioOn = true
+      laneReactivating = false
+      laneActivatedCall = calls.values.first(where: { !$0.ended && $0.incoming && OLNativeAudioLane.isAndroidCall($0.callId) })?.callId
       OLNativeAudio.laneActivate(audioSession)
       OLNativeAudioLane.callKitActivated()
       OLNativeAudioLane.live?.resumeAudioTracks()
@@ -687,6 +698,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     OLNativeAudioLane.callKitDeactivated()
     traceProviderCallback("did-deactivate")
+    defer { DispatchQueue.main.async { [weak self] in self?.reactivateLane("did-deactivate") } }
     // b74: a late didDeactivate after resetAudioState() already ran is a no-op for our state (only WebRTC's session
     // bookkeeping is told); a new call's flags are never touched by the previous call's deactivation
     if !hasLiveCall && !callKitAudioActive && !nativeAudioOn {
@@ -709,6 +721,46 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     callKitAudioActive = false
     stopRingback() // b74: ring/ringback never outlives the call (answer, cancel, end all land here or in stopRingback)
     OLNativeAudio.stopIdle()
+  }
+
+  private func isLaneCall(_ id: String) -> Bool { OLNativeAudioLane.isAndroidCall(id) }
+
+  /// b81: true between a CallKit hold/unhold reactivation request and the didActivate it produces.
+  private var laneReactivating = false
+  /// b81: the Android lane call that already got its first didActivate (reactivation only applies after that).
+  private var laneActivatedCall: String?
+
+  /// b81: the Android lane's in-app answer — CXAnswerCallAction only (never answered outside CallKit).
+  private func answerLaneViaCallKit(_ callId: String) {
+    guard let c = call(callId), c.incoming, !c.answered, !c.ended else { return }
+    c.answeredInPage = true
+    stopRingback()
+    controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { err in
+      if let err = err { NSLog("[OLCalls] b81 lane CXAnswerCallAction failed: %@", err.localizedDescription) }
+    }
+  }
+
+  /// b81 persistence: a live, answered Android lane call whose session was deactivated/interrupted/reset asks CallKit to
+  /// re-activate it (hold → unhold). CallKit then delivers didActivate, which runs the same audio-start sequence.
+  /// Audio is never started here.
+  func reactivateLane(_ why: String) {
+    guard !laneReactivating, let c = calls.values.first(where: { !$0.ended && $0.incoming && $0.answered && OLNativeAudioLane.isAndroidCall($0.callId) }),
+          c.callId == laneActivatedCall, OLNativeAudioLane.live != nil else { return }
+    if why != "did-deactivate", callKitAudioActive, OLNativeAudio.isEnabled, AVAudioSession.sharedInstance().category == .playAndRecord { return }
+    laneReactivating = true
+    NSLog("[OLCalls] b81 lane reactivate via CallKit (%@) callId=%@", why, c.callId)
+    controller.request(CXTransaction(action: CXSetHeldCallAction(call: c.uuid, onHold: true))) { [weak self] e1 in
+      if let e1 = e1 { NSLog("[OLCalls] b81 lane hold failed: %@", e1.localizedDescription) }
+      self?.controller.request(CXTransaction(action: CXSetHeldCallAction(call: c.uuid, onHold: false))) { e2 in
+        DispatchQueue.main.async {
+          if let e2 = e2 { NSLog("[OLCalls] b81 lane unhold failed: %@", e2.localizedDescription); self?.laneReactivating = false }
+        }
+      }
+    }
+  }
+
+  @objc private func onMediaServicesReset(_ n: Notification) {
+    DispatchQueue.main.async { [weak self] in self?.laneReactivating = false; self?.reactivateLane("media-services-reset") }
   }
 
   /// b74: safety net (call:connected) and the optional server nudge (call:audioRecover). Audio calls only: a live
@@ -795,6 +847,15 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       // media (~1.5–12 s) and let CallKit ring over the live call.
       guard Self.valid(callId) else { return }
       markAnsweredHere(callId)
+      // b81: Android lane in-app answer always goes through CallKit; if the call was never reported, report it first,
+      // then answer with CXAnswerCallAction so iOS delivers didActivate.
+      if call(callId) == nil, OLNativeAudioLane.isAndroidCall(callId) {
+        handleIncoming(["type": "call_incoming", "callId": callId, "callerName": (m["name"] as? String) ?? "Open Lounge",
+                        "video": "0", "callerPlatform": "android"]) { [weak self] in
+          DispatchQueue.main.async { self?.answerLaneViaCallKit(callId) }
+        }
+        return
+      }
       if let c = call(callId), c.incoming, !c.answered, !c.ended {
         c.answeredInPage = true
         stopRingback()
@@ -917,6 +978,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       var reason = 0
       if let v = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt { reason = Int(v) }
       let why = AVAudioSession.RouteChangeReason(rawValue: UInt(reason)) ?? .unknown
+      // b81: a route/category change that knocked the lane call's session out of playAndRecord → CallKit reactivation
+      if AVAudioSession.sharedInstance().category != .playAndRecord || !OLNativeAudio.isEnabled { self.reactivateLane("route-\(reason)") }
       guard Self.isDeviceRouteChange(why) else { return }
       // AirPods in/out, cable in/out: a new situation, so automatic routing takes over again (FaceTime does the same)
       self.userRoute = nil
@@ -1121,6 +1184,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
       if self.wantRingback { self.playRingback() }
+      self.reactivateLane("interruption-ended")
       // Incoming audio is native-only. The legacy WebView recovery remains for untouched outgoing calls.
       if self.calls.values.contains(where: { !$0.ended && !$0.incoming }) {
         self.emit(["type": "audio", "reason": "interruption-ended"])
