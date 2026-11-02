@@ -1,7 +1,7 @@
 name: iOS ad hoc build (eas --local on macOS)
 on:
   push:
-    branches: [feat/audio-route-udp-first]
+    branches: [feat/audio-route-udp-first, ios75-native-streamwebrtc]
     paths-ignore: ['**.md']
 permissions:
   contents: read
@@ -61,6 +61,28 @@ jobs:
           /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
           grep -q 00008110-000E7DD63C03801E ../profile.plist && echo "Donny Dev in profile"
           cd .. && rm -rf x
+      - name: b75 link audit (exactly one WebRTC, zero duplicate RTC* ObjC classes)
+        run: |
+          set -euo pipefail
+          cd out && rm -rf la && mkdir la && cd la && unzip -q ../OpenLounge.ipa
+          APP=$(ls -d Payload/*.app); BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+          echo "== embedded frameworks"; ls "$APP/Frameworks" || true
+          WF=$(find "$APP" -iname '*webrtc*' -maxdepth 3 | tee /dev/stderr | grep -ci '\.framework$' || true)
+          echo "WebRTC framework count: $WF"
+          echo "== main binary links (otool -L)"; otool -L "$BIN" | grep -i -E 'webrtc|mediasoup' || echo "(main binary does not link WebRTC directly)"
+          echo "== mediasoup/libwebrtc artifacts"; find "$APP" -iname '*mediasoup*' -o -iname 'libwebrtc*' | tee ../ms.txt; test ! -s ../ms.txt
+          : > ../defs.txt
+          for img in "$BIN" $(find "$APP/Frameworks" -type f -perm +111 2>/dev/null) $(find "$APP/Frameworks" -name '*.framework' -maxdepth 1 | while read f; do echo "$f/$(basename "$f" .framework)"; done); do
+            [ -f "$img" ] || continue
+            nm -gU "$img" 2>/dev/null | awk '$3 ~ /^_OBJC_CLASS_\$_RTC/ {print $3}' | sort -u | sed "s|^|$(basename "$img") |" >> ../defs.txt || true
+          done
+          sort -u ../defs.txt -o ../defs.txt
+          echo "== images defining RTC* classes:"; awk '{print $1}' ../defs.txt | sort | uniq -c
+          DUP=$(awk '{print $2}' ../defs.txt | sort | uniq -d | wc -l | tr -d ' ')
+          echo "Duplicate RTC* ObjC classes across images: $DUP"
+          echo "RTCPeerConnection definers:"; grep '_OBJC_CLASS_\$_RTCPeerConnection$' ../defs.txt || true
+          test "$WF" = "1" && test "$DUP" = "0" && echo "LINK AUDIT PASS"
+          cd .. && rm -rf la
       - name: Encrypt IPA (public repo, artifact is passphrase-encrypted)
         env:
           ARTIFACT_PASSPHRASE: ${{ secrets.IOS_ARTIFACT_PASSPHRASE }}
