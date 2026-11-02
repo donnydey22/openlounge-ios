@@ -649,7 +649,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let nativeVideo = calls.values.contains(where: { !$0.ended && $0.nativeMedia })
     // b74: skip only when the unit is REALLY on for a live call; the flag alone went stale across rapid redials
     // (Keiko → iPhone 2nd/3rd call within ~40 s: packets in, nothing played, mic never started)
-    if (!callVideo || nativeVideo) && !(nativeAudioOn && OLNativeAudio.isEnabled && hasLiveCall) {
+    if OLNativeAudioLane.live == nil, (!callVideo || nativeVideo) && !(nativeAudioOn && OLNativeAudio.isEnabled && hasLiveCall) {
       nativeAudioOn = true
       OLNativeAudio.didActivate(audioSession, video: nativeVideo)
     }
