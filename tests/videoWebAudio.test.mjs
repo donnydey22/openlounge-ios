@@ -16,7 +16,7 @@ const between = (start, end) => {
 
 // b52114c coverage, adapted for the intentional paired-native-video exception.
 const activated = between('didActivate audioSession: AVAudioSession', 'didDeactivate audioSession: AVAudioSession');
-assert.match(activated, /let nativeVideo = calls\.values\.contains[\s\S]{0,400}if \(!callVideo \|\| nativeVideo\) && !\(nativeAudioOn && OLNativeAudio\.isEnabled && hasLiveCall\) \{[\s\S]{0,160}OLNativeAudio\.didActivate\(audioSession, video: nativeVideo\)/,
+assert.match(activated, /let nativeVideo = calls\.values\.contains[\s\S]{0,1400}if \(!callVideo \|\| nativeVideo\) && !\(nativeAudioOn && OLNativeAudio\.isEnabled && hasLiveCall\) \{[\s\S]{0,160}OLNativeAudio\.didActivate\(audioSession, video: nativeVideo\)/,
   'voice and only a server-granted native-video call activate the native audio unit');
 assert.equal((activated.match(/OLNativeAudio\.didActivate/g) || []).length, 1, 'no unconditional native activation');
 

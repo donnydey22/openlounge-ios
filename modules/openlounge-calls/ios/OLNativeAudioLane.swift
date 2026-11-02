@@ -10,19 +10,28 @@ import WebRTC
 /// style of mediasoup-client's Unified Plan handler. Signaling stays on the page's authenticated realtime socket: every
 /// ms:* request is relayed through JS (`onMsRequest` → page `__olNativeMsReq` → `msResponse`).
 /// CallKit is the sole owner of audio: RTCAudioSession is in manual mode; the mic producer is built at once but the
-/// audio unit stays off until provider(didActivate:) (OLCallManager → `callKitActivated()` / `laneEnsureAudio()`). No AVAudioSession category changes here.
+/// audio unit stays off until provider(didActivate:) (OLCallManager → `callKitActivated()`). No AVAudioSession category changes here.
 final class OLNativeAudioLane: NSObject {
   static var shared: OLNativeAudioLane?
   /// Set by OLCallManager.didActivate / reset; the lane awaits it before producing media.
   private static var activated = false
   private static var activationWaiters: [CheckedContinuation<Void, Never>] = []
 
+  /// b80: callIds whose caller is Android (audio-only incoming), recorded at ring time from callerPlatform.
+  private static var androidCalls: [String] = []
+  static func markAndroidCall(_ id: String) {
+    if !androidCalls.contains(id) { androidCalls.append(id) }
+    if androidCalls.count > 16 { androidCalls.removeFirst() }
+  }
+  static func isAndroidCall(_ id: String) -> Bool { androidCalls.contains(id) }
+
   static func callKitActivated() {
-    DispatchQueue.main.async {
+    let run = {
       activated = true
       let w = activationWaiters; activationWaiters.removeAll()
       w.forEach { $0.resume() }
     }
+    if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
   }
   /// b78: a late didDeactivate from a previous call must not clear the flag for the live lane's call.
   static func callKitDeactivated() {
@@ -116,16 +125,17 @@ final class OLNativeAudioLane: NSObject {
     // connect"). Manual audio keeps the unit OFF, so the pre-warmed mic sends nothing until CallKit's didActivate
     // flips isAudioEnabled (OLCallManager) — CallKit stays the only thing that turns audio on.
     #if canImport(WebRTC)
+    // b80: signaling/transports may run before didActivate, but audio stays OFF until CallKit's didActivate turns it on.
     let rtc = RTCAudioSession.sharedInstance()
-    if !rtc.useManualAudio { rtc.useManualAudio = true; rtc.isAudioEnabled = false }
+    rtc.useManualAudio = true
+    if !Self.activated { rtc.isAudioEnabled = false }
     #endif
     try await produceMic()
     try check()
     connected = true
     log("connected", Self.activated ? "activated=1" : "activated=0")
     emit(["state": "connected"])
-    // session already live (didActivate came before the lane) → enable the unit now; otherwise didActivate does it
-    OLCallManager.shared.laneEnsureAudio()
+    // b80: no activation safety net here; only OLCallManager.provider(didActivate:) starts audio.
   }
 
   private func err(_ m: String) -> NSError { NSError(domain: "OLLane", code: 2, userInfo: [NSLocalizedDescriptionKey: m]) }

@@ -24,13 +24,22 @@ export function callerPlatformOf(v: Record<string, unknown> | null | undefined):
   return typeof p === 'string' ? p.toLowerCase().slice(0, 12) : null;
 }
 
+/** b80: the live Android → iPhone audio call (native-only media): the WebView may not capture mic/audio for it. */
+let laneCall: string | null = null;
+const laneWatchers = new Set<(id: string | null) => void>();
+function setLaneCall(id: string | null) { if (laneCall !== id) { laneCall = id; laneWatchers.forEach((f) => f(id)); } }
+export function androidLaneCall() { return laneCall; }
+export function watchAndroidLaneCall(f: (id: string | null) => void) { laneWatchers.add(f); return () => { laneWatchers.delete(f); }; }
+
 export function noteIncoming(v: Record<string, unknown>) {
+  if (v?.type === 'call:ended' && typeof v.callId === 'string') { if (laneCall === v.callId) setLaneCall(null); return; }
   if (v?.type !== 'call:incoming' || typeof v.callId !== 'string') return;
   const p = callerPlatformOf(v);
   if (p) incomingPeer.set(v.callId, p);
+  if (Platform.OS === 'ios' && v.video !== true && p === 'android') setLaneCall(v.callId);
   if (incomingPeer.size > 32) incomingPeer.delete(incomingPeer.keys().next().value as string);
 }
-export function forgetCall(callId: unknown) { if (typeof callId === 'string') incomingPeer.delete(callId); }
+export function forgetCall(callId: unknown) { if (typeof callId === 'string') { incomingPeer.delete(callId); if (laneCall === callId) setLaneCall(null); } }
 
 /** Pure routing decision (unit-tested): Swift lane only for iOS + incoming + Android caller + audio-only. */
 export function routeSwiftLane(x: { os: string; video: boolean; incoming: boolean; peerPlatform: string | null }): boolean {

@@ -399,6 +399,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let video = d["video"] == "1" || d["video"] == "true"
     var expires: Date?
     if let e = d["expiresAt"], let ms = Double(e), ms > 0 { expires = Date(timeIntervalSince1970: ms / 1000) }
+    // b80: Android caller, audio-only → this call's media is the native Swift lane only (prepared before didActivate)
+    if Self.valid(callId), !video, (d["callerPlatform"] ?? d["peerPlatform"] ?? "").lowercased() == "android" {
+      OLNativeAudioLane.markAndroidCall(callId)
+    }
     let declineToken = d["declineToken"].flatMap { $0.range(of: Self.declineTokenPattern, options: .regularExpression) != nil ? $0 : nil }
 
     let update = CXCallUpdate()
@@ -647,20 +651,23 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
     // remain unchanged.
     let nativeVideo = calls.values.contains(where: { !$0.ended && $0.nativeMedia })
-    // b74: skip only when the unit is REALLY on for a live call; the flag alone went stale across rapid redials
-    // (Keiko → iPhone 2nd/3rd call within ~40 s: packets in, nothing played, mic never started)
-    if OLNativeAudioLane.live == nil, (!callVideo || nativeVideo) && !(nativeAudioOn && OLNativeAudio.isEnabled && hasLiveCall) {
-      nativeAudioOn = true
-      OLNativeAudio.didActivate(audioSession, video: nativeVideo)
-    }
-    // b79 Swift lane: category/mode/speaker, session active, audio unit on, tracks resumed — before media plays.
-    if let lane = OLNativeAudioLane.live {
+    // b80: Android → iPhone incoming audio (identity from callerPlatform=android at ring time) is native-only, and
+    // THIS is its only audio start: playAndRecord/voiceChat/speaker+Bluetooth → setActive → RTCAudioSession
+    // didActivate + isAudioEnabled → local+remote audio tracks on. No other path, timer or socket event starts it.
+    if calls.values.contains(where: { !$0.ended && $0.incoming && OLNativeAudioLane.isAndroidCall($0.callId) }) {
       nativeAudioOn = true
       OLNativeAudio.laneActivate(audioSession)
-      lane.resumeAudioTracks()
+      OLNativeAudioLane.callKitActivated()
+      OLNativeAudioLane.live?.resumeAudioTracks()
+      NSLog("[OLCalls] b80 android lane audio started in didActivate (lane=%d)", OLNativeAudioLane.live == nil ? 0 : 1)
+    } else {
+      // b74: skip only when the unit is REALLY on for a live call; the flag alone went stale across rapid redials
+      // (Keiko → iPhone 2nd/3rd call within ~40 s: packets in, nothing played, mic never started)
+      if (!callVideo || nativeVideo) && !(nativeAudioOn && OLNativeAudio.isEnabled && hasLiveCall) {
+        nativeAudioOn = true
+        OLNativeAudio.didActivate(audioSession, video: nativeVideo)
+      }
     }
-    // b75 Swift lane (Android → iPhone incoming audio): CallKit didActivate is its only media green light.
-    OLNativeAudioLane.callKitActivated()
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
@@ -704,19 +711,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLNativeAudio.stopIdle()
   }
 
-  /// b78 Swift lane: if CallKit already activated the session before the lane produced, enable the unit now.
-  /// Never activates a session itself; does nothing until didActivate has happened.
-  func laneEnsureAudio() {
-    DispatchQueue.main.async { [weak self] in
-      guard let self = self, self.callKitAudioActive,
-            self.calls.values.contains(where: { !$0.ended && $0.incoming }) else { return }
-      NSLog("[OLCalls] b79 lane audio activate (session already active)")
-      self.nativeAudioOn = true
-      OLNativeAudio.laneActivate()
-      OLNativeAudioLane.live?.resumeAudioTracks()
-    }
-  }
-
   /// b74: safety net (call:connected) and the optional server nudge (call:audioRecover). Audio calls only: a live
   /// CallKit call with an active session but the unit off → enable it once and log it. Transport is never touched.
   private func ensureAudioEnabled(_ why: String) {
@@ -743,6 +737,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       var incoming: [String: String] = ["type": "call_incoming", "callId": callId, "callerName": name, "video": video ? "1" : "0"]
       if let ms = m["expiresAt"] as? Double { incoming["expiresAt"] = String(Int(ms)) }
       if let ms = m["expiresAt"] as? Int { incoming["expiresAt"] = String(ms) }
+      if let p = m["callerPlatform"] as? String { incoming["callerPlatform"] = p }
       // Page/WS is a fallback ingress only. It shares the same CallSession/UUID as PushKit.
       handleIncoming(incoming, completion: {})
 

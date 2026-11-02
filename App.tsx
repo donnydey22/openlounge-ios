@@ -56,7 +56,7 @@ import {
   startNativeCalls,
   syncCallAuthFromSession,
 } from './src/calls';
-import { noteIncoming } from './src/swiftLane';
+import { noteIncoming, watchAndroidLaneCall } from './src/swiftLane';
 import { NativeMediaController, type NativeVideoState } from './src/nativeMedia';
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
@@ -169,6 +169,9 @@ function Shell() {
   // Native iPhone video is intentionally held outside the WebView. Streams never cross the JS bridge; the page
   // remains the call-control overlay while RTCView owns only the actual camera/remote pixels.
   const [nativeVideo, setNativeVideo] = useState<NativeVideoState>(null);
+  // b80: Android → iPhone audio call live → its media is native-only; the WebView gets no mic/audio capture.
+  const [androidLane, setAndroidLane] = useState<string | null>(null);
+  useEffect(() => watchAndroidLaneCall(setAndroidLane), []);
   const [nativeVideoLayout, setNativeVideoLayout] = useState<NativeVideoLayout | null>(null);
   const [webFrame, setWebFrame] = useState<WebFrame | null>(null);
   const [windowFrame, setWindowFrame] = useState<WebFrame | null>(null);
@@ -922,7 +925,7 @@ function Shell() {
           // the page's own host only (openlounge.app), deny cross-origin frames, so WebKit never re-prompts.
           // Native-video calls (spec v3): the app owns mic + camera, so the page may never grab either while app-owned
           // call media is live (a WebKit capture would steal the mic / start a second camera and fight the RTCViews).
-          mediaCapturePermissionGrantType={nativeVideo ? 'deny' : 'grantIfSameHostElseDeny'}
+          mediaCapturePermissionGrantType={nativeVideo || androidLane ? 'deny' : 'grantIfSameHostElseDeny'}
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           allowsAirPlayForMediaPlayback
