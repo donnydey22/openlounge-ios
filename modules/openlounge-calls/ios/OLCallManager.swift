@@ -225,7 +225,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     incomingIdentities = incomingIdentities.filter { $0.value.expiresAt > now - 5 }
     if incomingIdentities.count > 16 {
       let keep = incomingIdentities.sorted { $0.value.expiresAt > $1.value.expiresAt }.prefix(16)
-      incomingIdentities = Dictionary(uniqueKeysWithValues: keep)
+      incomingIdentities = Dictionary(uniqueKeysWithValues: keep.map { ($0.key, $0.value) })
     }
     if let data = try? JSONEncoder().encode(incomingIdentities) {
       UserDefaults.standard.set(data, forKey: Self.incomingIdentityKey)

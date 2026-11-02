@@ -216,9 +216,11 @@ final class OLNativeAudioLane: NSObject {
     syncing = true; defer { syncing = false }
     do {
       let x = try await r("ms:consume", ["transportId": recvT["id"] ?? "", "rtpCapabilities": rtpCapabilities])
-      let got = (x["consumers"] as? [[String: Any]] ?? []).filter {
-        ($0["kind"] as? String) == "audio" && ($0["producerId"] as? String) != producerId
-          && !consumers.contains(where: { c in (c["id"] as? String) == ($0["id"] as? String) })
+      let known = Set(consumers.compactMap { $0["id"] as? String })
+      let mine = producerId
+      let got = (x["consumers"] as? [[String: Any]] ?? []).filter { p in
+        (p["kind"] as? String) == "audio" && (p["producerId"] as? String) != mine
+          && !known.contains((p["id"] as? String) ?? "")
       }
       if !got.isEmpty {
         consumers.append(contentsOf: got)
