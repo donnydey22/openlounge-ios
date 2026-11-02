@@ -62,3 +62,8 @@ test('b81: lane ICE restart over ms:transport:restartIce on disconnected/failed'
   const body = swift.slice(swift.indexOf('func restartIce'), swift.indexOf('// MARK: - controls'));
   assert.doesNotMatch(body, /isAudioEnabled|setActive|setCategory/);
 });
+test('b83: stats op on the Swift lane reads the native lane RTCPeerConnection getStats', () => {
+  assert.match(nm, /case 'stats': return lane\.stats\(\);/);
+  assert.match(swift, /func stats\(\)[\s\S]*pc\.statistics[\s\S]*__olTransportDirection/);
+  assert.match(swift, /\("send", sendPc\), \("recv", recvPc\)/);
+});

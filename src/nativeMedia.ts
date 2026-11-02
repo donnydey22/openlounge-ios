@@ -826,7 +826,7 @@ export class NativeMediaController {
       case 'consumerAvailable': lane.control('sync'); return true;
       case 'close': lane.control('close'); return true;
       case 'restartIce': case 'ladder': return false;
-      case 'stats': return [];
+      case 'stats': return lane.stats();
       case 'camera': return false;
     }
     return undefined;

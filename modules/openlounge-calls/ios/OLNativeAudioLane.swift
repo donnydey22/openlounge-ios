@@ -301,6 +301,27 @@ final class OLNativeAudioLane: NSObject {
     #endif
   }
 
+  // MARK: - b83 stats: the lane's own RTCPeerConnection getStats (the page's call-quality report reads these)
+  /// [[send-pc stats], [recv-pc stats]] as JSON-safe dicts in W3C shape (id, type, timestamp ms, values) plus
+  /// `__olTransportDirection`, matching NativeMediaSession.stats() in src/nativeMedia.ts.
+  @MainActor func stats() async -> [[[String: Any]]] {
+    #if canImport(WebRTC)
+    var out: [[[String: Any]]] = []
+    for (dir, pc) in [("send", sendPc), ("recv", recvPc)] {
+      guard let pc = pc, !closed else { continue }
+      let rep: RTCStatisticsReport = await withCheckedContinuation { c in pc.statistics { c.resume(returning: $0) } }
+      out.append(rep.statistics.values.map { s in
+        var d: [String: Any] = ["id": s.id, "type": s.type, "timestamp": s.timestamp_us / 1000, "__olTransportDirection": dir]
+        for (k, v) in s.values where JSONSerialization.isValidJSONObject([k: v]) { d[k] = v }
+        return d
+      })
+    }
+    return out
+    #else
+    return []
+    #endif
+  }
+
   // MARK: - b81 persistence: ICE restart over the existing page socket (server ms:transport:restartIce)
   @MainActor func restartIce(_ dir: String) async {
     #if canImport(WebRTC)

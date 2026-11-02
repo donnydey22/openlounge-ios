@@ -49,6 +49,14 @@ public final class OpenLoungeCallsModule: Module {
       return true
     }
 
+    // b83: call-quality stats from the live Swift lane's own RTCPeerConnections (JSON string; "[]" when no lane)
+    AsyncFunction("laneStats") { () async -> String in
+      guard let l = await MainActor.run(body: { OLNativeAudioLane.live }) else { return "[]" }
+      let s = await l.stats()
+      let data = (try? JSONSerialization.data(withJSONObject: s)) ?? Data("[]".utf8)
+      return String(decoding: data, as: UTF8.self)
+    }
+
     Function("msResponse") { (id: String, ok: Bool, json: String, error: String) in
       OLLaneBridge.shared.finish(id, ok: ok, json: json, error: error)
     }
