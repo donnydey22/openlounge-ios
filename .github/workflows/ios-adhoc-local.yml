@@ -84,7 +84,7 @@ jobs:
           test "$WF" = "1" && test "$DUP" = "0" && echo "LINK AUDIT PASS"
           cd .. && rm -rf la
       - name: b75 installable IPA (short-lived; same file is published as a release asset like b74)
-        if: github.ref == 'refs/heads/ios75-native-streamwebrtc'
+        if: github.ref == 'refs/heads/ios75-native-streamwebrtc' || github.ref == 'refs/heads/ios84-b82-incoming'
         uses: actions/upload-artifact@v4
         with:
           name: openlounge-ios-adhoc-ipa
