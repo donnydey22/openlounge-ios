@@ -17,6 +17,7 @@ js = js.replace("from './simulcast'", "from './simulcast.mjs'");
 js = js.replace(/import \{[^}]*\} from '@stream-io\/react-native-webrtc';/, 'const mediaDevices = globalThis.__md; class MediaStream { constructor(t=[]){this.t=t;} getTracks(){return this.t;} getAudioTracks(){return this.t.filter((x)=>x.kind===\'audio\');} getVideoTracks(){return this.t.filter((x)=>x.kind===\'video\');} addTrack(t){this.t.push(t);} removeTrack(t){this.t=this.t.filter((x)=>x!==t);} toURL(){return \"native\";} }')
   .replace(/import \{ CHATSWAP_RTC \} from '.\/callMediaProfile';/, "const registerGlobals = () => {}; const CHATSWAP_AUDIO = { echoCancellation: true, autoGainControl: true, noiseSuppression: true }; const CHATSWAP_RTC = { bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require' };")
   .replace(/import \{ Platform \} from 'react-native';/, "const Platform = globalThis.__rnPlatform ?? { OS: 'ios' };")
+  .replace(/import \{ SwiftLane, shouldUseSwiftLane \} from '.\/swiftLane';/, 'class SwiftLane { callId = null; connected = false; control() { return false; } } const shouldUseSwiftLane = () => false;') // b75: no caller platform → existing lane
   .replace(/import\('mediasoup-client'\)/g, 'Promise.resolve(globalThis.__ms)')
   .replace(/import\('livekit-client'\)/g, 'Promise.resolve(globalThis.__lk)');
 writeFileSync(join(dir, 'nm.mjs'), js);

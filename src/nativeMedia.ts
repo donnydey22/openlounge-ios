@@ -19,6 +19,7 @@ import { pollConsumers } from './consumeUntil';
 import { mediaDevices, MediaStream, registerGlobals, type MediaStreamTrack } from '@stream-io/react-native-webrtc';
 import { CHATSWAP_RTC } from './callMediaProfile';
 import { nativeCameraEncodings, nativeSimulcastLadder } from './simulcast';
+import { SwiftLane, shouldUseSwiftLane } from './swiftLane';
 
 // FX-079 anti-freeze, kept in step with the web lane's src/lib/calls/antiFreeze.ts
 export const FREEZE = { minFps: 15, degradationPreference: 'maintain-framerate', keyframeAfterMs: 1_500, resumeAfterMs: 4_000, resyncAfterMs: 8_000, sampleMs: 500 } as const;
@@ -680,7 +681,14 @@ export class NativeMediaController {
   /** the one fresh build in flight: a second connect for the same call/path joins it instead of tearing it down
    *  (the 60 s block hang: recovery + the page's own rejoin both issued connect, each closing the other's session) */
   private building: { callId: string; tcpOnly: boolean; p: Promise<{ attached: boolean }>; tok: object } | null = null;
-  constructor(private req: Req, private emit: Emit, private emitVideo: (state: NativeVideoState) => void) {}
+  /** b75: Swift RTCPeerConnection lane, used only for Android → iPhone incoming audio (src/swiftLane.ts) */
+  private swift: SwiftLane | null = null;
+  constructor(private req: Req, private emit: Emit, private emitVideo: (state: NativeVideoState) => void) {
+    if (Platform.OS === 'ios') this.swift = new SwiftLane(req, emit);
+  }
+  private swiftActive(callId?: string) {
+    return !!this.swift?.callId && (!callId || this.swift.callId === callId);
+  }
 
   /** live call media the app is holding (for a reloaded page to re-attach) */
   current(): { callId: string; kind: 'mediasoup'; connected: boolean } | null {
@@ -690,6 +698,11 @@ export class NativeMediaController {
 
   async handle(cmd: Record<string, unknown>): Promise<unknown> {
     const callId = typeof cmd.callId === 'string' ? cmd.callId : '';
+    // b75 single path: Android caller → this iPhone, audio-only, incoming → Swift lane. Everything else falls through.
+    if (this.swift && (cmd.op === 'connect' || this.swiftActive())) {
+      const r = await this.handleSwift(cmd, callId);
+      if (r !== undefined) return r;
+    }
     switch (cmd.op) {
       case 'prewarm':
         // Compatibility no-op: capture is intentionally deferred until connect/answer.
@@ -797,12 +810,35 @@ export class NativeMediaController {
     throw new Error('unknown op');
   }
 
+  private async handleSwift(cmd: Record<string, unknown>, callId: string): Promise<unknown> {
+    const lane = this.swift!;
+    switch (cmd.op) {
+      case 'connect': {
+        if (!CALL_ID.test(callId) || !shouldUseSwiftLane(cmd)) return undefined;
+        if (lane.callId === callId && lane.connected && cmd.rebuild !== true) return { attached: true, lane: 'swift' };
+        this.session?.close();
+        this.session = null;
+        const nativeConn = this.prepared?.callId === callId ? this.prepared.nativeConn : nativeConnectionId();
+        return lane.connect(callId, nativeConn, Array.isArray(cmd.iceServers) ? cmd.iceServers : []);
+      }
+      case 'status': return { callId: lane.callId, kind: 'mediasoup', connected: lane.connected, lane: 'swift' };
+      case 'mute': lane.control('mute', cmd.muted === true); return true;
+      case 'consumerAvailable': lane.control('sync'); return true;
+      case 'close': lane.control('close'); return true;
+      case 'restartIce': case 'ladder': return false;
+      case 'stats': return [];
+      case 'camera': return false;
+    }
+    return undefined;
+  }
+
   /** Network path changed (Wi-Fi ⇄ cellular): fresh ICE in place, natively — no page involvement needed. */
   onNetworkChange() {
     void this.session?.restartIceAll().catch(() => {});
   }
 
   closeAll(dropPrewarm = true) {
+    if (this.swiftActive()) this.swift!.control('close');
     this.building = null;
     this.session?.close();
     this.session = null;

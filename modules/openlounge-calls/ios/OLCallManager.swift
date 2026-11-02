@@ -653,6 +653,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       nativeAudioOn = true
       OLNativeAudio.didActivate(audioSession, video: nativeVideo)
     }
+    // b75 Swift lane (Android → iPhone incoming audio): CallKit didActivate is its only media green light.
+    OLNativeAudioLane.callKitActivated()
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
@@ -670,6 +672,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    OLNativeAudioLane.callKitDeactivated()
     traceProviderCallback("did-deactivate")
     // b74: a late didDeactivate after resetAudioState() already ran is a no-op for our state (only WebRTC's session
     // bookkeeping is told); a new call's flags are never touched by the previous call's deactivation

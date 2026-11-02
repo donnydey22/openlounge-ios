@@ -56,6 +56,7 @@ import {
   startNativeCalls,
   syncCallAuthFromSession,
 } from './src/calls';
+import { noteIncoming } from './src/swiftLane';
 import { NativeMediaController, type NativeVideoState } from './src/nativeMedia';
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
@@ -744,6 +745,7 @@ function Shell() {
             nativeMedia.current?.closeAll();
             setNativeVideoLayout(null);
           }
+          noteIncoming(msg.value as Record<string, unknown>); // b75: caller platform → Swift-lane routing only
           forwardPageCallMessage(msg.value);
           if (v?.type === 'call:incoming' && typeof v.callId === 'string' && lockRef.current !== 'unlocked') {
             // Fallback card above LockScreen if CallKit is delayed / refused; CallKit still gets the page message.

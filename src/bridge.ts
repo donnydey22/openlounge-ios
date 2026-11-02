@@ -93,7 +93,7 @@ export type BridgeRequest =
 
 /** Page → native call messages (NATIVE_SPEC.md §5), sent as plain {type:"call:*"} JSON (no __ol envelope). */
 export type PageCallMessage =
-  | { type: 'call:incoming'; callId: string; name: string; video: boolean; photo?: string; expiresAt?: number }
+  | { type: 'call:incoming'; callId: string; name: string; video: boolean; photo?: string; expiresAt?: number; callerPlatform?: 'android' | 'ios' | 'web' }
   | { type: 'call:outgoing'; callId: string; name: string; video: boolean; /** server-issued current-call native video grant */ nativeMedia?: boolean }
   | { type: 'call:connected'; callId: string }
   /** build 72: Accept tapped on the page ring screen — native answers CallKit immediately */
@@ -120,6 +120,8 @@ function parseCallMessage(m: Record<string, unknown>): BridgeRequest | null {
             video: m.video === true,
             photo: typeof m.photo === 'string' ? m.photo.slice(0, 500) : undefined,
             expiresAt: typeof m.expiresAt === 'number' ? m.expiresAt : undefined,
+            // b75: caller platform (Swift-lane routing for Android → iPhone audio only); unknown values dropped
+            ...(m.callerPlatform === 'android' || m.callerPlatform === 'ios' || m.callerPlatform === 'web' ? { callerPlatform: m.callerPlatform } : {}),
           })
         : null;
     case 'call:outgoing':
