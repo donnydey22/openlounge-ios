@@ -11,8 +11,11 @@ final class SfuLegTests: XCTestCase {
     if r == 0 {
       let secs = Int(e["OL_SECONDS"]!)!; var sum = 0, n = 0, mx: Int32 = 0; var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0, lv: Int32 = 0
       for i in 0..<(secs * 10) { Thread.sleep(forTimeInterval: 0.1); ol_harness_stats(&rx, &lost, &tx, &lv); if i > 20 { sum += Int(lv); n += 1; mx = max(mx, lv) } }
-      ol_harness_stats(&rx, &lost, &tx, &lv); ol_harness_stop()
-      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx)}"
+      ol_harness_stats(&rx, &lost, &tx, &lv)
+      var rb0: Int32 = 0, rb1: Int32 = 0; var jd: UInt32 = 0, jl: UInt32 = 0, je: UInt32 = 0, ja: UInt32 = 0, rd: UInt32 = 0
+      _ = ol_sfu_diag(&rb0, &rb1, &jd, &jl, &je, &ja, &rd); ol_harness_stop()
+      let diag = "{\"rcvbuf0\":\(rb0),\"rcvbuf1\":\(rb1),\"jbDiscard\":\(jd),\"jbLost\":\(jl),\"jbEmpty\":\(je),\"jbAvgMs\":\(ja),\"rxDiscard\":\(rd)}"
+      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"diag\":\(diag)}"
     }
     try json.write(toFile: out, atomically: true, encoding: .utf8)
     XCTAssertEqual(r, 0)

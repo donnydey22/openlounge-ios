@@ -6,7 +6,7 @@
 #include "ol_sfu.h"
 
 static pj_pool_t *pool; static pjmedia_transport *udp, *srtp; static pjmedia_stream *stream; static pjsua_conf_port_id slot = -1, tone_slot = -1;
-static pjmedia_port *tone;
+static pjmedia_port *tone; static int rcvbuf_before, rcvbuf_after;
 
 static int b64key(const char *b64, char *out30) { int n = 30; pj_str_t s = pj_str((char *)b64);
   return pj_base64_decode(&s, (pj_uint8_t *)out30, &n) == PJ_SUCCESS && n == 30 ? 0 : -1; }
@@ -20,6 +20,12 @@ int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char 
     int base = 42000 + (int)(pj_rand() % 4000) * 2, ok = 0;
     for (int i = 0; i < 64 && !ok; i++) ok = pjmedia_transport_udp_create3(ep, pj_AF_INET(), "olsfu", &any, base + 2 * i, 0, &udp) == PJ_SUCCESS;
     if (!ok) return -2; }
+  { /* Bursty senders (WS relay / browser timers) overflow the small default UDP rcvbuf (macOS/iOS ~42-200KB) -> kernel drops
+       before pjmedia sees them. Raise to 1 MB on RTP socket and record what the kernel granted. */
+    pjmedia_transport_info ti; pjmedia_transport_info_init(&ti); pjmedia_transport_get_info(udp, &ti);
+    int v = 0; int l = sizeof v; pj_sock_getsockopt(ti.sock_info.rtp_sock, pj_SOL_SOCKET(), pj_SO_RCVBUF(), &v, &l); rcvbuf_before = v;
+    v = 1 << 20; pj_sock_setsockopt(ti.sock_info.rtp_sock, pj_SOL_SOCKET(), pj_SO_RCVBUF(), &v, sizeof v);
+    v = 0; l = sizeof v; pj_sock_getsockopt(ti.sock_info.rtp_sock, pj_SOL_SOCKET(), pj_SO_RCVBUF(), &v, &l); rcvbuf_after = v; }
   pjmedia_srtp_setting ss; pjmedia_srtp_setting_default(&ss); ss.use = PJMEDIA_SRTP_MANDATORY; ss.close_member_tp = PJ_TRUE;
   if (pjmedia_transport_srtp_create(ep, udp, &ss, &srtp) != PJ_SUCCESS) return -3;
   static char txk[30], rxk[30]; if (b64key(tx_b64, txk) || b64key(rx_b64, rxk)) return -4;
@@ -61,3 +67,8 @@ void ol_sfu_stop(void) {
   if (srtp) { pjmedia_transport_close(srtp); srtp = NULL; udp = NULL; }
   if (pool) { pj_pool_release(pool); pool = NULL; }
 }
+/* Diagnostics for the matrix: kernel rcvbuf before/after, jitter-buffer counters, stream rx discards. */
+int ol_sfu_diag(int *rb0, int *rb1, unsigned *jb_disc, unsigned *jb_lost, unsigned *jb_empty, unsigned *jb_avg_ms, unsigned *rx_discard) {
+  pjmedia_jb_state j; pjmedia_rtcp_stat st; *rb0 = rcvbuf_before; *rb1 = rcvbuf_after;
+  if (!stream || pjmedia_stream_get_stat_jbuf(stream, &j) != PJ_SUCCESS || pjmedia_stream_get_stat(stream, &st) != PJ_SUCCESS) return -1;
+  *jb_disc = j.discard; *jb_lost = j.lost; *jb_empty = j.empty; *jb_avg_ms = j.avg_delay; *rx_discard = st.rx.discard; return 0; }
