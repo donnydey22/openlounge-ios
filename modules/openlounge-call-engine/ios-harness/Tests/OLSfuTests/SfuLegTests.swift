@@ -64,7 +64,7 @@ final class SfuLegTests: XCTestCase {
       ol_sfu_video_stats(&vrp, &va, &vk, &vg, &vtp, &ta, &tk)
       ol_sfu_video_stop(); ol_sfu_video_set_sink(nil, nil); let ds = dec.stats; dec.close(); ol_harness_stop()
       let decFps = ds.firstAt.map { Double(ds.decoded) / max(0.5, Date().timeIntervalSince($0)) } ?? 0
-      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"codec\":\"\(codec)\",\"videoError\":\(videoError),\"vRxPkt\":\(vrp),\"rxAu\":\(va),\"rxKey\":\(vk),\"rxGap\":\(vg),\"vTxPkt\":\(vtp),\"txAu\":\(ta),\"txKey\":\(tk),\"decoded\":\(ds.decoded),\"decFps\":\(decFps),\"decErr\":\(ds.errors),\"nonBlack\":\(ds.nonBlack),\"srcFrames\":\(frame)}"
+      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"codec\":\"\(codec)\",\"videoError\":\(videoError),\"vRxPkt\":\(vrp),\"rxAu\":\(va),\"rxKey\":\(vk),\"rxGap\":\(vg),\"vTxPkt\":\(vtp),\"txAu\":\(ta),\"txKey\":\(tk),\"decoded\":\(ds.decoded),\"decFps\":\(decFps),\"decErr\":\(ds.errors),\"nonBlack\":\(ds.nonBlack),\"srcFrames\":\(frame),\"firstFrameMs\":\(ds.firstAt.map { Int($0.timeIntervalSince(t0) * 1000) }.map(String.init) ?? "null")}"
     } else { ol_sfu_video_stop(); ol_harness_stop() }
     try json.write(toFile: out, atomically: true, encoding: .utf8)
     XCTAssertEqual(r, 0); XCTAssertEqual(vr, 0)
