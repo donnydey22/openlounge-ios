@@ -43,9 +43,11 @@ static void on_rtp(pjmedia_tp_cb_param *prm) {
 }
 static void on_rtcp(void *u, void *p, pj_ssize_t n) { (void)u; (void)p; (void)n; }
 
-void ol_sfu_video_set_sink(ol_video_sink_cb cb, void *user) { sink = cb; sink_user = user; }
+void ol_sfu_video_set_sink(ol_video_sink_cb cb, void *user) { OLV_REG(); sink = cb; sink_user = user; }
 
-int ol_sfu_video_start(const char *ip, int port, const char *tx_b64, const char *rx_b64, const unsigned *ssrcs, int nlayers, int pt) {
+/* Callers (VideoToolbox/MediaCodec callback threads, XCTest) may be foreign to pjlib: register before pj_mutex/pjmedia use. */
+#define OLV_REG() static __thread pj_thread_desc olv_d_; pj_thread_t *olv_t_; if (!pj_thread_is_registered()) pj_thread_register("olv", olv_d_, &olv_t_)
+int ol_sfu_video_start(const char *ip, int port, const char *tx_b64, const char *rx_b64, const unsigned *ssrcs, int nlayers, int pt) { OLV_REG();
   pjmedia_endpt *ep = pjsua_get_pjmedia_endpt(); if (!ep) return -1; if (nlayers < 1 || nlayers > 3) return -12;
   ol_sfu_video_stop();
   vpool = pjsua_pool_create("olsfuv", 4000, 4000); pj_mutex_create_simple(vpool, "olv", &vmx);
@@ -82,7 +84,7 @@ static int vpkt(int layer, pj_uint32_t ts, int marker, const pj_uint8_t *pl, int
   return pjmedia_transport_send_rtp(vsrtp, o, 12 + prel + pll) == PJ_SUCCESS ? 0 : -100;
 }
 /* One Annex-B access unit from the layer's HW encoder (SPS/PPS prepended on keyframes) at a 90 kHz timestamp. */
-int ol_sfu_video_send(int layer, const unsigned char *a, int len, unsigned ts90k, int key) {
+int ol_sfu_video_send(int layer, const unsigned char *a, int len, unsigned ts90k, int key) { OLV_REG();
   if (!vsrtp || layer < 0 || layer >= (int)vnl) return -1;
   int cnt = 0; const pj_uint8_t *nal[256]; int scpos[257];
   for (int i = 0; i + 3 <= len && cnt < 256; ) {
@@ -99,10 +101,10 @@ int ol_sfu_video_send(int layer, const unsigned char *a, int len, unsigned ts90k
   st_tx_au[layer]++; if (key) st_tx_key[layer]++;
   return 0;
 }
-int ol_sfu_video_stats(unsigned *rx_pkt, unsigned *rx_au, unsigned *rx_key, unsigned *rx_gap, unsigned *tx_pkt, unsigned *tx_au, unsigned *tx_key) {
+int ol_sfu_video_stats(unsigned *rx_pkt, unsigned *rx_au, unsigned *rx_key, unsigned *rx_gap, unsigned *tx_pkt, unsigned *tx_au, unsigned *tx_key) { OLV_REG();
   *rx_pkt = st_rx_pkt; *rx_au = st_rx_au; *rx_key = st_rx_key; *rx_gap = st_rx_gap; *tx_pkt = st_tx_pkt;
   for (int i = 0; i < 3; i++) { tx_au[i] = st_tx_au[i]; tx_key[i] = st_tx_key[i]; } return 0; }
-void ol_sfu_video_stop(void) {
+void ol_sfu_video_stop(void) { OLV_REG();
   if (vsrtp) { pjmedia_transport_detach(vsrtp, NULL); pjmedia_transport_close(vsrtp); vsrtp = NULL; vudp = NULL; }
   if (vmx) { pj_mutex_destroy(vmx); vmx = NULL; }
   if (vpool) { pj_pool_release(vpool); vpool = NULL; }
