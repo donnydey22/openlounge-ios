@@ -61,8 +61,9 @@ jobs:
           cd ios && pod install >/dev/null
           WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
           rm -rf ~/Library/Developer/Xcode/DerivedData
-          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -derivedDataPath $PWD/dd clean build 2>&1 | tail -40
-          test ${PIPESTATUS[0]} -eq 0
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -derivedDataPath $PWD/dd clean build > ../xb.log 2>&1 && rc=0 || rc=$?
+          grep -E 'error:|\*\* BUILD' ../xb.log | sort -u | head -60; grep -A3 'The following build commands failed' ../xb.log | head -20
+          exit $rc
       - name: fail if any WebRTC / libpeerconnection symbol, import or dependency remains
         run: |
           set -euo pipefail

@@ -60,3 +60,48 @@ In both cases the SRTP stays encrypted end-to-end through the relay. **This is a
 - **Simulcast.** Simulcast goes through mediasoup (§8). Each subscriber gets the layer it can handle (bandwidth/CPU/screen).
 - **QuickHD-style start.** For the first ~3–5 s of a call, the encoder starts at the high layer at an elevated bitrate (keyframe-forward) for instant sharpness, then hands off to normal rate adaptation.
 - **Tuning.** Encoder parameters (bitrates per layer, keyframe interval, QuickHD duration/boost) are starting values and **will be iterated from production data**.
+
+## 11. Must-pass call matrix (Donny t4460u) — nothing ships until every row passes
+
+Pass = callee rings, answers, and the receiver gets decoded media for >=30 s: audio RMS > 0.05 / video frames >= 15 fps with non-black content, srtpErr = 0, teardown clean. Then a redial within 30 s passes again.
+
+| # | Caller → Callee | Media | Direction checked | Automated check |
+|---|---|---|---|---|
+| 1 | iPhone → iPhone | audio | iPhone→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 2 | iPhone → iPhone | audio | iPhone→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 3 | iPhone → iPhone | video | iPhone→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 4 | iPhone → iPhone | video | iPhone→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 5 | iPhone → Android | audio | iPhone→Android | XCUITest on device farm/sim + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 6 | iPhone → Android | audio | Android→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 7 | iPhone → Android | video | iPhone→Android | XCUITest on device farm/sim + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 8 | iPhone → Android | video | Android→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 9 | iPhone → Browser | audio | iPhone→Browser | XCUITest on device farm/sim + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 10 | iPhone → Browser | audio | Browser→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 11 | iPhone → Browser | video | iPhone→Browser | XCUITest on device farm/sim + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 12 | iPhone → Browser | video | Browser→iPhone | XCUITest on device farm/sim + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 13 | Android → iPhone | audio | Android→iPhone | instrumented test (emulator) + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 14 | Android → iPhone | audio | iPhone→Android | instrumented test (emulator) + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 15 | Android → iPhone | video | Android→iPhone | instrumented test (emulator) + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 16 | Android → iPhone | video | iPhone→Android | instrumented test (emulator) + pjsua stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 17 | Android → Android | audio | Android→Android | instrumented test (emulator) + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 18 | Android → Android | audio | Android→Android | instrumented test (emulator) + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 19 | Android → Android | video | Android→Android | instrumented test (emulator) + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 20 | Android → Android | video | Android→Android | instrumented test (emulator) + pjsua stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 21 | Android → Browser | audio | Android→Browser | instrumented test (emulator) + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 22 | Android → Browser | audio | Browser→Android | instrumented test (emulator) + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 23 | Android → Browser | video | Android→Browser | instrumented test (emulator) + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 24 | Android → Browser | video | Browser→Android | instrumented test (emulator) + pjsua stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 25 | Browser → iPhone | audio | Browser→iPhone | Playwright (fake mic/cam) + WASM stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 26 | Browser → iPhone | audio | iPhone→Browser | Playwright (fake mic/cam) + WASM stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 27 | Browser → iPhone | video | Browser→iPhone | Playwright (fake mic/cam) + WASM stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 28 | Browser → iPhone | video | iPhone→Browser | Playwright (fake mic/cam) + WASM stats ⇄ XCUITest on device farm/sim + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 29 | Browser → Android | audio | Browser→Android | Playwright (fake mic/cam) + WASM stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 30 | Browser → Android | audio | Android→Browser | Playwright (fake mic/cam) + WASM stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 31 | Browser → Android | video | Browser→Android | Playwright (fake mic/cam) + WASM stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 32 | Browser → Android | video | Android→Browser | Playwright (fake mic/cam) + WASM stats ⇄ instrumented test (emulator) + pjsua stats; tone/test-pattern injected, received signal analysed |
+| 33 | Browser → Browser | audio | Browser→Browser | Playwright (fake mic/cam) + WASM stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 34 | Browser → Browser | audio | Browser→Browser | Playwright (fake mic/cam) + WASM stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 35 | Browser → Browser | video | Browser→Browser | Playwright (fake mic/cam) + WASM stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+| 36 | Browser → Browser | video | Browser→Browser | Playwright (fake mic/cam) + WASM stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
+
+CI stage 1: Linux pjsua⇄pjsua (exists, green) + pjsua⇄WASM-in-headless-Chrome. Stage 2: simulator/emulator pairs through mediasoup on a test droplet (not prod). Stage 3: real devices (Keiko Android → Donny iPhone, locked phone, redial ×5) — manual sign-off rows.
