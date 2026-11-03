@@ -108,6 +108,11 @@ jobs:
       - name: CI stack deps (wasm browser peer, mediasoup worker)
         working-directory: ol
         run: wasm-call/build.sh && for d in media-sfu ws-media-relay tests/pjsip-matrix; do (cd $d && npm install --no-audit --no-fund); done
+      - name: virtual audio device (macOS VM has none -> headless Chrome AudioWorklet clock runs ~1/7 speed, starving browser->phone send)
+        run: |
+          brew install --cask blackhole-2ch
+          sudo killall coreaudiod || true; sleep 5
+          system_profiler SPAudioDataType | grep -iE "blackhole|output|input" | head
       - name: iphone<->browser audio cells (simulator XCTest, real engine, real mediasoup PlainTransport)
         working-directory: ol
         env:
