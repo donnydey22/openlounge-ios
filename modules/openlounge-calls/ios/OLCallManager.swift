@@ -721,6 +721,24 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     callKitAudioActive = false
     stopRingback() // b74: ring/ringback never outlives the call (answer, cancel, end all land here or in stopRingback)
     OLNativeAudio.stopIdle()
+    if why != "ringtone-prepare" { teardownCallAudio(why) } // b86 release: every cell, every call end
+  }
+
+  /// b86 release: any call cell ended (Android→iPhone, iPhone→iPhone, iPhone→Android; no live call left) → tear audio
+  /// down completely before the next ring, so a redial ~30 s later starts from zero: lane PeerConnections closed,
+  /// WebRTC audio unit released, session inactive (others notified), all call-audio flags reset. Start sequences untouched.
+  private func teardownCallAudio(_ why: String) {
+    NSLog("[OLCalls] b86 call-end teardown (%@)", why)
+    OLNativeAudioLane.shared?.close()
+    OLNativeAudioLane.resetActivation()
+    laneActivatedCall = nil
+    laneReactivating = false
+    nativeAudioOn = false
+    callKitAudioActive = false
+    DispatchQueue.main.async { [weak self] in
+      guard let self = self, !self.hasLiveCall else { return } // a new ring already arrived: leave its session alone
+      OLNativeAudio.laneTeardown()
+    }
   }
 
   private func isLaneCall(_ id: String) -> Bool { OLNativeAudioLane.isAndroidCall(id) }

@@ -84,6 +84,19 @@ enum OLNativeAudio {
     #endif
   }
 
+  /// b86 release: any call ended → WebRTC's manual audio unit released and the session deactivated (others notified).
+  static func laneTeardown(_ session: AVAudioSession = AVAudioSession.sharedInstance()) {
+    #if canImport(WebRTC)
+    let rtc = RTCAudioSession.sharedInstance()
+    rtc.lockForConfiguration()
+    defer { rtc.unlockForConfiguration() }
+    rtc.isAudioEnabled = false
+    do { try session.setActive(false, options: .notifyOthersOnDeactivation) }
+    catch { NSLog("[OLCalls] b86 teardown setActive(false): %@", error.localizedDescription) }
+    rtc.audioSessionDidDeactivate(session)
+    #endif
+  }
+
   static func didDeactivate(_ session: AVAudioSession) {
     #if canImport(WebRTC)
     let rtc = RTCAudioSession.sharedInstance()

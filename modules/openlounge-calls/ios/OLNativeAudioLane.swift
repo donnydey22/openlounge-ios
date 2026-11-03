@@ -33,6 +33,11 @@ final class OLNativeAudioLane: NSObject {
     }
     if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
   }
+  /// b87: call-end reset (OLCallManager.teardownLaneAudio): the next lane call waits for its own didActivate.
+  static func resetActivation() {
+    let run = { activated = false; let w = activationWaiters; activationWaiters.removeAll(); w.forEach { $0.resume() } }
+    if Thread.isMainThread { run() } else { DispatchQueue.main.async(execute: run) }
+  }
   /// b78: a late didDeactivate from a previous call must not clear the flag for the live lane's call.
   static func callKitDeactivated() {
     DispatchQueue.main.async {

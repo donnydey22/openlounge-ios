@@ -1,7 +1,7 @@
 name: iOS ad hoc build (eas --local on macOS)
 on:
   push:
-    branches: [feat/audio-route-udp-first, ios75-native-streamwebrtc]
+    branches: [feat/audio-route-udp-first, ios75-native-streamwebrtc, ios84-b82-incoming, ios87-b82-teardown]
     paths-ignore: ['**.md']
 permissions:
   contents: read
@@ -84,7 +84,7 @@ jobs:
           test "$WF" = "1" && test "$DUP" = "0" && echo "LINK AUDIT PASS"
           cd .. && rm -rf la
       - name: b75 installable IPA (short-lived; same file is published as a release asset like b74)
-        if: github.ref == 'refs/heads/ios75-native-streamwebrtc'
+        if: github.ref == 'refs/heads/ios75-native-streamwebrtc' || github.ref == 'refs/heads/ios84-b82-incoming' || github.ref == 'refs/heads/ios87-b82-teardown'
         uses: actions/upload-artifact@v4
         with:
           name: openlounge-ios-adhoc-ipa
