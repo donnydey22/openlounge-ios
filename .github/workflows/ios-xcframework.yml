@@ -39,7 +39,7 @@ jobs:
         with: { name: pjproject-2.17-xcframework, path: pjproject.xcframework }
   app:
     needs: xcframework
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 90
     env: { EXPO_NO_TELEMETRY: '1' }
     steps:
@@ -62,7 +62,7 @@ jobs:
           WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
           rm -rf ~/Library/Developer/Xcode/DerivedData
           xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -derivedDataPath $PWD/dd clean build > ../xb.log 2>&1 && rc=0 || rc=$?
-          grep -E 'error:|\*\* BUILD' ../xb.log | sort -u | head -60; grep -A3 'The following build commands failed' ../xb.log | head -20
+          grep -B2 -A12 -iE 'error:|ExpoModulesJSI.*fail' ../xb.log | grep -v '^\s*$' | head -80; grep -E 'error:|\*\* BUILD' ../xb.log | sort -u | head -60; grep -A3 'The following build commands failed' ../xb.log | head -20
           exit $rc
       - name: fail if any WebRTC / libpeerconnection symbol, import or dependency remains
         run: |
