@@ -122,8 +122,14 @@ jobs:
           PHONE: ios
           MEDIA: audio,video
           CELL_SECONDS: "30"
-          IOS_TEST_CMD: cd $GITHUB_WORKSPACE/modules/openlounge-call-engine/ios-harness && xcodebuild test-without-building -scheme "$HSCHEME" -destination "id=$SIM" -derivedDataPath $PWD/dd -only-testing:OLSfuTests/SfuLegTests/testAudioLeg
+          IOS_TEST_CMD: cd $GITHUB_WORKSPACE/modules/openlounge-call-engine/ios-harness && xcodebuild test-without-building -scheme "$HSCHEME" -destination "id=$SIM" -derivedDataPath $PWD/dd -only-testing:OLSfuTests/SfuLegTests/testAudioLeg -resultBundlePath $RUNNER_TEMP/xcr/$(date +%s%N).xcresult 2>&1 | tee -a $GITHUB_WORKSPACE/xt.log; exit ${PIPESTATUS[0]}
         run: node tests/pjsip-matrix/run-phone.mjs
       - if: always()
         uses: actions/upload-artifact@v4
         with: { name: matrix-ios, path: "ol/tests/pjsip-matrix/results\nxh.log" }
+      - name: XCTest failure messages (testVideoLeg/testAudioLeg)
+        if: always()
+        run: scripts/xcr-failures.sh
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: xctest-results, path: "xcr-out\nxt.log\n${{ runner.temp }}/xcr" }
