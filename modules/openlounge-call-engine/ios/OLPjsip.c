@@ -20,3 +20,21 @@ int ol_pjsip_start(int mn, int mx, int jm) {
 int ol_pjsip_open_sound(void) { return started ? pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV, PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV) : -1; }
 void ol_pjsip_close_sound(void) { if (started) pjsua_set_no_snd_dev(); }
 void ol_pjsip_teardown(void) { if (started) { pjsua_call_hangup_all(); pjsua_set_no_snd_dev(); } }
+/* Video (t4464u): H.264 base via VideoToolbox (pjmedia vid_toolbox codec). QuickHD: start at high res/bitrate,
+   ol_pjsip_video_steady() drops to steady caps after the burst. pjmedia 2.17 has no AV1 codec; AV1 hw is only
+   detected (Swift) and advertised so the SFU picks H.264 unless both ends gain AV1. */
+#if PJMEDIA_HAS_VIDEO
+static int set_h264(int w, int h, int bps) {
+  pj_str_t id = pj_str("H264"); pjmedia_vid_codec_param p;
+  if (pjsua_vid_codec_set_priority(&id, 255) != PJ_SUCCESS) return -1;
+  if (pjsua_vid_codec_get_param(&id, &p) != PJ_SUCCESS) return -2;
+  p.enc_fmt.det.vid.size.w = w; p.enc_fmt.det.vid.size.h = h;
+  p.enc_fmt.det.vid.avg_bps = bps; p.enc_fmt.det.vid.max_bps = bps;
+  return pjsua_vid_codec_set_param(&id, &p) == PJ_SUCCESS ? 0 : -3;
+}
+int ol_pjsip_video_quickhd(void) { return started ? set_h264(1920, 1080, 2500000) : -1; }
+int ol_pjsip_video_steady(void) { return started ? set_h264(1280, 720, 1200000) : -1; }
+#else
+int ol_pjsip_video_quickhd(void) { return -9; }
+int ol_pjsip_video_steady(void) { return -9; }
+#endif

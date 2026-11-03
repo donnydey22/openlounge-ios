@@ -7,6 +7,8 @@ int ol_pjsip_start(int jb_min_pre, int jb_max_pre, int jb_max); // SRTP SDES man
 int ol_pjsip_open_sound(void);                                    // only from CallKit didActivate
 void ol_pjsip_close_sound(void);
 void ol_pjsip_teardown(void);                                     // hangup all + release sound
+int ol_pjsip_video_quickhd(void);                                 // H.264 1080p 2.5 Mbps start burst
+int ol_pjsip_video_steady(void);                                  // H.264 720p 1.2 Mbps
 #ifdef __cplusplus
 }
 #endif

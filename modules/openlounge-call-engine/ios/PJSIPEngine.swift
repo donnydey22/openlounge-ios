@@ -19,6 +19,12 @@ public final class PJSIPEngine {
 
   public func audioSessionDidDeactivate() { ol_pjsip_close_sound(); audioRunning = false }
 
+  /// Video call start: QuickHD burst (1080p/2.5 Mbps) for 4 s, then steady 720p/1.2 Mbps (tune from prod data).
+  public func startVideoBurst() {
+    start(); ol_pjsip_video_quickhd()
+    DispatchQueue.global().asyncAfter(deadline: .now() + 4) { ol_pjsip_video_steady() }
+  }
+
   /// Full teardown on every call end so a redial starts from zero.
   public func teardown() { ol_pjsip_teardown(); audioRunning = false }
 }
