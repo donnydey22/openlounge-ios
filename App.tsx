@@ -885,7 +885,7 @@ function Shell() {
           // the page's own host only (openlounge.app), deny cross-origin frames, so WebKit never re-prompts.
           // Native-video calls (spec v3): the app owns mic + camera, so the page may never grab either while app-owned
           // call media is live (a WebKit capture would steal the mic / start a second camera and fight the RTCViews).
-          mediaCapturePermissionGrantType="deny"
+          mediaCapturePermissionGrantType="grantIfSameHostElseDeny"
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           allowsAirPlayForMediaPlayback

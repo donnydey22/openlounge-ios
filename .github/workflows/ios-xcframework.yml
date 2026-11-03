@@ -45,7 +45,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 22, cache: npm }
+        with: { node-version: 22 }  # no caches: from-scratch build
       - uses: actions/download-artifact@v4
         with: { name: pjproject-2.17-xcframework, path: modules/openlounge-calls/ios/pjproject.xcframework }
       - run: npm ci
@@ -60,5 +60,13 @@ jobs:
           npx expo prebuild --platform ios --no-install --clean
           cd ios && pod install >/dev/null
           WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
-          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -40
+          rm -rf ~/Library/Developer/Xcode/DerivedData
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -derivedDataPath $PWD/dd clean build 2>&1 | tail -40
           test ${PIPESTATUS[0]} -eq 0
+      - name: fail if any WebRTC / libpeerconnection symbol, import or dependency remains
+        run: |
+          set -euo pipefail
+          ! grep -rniE "webrtc|peerconnection" package.json package-lock.json ios/Podfile.lock modules --include=* -l | grep -v PLAN.md
+          APP=$(find ios/dd/Build/Products -name "*.app" -maxdepth 3 | head -1); BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+          ! (nm -a "$BIN" 2>/dev/null; find "$APP" -name "*.framework" -exec sh -c 'ls "$1"' _ {} \;) | grep -iE "webrtc|peerconnection|RTCPeer"
+          echo "no WebRTC symbols in $BIN"
