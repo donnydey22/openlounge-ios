@@ -1,0 +1,27 @@
+name: pjsip-ios-xcframework
+on: { push: { branches: [pjsip-rebuild] }, workflow_dispatch: {} }
+jobs:
+  build:
+    runs-on: macos-14
+    timeout-minutes: 60
+    steps:
+      - run: git clone -q --depth 1 -b 2.17 https://github.com/pjsip/pjproject.git
+      - name: build device + simulator
+        working-directory: pjproject
+        run: |
+          cat > pjlib/include/pj/config_site.h <<'C'
+          #define PJ_CONFIG_IPHONE 1
+          #define PJMEDIA_HAS_SRTP 1
+          #define PJMEDIA_HAS_VIDEO 1
+          #define PJMEDIA_HAS_VID_TOOLBOX_CODEC 1
+          #include <pj/config_site_sample.h>
+          C
+          build() { make distclean >/dev/null 2>&1 || true
+            ARCH="-arch arm64" $1 ./configure-iphone >/dev/null && make dep >/dev/null 2>&1 && make -j4 >/dev/null
+            mkdir -p ../out/$2; libtool -static -o ../out/$2/libpjproject.a $(find . -name "*arm64*-apple-darwin_ios*.a" -o -name "*-arm64-apple-darwin*.a" | grep -v pjsua2 ) ; }
+          build "env" device
+          build "env DEVPATH=$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer MIN_IOS=-mios-simulator-version-min=15.0" sim
+          mkdir -p ../out/include; for d in pjlib pjlib-util pjnath pjmedia pjsip; do cp -R $d/include/* ../out/include/; done
+      - run: xcodebuild -create-xcframework -library out/device/libpjproject.a -headers out/include -library out/sim/libpjproject.a -headers out/include -output pjproject.xcframework && ls -la out/*/
+      - uses: actions/upload-artifact@v4
+        with: { name: pjproject-2.17-xcframework, path: pjproject.xcframework }
