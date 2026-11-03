@@ -18,7 +18,7 @@ jobs:
           C
           build() { make distclean >/dev/null 2>&1 || true
             CXXFLAGS="-std=c++17" ARCH="-arch arm64" $1 ./configure-iphone >/dev/null && make dep >/dev/null 2>&1 && make -j4 >/dev/null
-            mkdir -p ../out/$2; libtool -static -o ../out/$2/libpjproject.a $(find . -name "*arm64*-apple-darwin_ios*.a" -o -name "*-arm64-apple-darwin*.a" | grep -v pjsua2 | grep -v libpjsdp ) ; }
+            mkdir -p ../out/$2; libtool -static -o ../out/$2/libpjproject.a $(find . -path ./pjsip-apps -prune -o -path "*/lib/*.a" -print | grep -v pjsua2 | grep -v libpjsdp) ; }
           build "env" device
           build "env DEVPATH=$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer MIN_IOS=-mios-simulator-version-min=15.0" sim
           mkdir -p ../out/include; for d in pjlib pjlib-util pjnath pjmedia pjsip; do cp -R $d/include/* ../out/include/; done
