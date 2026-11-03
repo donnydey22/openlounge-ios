@@ -43,6 +43,7 @@ public final class OpenLoungeCallsModule: Module {
                                   req: { e, d in try await OLLaneBridge.shared.request(e, d) },
                                   emit: { d in var x = d; x["callId"] = callId; OLLaneBridge.shared.emitLane(x) })
         OLNativeAudioLane.shared = l
+        DispatchQueue.main.async { OLCallManager.shared.flushCkDiag(callId) } // b86 diag only
         return l
       }
       do { try await lane.connect() } catch { await MainActor.run { lane.close() }; throw error }

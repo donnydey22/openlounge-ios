@@ -137,6 +137,7 @@ final class OLNativeAudioLane: NSObject {
     try check()
     connected = true
     log("connected", Self.activated ? "activated=1" : "activated=0")
+    OLCallManager.shared.ckDiag(callId, "ck:lane-connected act=\(Self.activated ? 1 : 0) unit=\(OLNativeAudio.isEnabled ? 1 : 0)")
     emit(["state": "connected"])
     // b80: no activation safety net here; only OLCallManager.provider(didActivate:) starts audio.
   }

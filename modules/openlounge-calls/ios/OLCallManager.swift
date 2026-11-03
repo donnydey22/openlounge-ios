@@ -593,6 +593,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     NSLog("[OLCalls] answer action: category=%@ mode=%@ inPage=%d", s73.category.rawValue, s73.mode.rawValue, c.answeredInPage ? 1 : 0)
     action.fulfill()
     if !c.answeredInPage { emit(["type": "answer", "callId": c.callId, "video": c.video]) }
+    // b86: Android lane only — if CallKit's didActivate never arrives (locked phone / another app holding audio), ask
+    // CallKit to re-activate (hold → unhold, max 2). Audio still starts only inside didActivate.
+    if c.incoming && isLaneCall(c.callId) { ckDiag(c.callId, "ck:answer"); armActivationWatchdog(c.callId, attempt: 1) }
   }
 
   public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
@@ -671,6 +674,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       OLNativeAudioLane.callKitActivated()
       OLNativeAudioLane.live?.resumeAudioTracks()
       NSLog("[OLCalls] b80 android lane audio started in didActivate (lane=%d)", OLNativeAudioLane.live == nil ? 0 : 1)
+      ckDiagActivated() // b86 diag only
     } else {
       // b74: skip only when the unit is REALLY on for a live call; the flag alone went stale across rapid redials
       // (Keiko → iPhone 2nd/3rd call within ~40 s: packets in, nothing played, mic never started)
@@ -695,7 +699,20 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     }
   }
 
+  /// b86: a new incoming Android lane call is live but has NOT had its own didActivate yet → this deactivation belongs
+  /// to the previous call. It is ignored entirely so it cannot switch off the new call's audio or activation flag.
+  private func staleLaneDeactivate() -> Bool {
+    if let c = calls.values.first(where: { !$0.ended && $0.incoming && isLaneCall($0.callId) }), c.callId != laneActivatedCall {
+      NSLog("[OLCalls] b86 stale didDeactivate ignored (new lane call %@ not yet activated)", c.callId)
+      ckDiag(c.callId, "ck:deact-stale-ignored")
+      return true
+    }
+    if let id = laneActivatedCall, calls.values.contains(where: { !$0.ended && $0.callId == id }) { ckDiag(id, "ck:did-deactivate") }
+    return false
+  }
+
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    if staleLaneDeactivate() { return }
     OLNativeAudioLane.callKitDeactivated()
     traceProviderCallback("did-deactivate")
     defer { DispatchQueue.main.async { [weak self] in self?.reactivateLane("did-deactivate") } }
@@ -729,6 +746,53 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private var laneReactivating = false
   /// b81: the Android lane call that already got its first didActivate (reactivation only applies after that).
   private var laneActivatedCall: String?
+
+  /// b86: after a lane answer, check (3 s, then 6 s) that CallKit delivered didActivate for THIS call and the unit is on.
+  /// If not, request CallKit hold → unhold so iOS hands the audio session back (max 2 tries). Never starts audio itself.
+  private func armActivationWatchdog(_ callId: String, attempt: Int) {
+    guard attempt <= 2 else { return }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3.0) { [weak self] in
+      guard let self = self, let c = self.call(callId), !c.ended, c.incoming, c.answered else { return }
+      if self.laneActivatedCall == callId && self.callKitAudioActive && OLNativeAudio.isEnabled {
+        if attempt == 1 { self.ckDiag(callId, "ck:watchdog-ok") }
+        return
+      }
+      NSLog("[OLCalls] b86 no didActivate/unit off %ds after answer → CallKit reactivation try %d", attempt * 3, attempt)
+      self.ckDiag(callId, "ck:no-activate reactivate=\(attempt)")
+      self.laneReactivating = true
+      self.controller.request(CXTransaction(action: CXSetHeldCallAction(call: c.uuid, onHold: true))) { [weak self] e1 in
+        if let e1 = e1 { NSLog("[OLCalls] b86 hold failed: %@", e1.localizedDescription) }
+        self?.controller.request(CXTransaction(action: CXSetHeldCallAction(call: c.uuid, onHold: false))) { e2 in
+          DispatchQueue.main.async {
+            if let e2 = e2 { NSLog("[OLCalls] b86 unhold failed: %@", e2.localizedDescription); self?.laneReactivating = false; self?.ckDiag(callId, "ck:unhold-failed") }
+          }
+        }
+      }
+      self.armActivationWatchdog(callId, attempt: attempt + 1)
+    }
+  }
+
+  /// b86 diagnostics only: CallKit audio events for the lane call, forwarded by the live page as a native diag line
+  /// (native-consume-result n=-1 kinds=ck:...). Buffered until the lane connects so early events are not lost.
+  private var ckDiagBuf: [String: [String]] = [:]
+  func ckDiag(_ callId: String, _ tag: String) {
+    let t = String(tag.prefix(40))
+    var b = ckDiagBuf[callId] ?? []; b.append(t); ckDiagBuf[callId] = Array(b.suffix(20))
+    if ckDiagBuf.count > 4 { ckDiagBuf = ckDiagBuf.filter { $0.key == callId } }
+    if OLNativeAudioLane.live?.callId == callId { sendCkDiag(callId, t) }
+  }
+  private func ckDiagActivated() {
+    guard let id = laneActivatedCall else { return }
+    ckDiag(id, "ck:did-activate lane=\(OLNativeAudioLane.live == nil ? 0 : 1) unit=\(OLNativeAudio.isEnabled ? 1 : 0)")
+    if OLNativeAudioLane.live != nil { ckDiag(id, "ck:mic-on (didActivate)") }
+  }
+  /// called when the lane for callId is created: send everything buffered before it existed
+  func flushCkDiag(_ callId: String) {
+    for t in ckDiagBuf[callId] ?? [] { sendCkDiag(callId, t) }
+  }
+  private func sendCkDiag(_ callId: String, _ t: String) {
+    OLLaneBridge.shared.emitLane(["callId": callId, "state": "media-diag", "ev": "consume-result", "n": -1, "kinds": t])
+  }
 
   /// b81: the Android lane's in-app answer — CXAnswerCallAction only (never answered outside CallKit).
   private func answerLaneViaCallKit(_ callId: String) {
