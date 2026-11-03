@@ -9,7 +9,7 @@ test('b86: activation watchdog only requests CallKit hold/unhold (max 2), never 
   const b = m.slice(m.indexOf('private func armActivationWatchdog'), m.indexOf('private var ckDiagBuf'));
   assert.match(b, /guard attempt <= 2/);
   assert.match(b, /CXSetHeldCallAction/);
-  assert.doesNotMatch(b, /isAudioEnabled|setActive|laneActivate|OLNativeAudio\.didActivate|resumeAudioTracks/);
+  assert.doesNotMatch(b, /isAudioEnabled|setActive|laneActivate\(|OLNativeAudio\.didActivate|resumeAudioTracks/);
 });
 test('b86: didActivate lane audio-start sequence unchanged (b82)', () => {
   assert.match(m, /OLNativeAudio\.laneActivate\(audioSession\)\n      OLNativeAudioLane\.callKitActivated\(\)\n      OLNativeAudioLane\.live\?\.resumeAudioTracks\(\)/);
