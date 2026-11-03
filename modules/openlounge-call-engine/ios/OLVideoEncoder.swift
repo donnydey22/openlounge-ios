@@ -14,10 +14,12 @@ public enum OLVideoSpecV2 {
     .init(width: 1920, height: 1080, bps: 2_400_000, ultrafast: false),
   ]
   public static let keyframeSeconds = 2
+  // kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder (symbol is iOS 17.4+; string key honored earlier)
+  static let requireHW = ["RequireHardwareAcceleratedVideoEncoder" as CFString: kCFBooleanTrue!] as CFDictionary
   /// AV1 only if VideoToolbox can open a hardware AV1 encoder on this device; never a software encoder.
   public static func hardwareAV1Available() -> Bool {
     var s: VTCompressionSession?
-    let spec = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: kCFBooleanTrue] as CFDictionary
+    let spec = OLVideoSpecV2.requireHW
     let ok = VTCompressionSessionCreate(allocator: nil, width: 1280, height: 720, codecType: kCMVideoCodecType_AV1, encoderSpecification: spec,
                                         imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s) == noErr
     if let s { VTCompressionSessionInvalidate(s) }
@@ -35,7 +37,7 @@ public final class OLSimulcastEncoder {
 
   public init() throws {
     codec = OLVideoSpecV2.hardwareAV1Available() ? kCMVideoCodecType_AV1 : kCMVideoCodecType_H264
-    let spec = [kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: kCFBooleanTrue] as CFDictionary
+    let spec = OLVideoSpecV2.requireHW
     for (i, l) in OLVideoSpecV2.layers.enumerated() {
       var s: VTCompressionSession?
       let st = VTCompressionSessionCreate(allocator: nil, width: l.width, height: l.height, codecType: codec, encoderSpecification: spec,
