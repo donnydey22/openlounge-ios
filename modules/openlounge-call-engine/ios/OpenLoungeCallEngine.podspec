@@ -13,7 +13,7 @@ Pod::Spec.new do |s|
   s.static_framework = true
   s.vendored_frameworks = 'pjproject.xcframework'
   s.libraries = 'c++'
-  s.frameworks = 'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'CoreMedia', 'Network'
+  s.frameworks = 'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'CoreMedia', 'Network', 'MetalKit', 'Metal', 'CoreVideo', 'UIKit', 'Security'
   s.source_files   = ['*.{h,c,swift}']
   s.public_header_files = 'OLPjsip.h'
   s.preserve_paths = ['pjproject.xcframework', 'pjinclude/**/*']
