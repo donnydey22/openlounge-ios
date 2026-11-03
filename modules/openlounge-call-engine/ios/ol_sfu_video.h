@@ -9,6 +9,11 @@ int ol_sfu_video_start(const char *ip, int port, const char *tx_key_b64, const c
 int ol_sfu_video_send(int layer, const unsigned char *annexb, int len, unsigned ts90k, int key);
 int ol_sfu_video_stats(unsigned *rx_pkt, unsigned *rx_au, unsigned *rx_key, unsigned *rx_gap, unsigned *tx_pkt, unsigned *tx_au, unsigned *tx_key);
 void ol_sfu_video_stop(void);
+/* Keyframe request from the SFU (RTCP PLI/FIR) for simulcast layer `layer`: platform forces an IDR on that encoder. */
+typedef void (*ol_video_keyframe_cb)(void *user, int layer);
+void ol_sfu_video_set_keyframe_cb(ol_video_keyframe_cb cb, void *user);
+unsigned ol_sfu_video_take_keyreq(void);
+void ol_sfu_video_fb_stats(unsigned *pli_rx, unsigned *pli_tx, unsigned *tx_drop);
 #ifdef __cplusplus
 }
 #endif

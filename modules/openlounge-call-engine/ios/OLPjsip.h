@@ -11,6 +11,7 @@ int ol_pjsip_video_quickhd(void);                                 // H.264 1080p
 int ol_pjsip_video_steady(void);                                  // H.264 720p 1.2 Mbps
 // Video spec v2 leg (ol_sfu_video.c): own transport/SRTP key, 3 simulcast SSRCs, Annex-B AU per layer from VideoToolbox
 int ol_sfu_video_send(int layer, const unsigned char *annexb, int len, unsigned ts90k, int key);
+unsigned ol_sfu_video_take_keyreq(void);                          // PLI/FIR layer mask since last call
 #ifdef __cplusplus
 }
 #endif

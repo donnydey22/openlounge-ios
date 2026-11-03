@@ -53,7 +53,7 @@ final class SfuLegTests: XCTestCase {
           if let pb { CVPixelBufferLockBaseAddress(pb, []); let y = CVPixelBufferGetBaseAddressOfPlane(pb, 0)!.assumingMemoryBound(to: UInt8.self), yb = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
             for row in 0..<720 { memset(y + row * yb, Int32(40 + (row + frame * 4) % 180), 1280) }
             let c = CVPixelBufferGetBaseAddressOfPlane(pb, 1)!; memset(c, 128, CVPixelBufferGetBytesPerRowOfPlane(pb, 1) * 360)
-            CVPixelBufferUnlockBaseAddress(pb, []); enc.encode(pb, pts: CMTime(value: CMTimeValue(frame), timescale: 30)) } }
+            CVPixelBufferUnlockBaseAddress(pb, []); if ol_sfu_video_take_keyreq() != 0 { enc.forceKeyframe() }; enc.encode(pb, pts: CMTime(value: CMTimeValue(frame), timescale: 30)) } }
         frame += 1
         if frame % 3 == 0 { ol_harness_stats(&rx, &lost, &tx, &lv); if Date().timeIntervalSince(t0) > 2 { sum += Int(lv); n += 1; mx = max(mx, lv) } }
         let next = t0.addingTimeInterval(Double(frame) / 30); let d = next.timeIntervalSinceNow; if d > 0 { Thread.sleep(forTimeInterval: d) }

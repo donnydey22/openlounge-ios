@@ -22,6 +22,7 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
 
   public func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
     guard let px = CMSampleBufferGetImageBuffer(sb) else { return }
+    if ol_sfu_video_take_keyreq() != 0 { encoder?.forceKeyframe() } // SFU PLI/FIR -> IDR now
     encoder?.encode(px, pts: CMSampleBufferGetPresentationTimeStamp(sb))
   }
 
