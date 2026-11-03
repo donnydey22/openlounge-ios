@@ -9,9 +9,9 @@ final class SfuLegTests: XCTestCase {
   func testAudioLeg() throws {
     let e = ProcessInfo.processInfo.environment
     guard let ip = e["OL_IP"], let out = e["OL_OUT"] else { throw XCTSkip("not invoked by matrix runner") }
-    XCTAssertEqual(ol_harness_init(), 0)
+    XCTAssertEqual(ol_harness_init(), 0); let phoneStartAt = Int64(Date().timeIntervalSince1970 * 1000)
     let r = ol_harness_start(ip, Int32(e["OL_PORT"]!)!, e["OL_TX"]!, e["OL_RX"]!, UInt32(e["OL_SSRC"]!)!, Int32(e["OL_TXPT"]!)!, Int32(e["OL_RXPT"]!)!)
-    var json = "{\"error\":\(r)}"
+    var json = "{\"error\":\(r),\"phoneStartAt\":\(phoneStartAt)}"
     if r == 0 {
       let secs = Int(e["OL_SECONDS"]!)!; var sum = 0, n = 0, mx: Int32 = 0; var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0, lv: Int32 = 0
       for i in 0..<(secs * 10) { Thread.sleep(forTimeInterval: 0.1); ol_harness_stats(&rx, &lost, &tx, &lv); if i > 20 { sum += Int(lv); n += 1; mx = max(mx, lv) } }
@@ -19,7 +19,7 @@ final class SfuLegTests: XCTestCase {
       var rb0: Int32 = 0, rb1: Int32 = 0; var jd: UInt32 = 0, jl: UInt32 = 0, je: UInt32 = 0, ja: UInt32 = 0, rd: UInt32 = 0
       _ = ol_sfu_diag(&rb0, &rb1, &jd, &jl, &je, &ja, &rd); ol_harness_stop()
       let diag = "{\"rcvbuf0\":\(rb0),\"rcvbuf1\":\(rb1),\"jbDiscard\":\(jd),\"jbLost\":\(jl),\"jbEmpty\":\(je),\"jbAvgMs\":\(ja),\"rxDiscard\":\(rd)}"
-      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"diag\":\(diag)}"
+      json = "{\"phoneStartAt\":\(phoneStartAt),\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"diag\":\(diag)}"
     }
     try json.write(toFile: out, atomically: true, encoding: .utf8)
     XCTAssertEqual(r, 0)
@@ -32,7 +32,7 @@ final class SfuLegTests: XCTestCase {
     guard let ip = e["OL_IP"], let out = e["OL_OUT"], let vip = e["OL_VIP"] else { throw XCTSkip("not invoked by matrix runner") }
     XCTAssertEqual(ol_harness_init(), 0)
     let r = ol_harness_start(ip, Int32(e["OL_PORT"]!)!, e["OL_TX"]!, e["OL_RX"]!, UInt32(e["OL_SSRC"]!)!, Int32(e["OL_TXPT"]!)!, Int32(e["OL_RXPT"]!)!)
-    let ssrcs = e["OL_VSSRCS"]!.split(separator: ",").map { UInt32($0)! }
+    let ssrcs = Array(e["OL_VSSRCS"]!.split(separator: ",").map { UInt32($0)! }.prefix(e["OL_SIMLAYERS"] == "2" ? 2 : 3))
     let dec = OLVideoDecoder()
     let sink: ol_video_sink_cb = { user, au, len, _, _ in
       guard let user, let au else { return }
@@ -40,14 +40,14 @@ final class SfuLegTests: XCTestCase {
     ol_sfu_video_set_sink(sink, Unmanaged.passUnretained(dec).toOpaque())
     let vr = ssrcs.withUnsafeBufferPointer { ol_sfu_video_start(vip, Int32(e["OL_VPORT"]!)!, e["OL_VTX"]!, e["OL_VRX"]!, $0.baseAddress, Int32($0.count), Int32(e["OL_VPT"]!)!) }
     var videoError = "null", codec = "none"; var enc: OLSimulcastEncoder?
-    do { let x = try OLSimulcastEncoder(); enc = x; codec = x.codec == kCMVideoCodecType_AV1 ? "AV1" : "H264" } catch { videoError = "\"\(error)\"" }
+    do { let sim: [OLVideoLayer]? = e["OL_SIMLAYERS"] == "2" ? [.init(width: 320, height: 180, bps: 150_000, ultrafast: true), .init(width: 640, height: 360, bps: 600_000, ultrafast: true)] : nil; let x = try OLSimulcastEncoder(layers: sim); enc = x; codec = x.codec == kCMVideoCodecType_AV1 ? "AV1" : "H264" } catch { videoError = "\"\(error)\"" }
     enc?.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
     var json = "{\"error\":\(r),\"videoError\":\(vr != 0 ? "\(vr)" : videoError)}"
     if r == 0 && vr == 0 {
       let secs = Int(e["OL_SECONDS"]!)!; var sum = 0, n = 0, mx: Int32 = 0; var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0, lv: Int32 = 0
       var pool: CVPixelBufferPool?
       CVPixelBufferPoolCreate(nil, nil, [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelBufferWidthKey: 1280, kCVPixelBufferHeightKey: 720, kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pool)
-      let t0 = Date(); var frame = 0
+      let t0 = Date(); var frame = 0; let phoneStartAt = Int64(t0.timeIntervalSince1970 * 1000)
       while Date().timeIntervalSince(t0) < Double(secs) {
         if let pool, let enc { var pb: CVPixelBuffer?; CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
           if let pb { CVPixelBufferLockBaseAddress(pb, []); let y = CVPixelBufferGetBaseAddressOfPlane(pb, 0)!.assumingMemoryBound(to: UInt8.self), yb = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
@@ -64,7 +64,7 @@ final class SfuLegTests: XCTestCase {
       ol_sfu_video_stats(&vrp, &va, &vk, &vg, &vtp, &ta, &tk)
       ol_sfu_video_stop(); ol_sfu_video_set_sink(nil, nil); let ds = dec.stats; dec.close(); ol_harness_stop()
       let decFps = ds.firstAt.map { Double(ds.decoded) / max(0.5, Date().timeIntervalSince($0)) } ?? 0
-      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"codec\":\"\(codec)\",\"videoError\":\(videoError),\"vRxPkt\":\(vrp),\"rxAu\":\(va),\"rxKey\":\(vk),\"rxGap\":\(vg),\"vTxPkt\":\(vtp),\"txAu\":\(ta),\"txKey\":\(tk),\"decoded\":\(ds.decoded),\"decFps\":\(decFps),\"decErr\":\(ds.errors),\"nonBlack\":\(ds.nonBlack),\"srcFrames\":\(frame),\"firstFrameMs\":\(ds.firstAt.map { Int($0.timeIntervalSince(t0) * 1000) }.map(String.init) ?? "null")}"
+      json = "{\"rxPkt\":\(rx),\"rxLost\":\(lost),\"txPkt\":\(tx),\"avgLevel\":\(n > 0 ? Double(sum) / Double(n) : 0),\"maxLevel\":\(mx),\"codec\":\"\(codec)\",\"videoError\":\(videoError),\"vRxPkt\":\(vrp),\"rxAu\":\(va),\"rxKey\":\(vk),\"rxGap\":\(vg),\"vTxPkt\":\(vtp),\"txAu\":\(ta),\"txKey\":\(tk),\"decoded\":\(ds.decoded),\"decFps\":\(decFps),\"decErr\":\(ds.errors),\"nonBlack\":\(ds.nonBlack),\"srcFrames\":\(frame),\"phoneStartAt\":\(phoneStartAt),\"firstFrameMs\":\(ds.firstAt.map { Int($0.timeIntervalSince(t0) * 1000) }.map(String.init) ?? "null")}"
     } else { ol_sfu_video_stop(); ol_harness_stop() }
     try json.write(toFile: out, atomically: true, encoding: .utf8)
     XCTAssertEqual(r, 0); XCTAssertEqual(vr, 0)

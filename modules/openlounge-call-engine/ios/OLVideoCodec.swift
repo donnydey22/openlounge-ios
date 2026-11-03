@@ -6,7 +6,8 @@
 import AVFoundation
 import VideoToolbox
 
-public struct OLVideoLayer { public let width: Int32, height: Int32, bps: Int, ultrafast: Bool }
+public struct OLVideoLayer { public let width: Int32, height: Int32, bps: Int, ultrafast: Bool
+  public init(width: Int32, height: Int32, bps: Int, ultrafast: Bool) { self.width = width; self.height = height; self.bps = bps; self.ultrafast = ultrafast } }
 
 public enum OLVideoSpecV2 {
   public static let layers: [OLVideoLayer] = [
@@ -38,10 +39,11 @@ public final class OLSimulcastEncoder {
   /// Annex-B access unit per layer (SPS/PPS prepended on keyframes), 90 kHz timestamp: feeds ol_sfu_video_send.
   public var onAnnexB: ((_ layer: Int, _ au: Data, _ key: Bool, _ ts90k: UInt32) -> Void)?
 
-  public init() throws {
+  /// `layers` override is for CI only (the simulator encodes in software; 3 layers up to 1080p starve the runner).
+  public init(layers override: [OLVideoLayer]? = nil) throws {
     codec = OLVideoSpecV2.hardwareAV1Available() ? kCMVideoCodecType_AV1 : kCMVideoCodecType_H264
     let spec = OLVideoSpecV2.requireHW
-    for (i, l) in OLVideoSpecV2.layers.enumerated() {
+    for (i, l) in (override ?? OLVideoSpecV2.layers).enumerated() {
       var s: VTCompressionSession?
       let st = VTCompressionSessionCreate(allocator: nil, width: l.width, height: l.height, codecType: codec, encoderSpecification: spec,
                                           imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s)

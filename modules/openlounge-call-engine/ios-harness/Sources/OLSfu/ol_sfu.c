@@ -2,6 +2,7 @@
    (rtcp-mux) + SRTP SDES (AES_CM_128_HMAC_SHA1_80, keys from signaling a=crypto / plain:create) + pjmedia_stream
    (Opus, adaptive jbuf progressive discard + PLC) on the pjsua conference bridge. Shared by iOS and Android shims. */
 #include <pjsua-lib/pjsua.h>
+#include <pjmedia-codec/opus.h>
 #include <pjlib-util/base64.h>
 #include "ol_sfu.h"
 
@@ -38,6 +39,14 @@ int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char 
   if (pjmedia_codec_mgr_find_codecs_by_id(pjmedia_endpt_get_codec_mgr(ep), &opus, &cnt, &ci, NULL) != PJ_SUCCESS || !cnt) return -6;
   si.fmt = *ci; si.tx_pt = tx_pt; si.rx_pt = rx_pt; si.ssrc = ssrc;
   si.param = PJ_POOL_ALLOC_T(pool, pjmedia_codec_param); pjmedia_codec_mgr_get_default_param(pjmedia_endpt_get_codec_mgr(ep), ci, si.param);
+  { /* OPUS_PIN: one fixed Opus profile on every leg (matches media-sfu plain.mjs): 48 kHz mono, 20 ms, inband FEC on,
+       expected loss 20 % (FEC kicks in under loss), VBR, PLC on. fmtp pinned both ways. */
+    pjmedia_codec_opus_config oc; if (pjmedia_codec_opus_get_config(&oc) == PJ_SUCCESS) { oc.sample_rate = 48000; oc.channel_cnt = 1;
+      oc.frm_ptime = 20; oc.packet_loss = 20; oc.cbr = PJ_FALSE; oc.bit_rate = 32000; pjmedia_codec_opus_set_default_param(&oc, si.param); }
+    si.param->setting.plc = 1; si.param->setting.vad = 0; si.param->setting.frm_per_pkt = 1;
+    static const char *k[] = { "useinbandfec", "minptime", "stereo", "maxplaybackrate" }, *v[] = { "1", "10", "0", "48000" };
+    pjmedia_codec_fmtp *f[2] = { &si.param->setting.enc_fmtp, &si.param->setting.dec_fmtp };
+    for (int j = 0; j < 2; j++) { f[j]->cnt = 0; for (int i = 0; i < 4; i++) { f[j]->param[i].name = pj_str((char *)k[i]); f[j]->param[i].val = pj_str((char *)v[i]); f[j]->cnt++; } } }
   si.jb_init = -1; si.jb_min_pre = 1; si.jb_max_pre = 16; si.jb_max = 50; si.jb_discard_algo = PJMEDIA_JB_DISCARD_PROGRESSIVE;
   pj_str_t rip = pj_str((char *)ip); if (pj_sockaddr_init(pj_AF_INET(), &si.rem_addr, &rip, (pj_uint16_t)port) != PJ_SUCCESS) return -7;
   si.rem_rtcp = si.rem_addr;
