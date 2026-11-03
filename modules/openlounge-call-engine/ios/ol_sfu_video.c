@@ -74,6 +74,10 @@ int ol_sfu_video_start(const char *ip, int port, const char *tx_b64, const char 
   vnl = (unsigned)nlayers; vpt = pt; for (int i = 0; i < nlayers; i++) { vssrc[i] = ssrcs[i]; vseq[i] = (pj_uint16_t)(ssrcs[i] & 0xffff); }
   st_rx_pkt = st_rx_au = st_rx_key = st_rx_gap = st_tx_pkt = 0; memset(st_tx_au, 0, sizeof st_tx_au); memset(st_tx_key, 0, sizeof st_tx_key);
   have = 0; aulen = 0; auloss = 0; auKey = 0; rxssrc = 0;
+  /* mediasoup PlainTransport is comedia: it learns our address from our first packet. A receive-only leg (no local
+     encoder yet) would never latch, so send an empty RTCP RR (SRTCP) right away to open the SFU->phone path. */
+  { pj_uint8_t rr[8] = { 0x80, 201, 0, 1 }; unsigned s = vssrc[0]; rr[4] = s >> 24; rr[5] = s >> 16; rr[6] = s >> 8; rr[7] = (pj_uint8_t)s;
+    pjmedia_transport_send_rtcp(vsrtp, rr, sizeof rr); }
   return 0;
 }
 static int vpkt(int layer, pj_uint32_t ts, int marker, const pj_uint8_t *pl, int pll, const pj_uint8_t *pre, int prel) {
