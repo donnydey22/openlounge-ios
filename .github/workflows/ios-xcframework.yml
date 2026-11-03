@@ -77,3 +77,40 @@ jobs:
           APP=$(find ios/dd/Build/Products -name "*.app" -maxdepth 3 | head -1); BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
           ! (nm -a "$BIN" 2>/dev/null; find "$APP" -name "*.framework" -exec sh -c 'ls "$1"' _ {} \;) | grep -iE "webrtc|peerconnection|RTCPeer"
           echo "no WebRTC symbols in $BIN"
+  simulator-matrix:
+    needs: xcframework
+    runs-on: macos-15
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with: { repository: donnydey22/openlounge, ref: pjsip-rebuild, path: ol }
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: mymindstorm/setup-emsdk@v14
+        with: { version: 3.1.74, actions-cache-folder: "" }
+      - uses: actions/download-artifact@v4
+        with: { name: pjproject-2.17-xcframework, path: modules/openlounge-call-engine/ios/pjproject.xcframework }
+      - uses: actions/download-artifact@v4
+        with: { name: pjproject-2.17-headers, path: modules/openlounge-call-engine/ios/pjinclude }
+      - name: build XCTest harness for the simulator (engine ol_sfu.c)
+        working-directory: modules/openlounge-call-engine/ios-harness
+        run: |
+          set -euo pipefail
+          cp ../ios/ol_sfu.c Sources/OLSfu/ && cp ../ios/ol_sfu.h Sources/OLSfu/include/
+          SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
+          echo "SIM=$SIM" >> $GITHUB_ENV; xcrun simctl boot "$SIM" || true
+          xcodebuild build-for-testing -scheme OLSfuHarness -destination "id=$SIM" -derivedDataPath $PWD/dd > ../../../xh.log 2>&1 || { grep -E " error: |BUILD" ../../../xh.log | head -40; exit 1; }
+      - name: CI stack deps (wasm browser peer, mediasoup worker)
+        working-directory: ol
+        run: wasm-call/build.sh && for d in media-sfu ws-media-relay tests/pjsip-matrix; do (cd $d && npm install --no-audit --no-fund); done
+      - name: iphone<->browser audio cells (simulator XCTest, real engine, real mediasoup PlainTransport)
+        working-directory: ol
+        env:
+          PHONE: ios
+          CELL_SECONDS: "30"
+          IOS_TEST_CMD: cd $GITHUB_WORKSPACE/modules/openlounge-call-engine/ios-harness && xcodebuild test-without-building -scheme OLSfuHarness -destination "id=$SIM" -derivedDataPath $PWD/dd -only-testing:OLSfuTests/SfuLegTests/testAudioLeg
+        run: node tests/pjsip-matrix/run-phone.mjs
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: matrix-ios, path: "ol/tests/pjsip-matrix/results\nxh.log" }
