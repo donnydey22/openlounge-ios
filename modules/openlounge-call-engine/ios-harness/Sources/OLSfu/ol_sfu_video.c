@@ -10,6 +10,8 @@
 #include "ol_sfu_video.h"
 #define OL_MTU 1100
 #define OL_AU_MAX (1 << 21)
+/* Callers (VideoToolbox/MediaCodec callback threads, XCTest) may be foreign to pjlib: register before pj_mutex/pjmedia use. */
+#define OLV_REG() static __thread pj_thread_desc olv_d_; pj_thread_t *olv_t_; if (!pj_thread_is_registered()) pj_thread_register("olv", olv_d_, &olv_t_)
 static pj_pool_t *vpool; static pjmedia_transport *vudp, *vsrtp; static pj_mutex_t *vmx;
 static unsigned vssrc[3], vnl; static pj_uint16_t vseq[3]; static int vpt;
 static pj_uint8_t *au; static int aulen, auloss, have, auKey; static pj_uint16_t lastseq; static pj_uint32_t rxssrc;
@@ -45,8 +47,6 @@ static void on_rtcp(void *u, void *p, pj_ssize_t n) { (void)u; (void)p; (void)n;
 
 void ol_sfu_video_set_sink(ol_video_sink_cb cb, void *user) { OLV_REG(); sink = cb; sink_user = user; }
 
-/* Callers (VideoToolbox/MediaCodec callback threads, XCTest) may be foreign to pjlib: register before pj_mutex/pjmedia use. */
-#define OLV_REG() static __thread pj_thread_desc olv_d_; pj_thread_t *olv_t_; if (!pj_thread_is_registered()) pj_thread_register("olv", olv_d_, &olv_t_)
 int ol_sfu_video_start(const char *ip, int port, const char *tx_b64, const char *rx_b64, const unsigned *ssrcs, int nlayers, int pt) { OLV_REG();
   pjmedia_endpt *ep = pjsua_get_pjmedia_endpt(); if (!ep) return -1; if (nlayers < 1 || nlayers > 3) return -12;
   ol_sfu_video_stop();
