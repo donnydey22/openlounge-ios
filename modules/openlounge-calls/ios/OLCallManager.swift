@@ -300,6 +300,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     c.reportAttempts += 1
     c.reporting = true
     traceProviderCallback("report-incoming-attempt-\(attempt + 1)", uuid: c.uuid)
+    // b86 release: re-apply the SAME provider configuration right before every report (Apple workaround for a
+    // silent missing didActivate, worse on iOS 18.4.1). Unchanged config; start sequence in didActivate untouched.
+    provider.configuration = provider.configuration
     provider.reportNewIncomingCall(with: c.uuid, update: update) { [weak self, weak c] error in
       DispatchQueue.main.async {
         guard let self, let c, self.calls[c.uuid] === c else { return }

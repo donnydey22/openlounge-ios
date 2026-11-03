@@ -36,3 +36,9 @@ test('check 3b: per-cell teardown — every call-end path of every cell reaches 
   assert.match(ea, /resetAudioState\("end-action"\)/);
   assert.doesNotMatch(cut(m, 'private func teardownCallAudio', 'OLNativeAudio.laneTeardown()'), /isLaneCall|isAndroidCall|incoming|callVideo/);
 });
+
+test('check 8: CXProvider configuration re-set immediately before EVERY reportNewIncomingCall', () => {
+  const sites = m.split('reportNewIncomingCall(').length - 1;
+  const guarded = (m.match(/provider\.configuration = provider\.configuration\n\s*provider\.reportNewIncomingCall\(/g) || []).length;
+  assert.ok(sites >= 1); assert.equal(guarded, sites);
+});
