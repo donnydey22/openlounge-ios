@@ -36,6 +36,8 @@ int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char 
   pj_str_t rip = pj_str((char *)ip); if (pj_sockaddr_init(pj_AF_INET(), &si.rem_addr, &rip, (pj_uint16_t)port) != PJ_SUCCESS) return -7;
   si.rem_rtcp = si.rem_addr;
   if (pjmedia_stream_create(ep, pool, &si, srtp, NULL, &stream) != PJ_SUCCESS) return -8;
+  /* No SDP negotiation here: start the UDP member directly (sets udp->started, arms reads); SRTP is already keyed. */
+  if (pjmedia_transport_media_start(udp, pool, NULL, NULL, 0) != PJ_SUCCESS) return -11;
   if (pjmedia_stream_start(stream) != PJ_SUCCESS) return -9;
   pjmedia_port *sp; pjmedia_stream_get_port(stream, &sp);
   if (pjsua_conf_add_port(pool, sp, &slot) != PJ_SUCCESS) return -10;
