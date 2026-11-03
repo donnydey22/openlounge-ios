@@ -122,3 +122,23 @@ CI stage 1: Linux pjsua⇄pjsua (exists, green) + pjsua⇄WASM-in-headless-Chrom
 - **Video (t4464u):** H.264 base, VideoToolbox (iOS) / MediaCodec (Android) in the PJSIP builds. AV1 only if both ends report hardware AV1 (`pickVideoCodec`), negotiated per device. 3-layer SSRC simulcast → mediasoup, forwarded per subscriber via `layers.mjs`. QuickHD burst: top layer 2.5 Mbps/1080p for the first 4 s, then 1.2 Mbps/720p.
 - **Matrix:** `tests/pjsip-matrix/matrix.mjs` lists 36 cells (18 video, 20 browser↔phone/browser via SFU). Harnesses drop `results/<cell>.json`, and `--gate` fails unless all 36 pass. Branch CI reports and does not enforce. All device/browser cells are pending until stage 2 harnesses exist.
 - **Not done:** wiring `plain.mjs` into media-sfu `routeRpc`, the relay target lookup from the gateway, XCUITest/instrumented/Playwright harnesses, and WASM video. Nothing is deployed.
+
+## 14. Video spec v2 (Donny, Nov 3 6:51 AM) — supersedes §10 where they differ
+**iOS (Swift, PJSIP + VideoToolbox)**
+- AV1 via VideoToolbox hardware on A17+ only; H.264 otherwise. Hardware encoder only (`RequireHardwareAcceleratedVideoEncoder`), no software fallback: if HW session creation fails, the call fails video setup.
+- 3 simulcast layers: 180p @150 kbps, 720p @800 kbps, 1080p @2400 kbps.
+- Preset: ultrafast-equivalent (realtime, no frame reordering, max speed) for 180p; fast for 720p/1080p.
+- Keyframe every 2 s (`MaxKeyFrameIntervalDuration = 2`).
+- AVCaptureSession opened only after CallKit `didActivate`.
+**Android (Kotlin, PJSIP + MediaCodec)**
+- MediaCodec H.264 everywhere; AV1 only on Tensor G3+ hardware encoders (`c2.google.av1` HW, `isHardwareAccelerated`).
+- 3 layers 120/600/1600 kbps; capped at 720p on mid-range chips (top layer = 720p).
+- CBR (`BITRATE_MODE_CBR`), keyframe every 1 s (`KEY_I_FRAME_INTERVAL=1`), B-frames off (`max-bframes=0`), surface input (`createInputSurface`), high-priority send (`KEY_PRIORITY=0` realtime + high-priority send thread).
+- If MediaCodec fails to configure: fail the call (no fallback).
+**Browser (WASM)**
+- getUserMedia capture only; WASM H.264 encode, 720p max, single layer; RTP over WebSocket. No Chrome WebRTC encode (WebCodecs encode in the CI peer to be replaced by WASM H.264).
+**mediasoup**
+- One router per call room. Three transports per peer: audio, video, backup.
+- 1 s layer tick driven by REMB / transport-cc; downgrade at >2% loss, upgrade after 5 clean seconds.
+- Separate audio and video SSRCs.
+**Matrix** — video cells per pairing (iphone/android/browser, both directions): pass = decoded frames ≥80% of expected at the selected layer, keyframe interval within spec, layer switch observed on injected 3% loss and recovery after 5 s clean.
