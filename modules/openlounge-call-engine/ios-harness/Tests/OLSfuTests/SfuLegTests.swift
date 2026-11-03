@@ -30,7 +30,7 @@ final class SfuLegTests: XCTestCase {
   func testVideoLeg() throws {
     let e = ProcessInfo.processInfo.environment
     guard let ip = e["OL_IP"], let out = e["OL_OUT"], let vip = e["OL_VIP"] else { throw XCTSkip("not invoked by matrix runner") }
-    XCTAssertEqual(ol_harness_init(), 0)
+    XCTAssertEqual(ol_harness_init(), 0); let callStartAt = Int64(Date().timeIntervalSince1970 * 1000) // call begins here (before audio leg start)
     let r = ol_harness_start(ip, Int32(e["OL_PORT"]!)!, e["OL_TX"]!, e["OL_RX"]!, UInt32(e["OL_SSRC"]!)!, Int32(e["OL_TXPT"]!)!, Int32(e["OL_RXPT"]!)!)
     let ssrcs = Array(e["OL_VSSRCS"]!.split(separator: ",").map { UInt32($0)! }.prefix(e["OL_SIMLAYERS"] == "2" ? 2 : 3))
     let dec = OLVideoDecoder()
@@ -47,7 +47,7 @@ final class SfuLegTests: XCTestCase {
       let secs = Int(e["OL_SECONDS"]!)!; var sum = 0, n = 0, mx: Int32 = 0; var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0, lv: Int32 = 0
       var pool: CVPixelBufferPool?
       CVPixelBufferPoolCreate(nil, nil, [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange, kCVPixelBufferWidthKey: 1280, kCVPixelBufferHeightKey: 720, kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pool)
-      let t0 = Date(); var frame = 0; let phoneStartAt = Int64(t0.timeIntervalSince1970 * 1000)
+      let t0 = Date(); var frame = 0; let phoneStartAt = callStartAt
       while Date().timeIntervalSince(t0) < Double(secs) {
         if let pool, let enc { var pb: CVPixelBuffer?; CVPixelBufferPoolCreatePixelBuffer(nil, pool, &pb)
           if let pb { CVPixelBufferLockBaseAddress(pb, []); let y = CVPixelBufferGetBaseAddressOfPlane(pb, 0)!.assumingMemoryBound(to: UInt8.self), yb = CVPixelBufferGetBytesPerRowOfPlane(pb, 0)
