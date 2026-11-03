@@ -97,7 +97,7 @@ jobs:
         working-directory: modules/openlounge-call-engine/ios-harness
         run: |
           set -euo pipefail
-          cp ../ios/ol_sfu.c Sources/OLSfu/ && cp ../ios/ol_sfu.h Sources/OLSfu/include/
+          cp ../ios/ol_sfu.c ../ios/ol_sfu_video.c Sources/OLSfu/ && cp ../ios/ol_sfu.h ../ios/ol_sfu_video.h Sources/OLSfu/include/ && mkdir -p Sources/OLVideo && cp ../ios/OLVideoCodec.swift Sources/OLVideo/
           SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
           echo "SIM=$SIM" >> $GITHUB_ENV; xcrun simctl boot "$SIM" || true
           # SwiftPM scheme naming differs across Xcode versions (OLSfuHarness / OLSfuHarness-Package / OLSfu): pick what exists
@@ -116,10 +116,11 @@ jobs:
           brew install --cask blackhole-2ch
           sudo killall coreaudiod || true; sleep 5
           system_profiler SPAudioDataType | grep -iE "blackhole|output|input" | head
-      - name: iphone<->browser audio cells (simulator XCTest, real engine, real mediasoup PlainTransport)
+      - name: iphone<->browser audio + video cells (simulator XCTest, real engine + product HW VideoToolbox codec, real mediasoup PlainTransport)
         working-directory: ol
         env:
           PHONE: ios
+          MEDIA: audio,video
           CELL_SECONDS: "30"
           IOS_TEST_CMD: cd $GITHUB_WORKSPACE/modules/openlounge-call-engine/ios-harness && xcodebuild test-without-building -scheme "$HSCHEME" -destination "id=$SIM" -derivedDataPath $PWD/dd -only-testing:OLSfuTests/SfuLegTests/testAudioLeg
         run: node tests/pjsip-matrix/run-phone.mjs
