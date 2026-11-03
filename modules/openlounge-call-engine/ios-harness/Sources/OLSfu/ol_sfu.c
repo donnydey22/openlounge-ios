@@ -16,7 +16,10 @@ int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char 
   ol_sfu_stop();
   pool = pjsua_pool_create("olsfu", 4000, 4000);
   pj_str_t any = pj_str("0.0.0.0");
-  if (pjmedia_transport_udp_create3(ep, pj_AF_INET(), "olsfu", &any, 0, 0, &udp) != PJ_SUCCESS) return -2;
+  { /* udp_create3 needs an explicit port (binds RTP + RTP+1); probe an even port */
+    int base = 42000 + (int)(pj_rand() % 4000) * 2, ok = 0;
+    for (int i = 0; i < 64 && !ok; i++) ok = pjmedia_transport_udp_create3(ep, pj_AF_INET(), "olsfu", &any, base + 2 * i, 0, &udp) == PJ_SUCCESS;
+    if (!ok) return -2; }
   pjmedia_srtp_setting ss; pjmedia_srtp_setting_default(&ss); ss.use = PJMEDIA_SRTP_MANDATORY; ss.close_member_tp = PJ_TRUE;
   if (pjmedia_transport_srtp_create(ep, udp, &ss, &srtp) != PJ_SUCCESS) return -3;
   static char txk[30], rxk[30]; if (b64key(tx_b64, txk) || b64key(rx_b64, rxk)) return -4;
