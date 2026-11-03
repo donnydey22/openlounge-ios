@@ -53,3 +53,10 @@ A separate WASM VoIP stack, **not** PJSIP compiled to WASM:
 - (A) a binary WebSocket (wss) to a small ws↔UDP relay on the droplet or in front of the SFU. Works in every browser, but TCP head-of-line blocking adds latency under loss.
 - (B) WebTransport (HTTP/3 datagrams) to the droplet/SFU. Unreliable datagrams give UDP-like behavior, but Safari support is recent.
 In both cases the SRTP stays encrypted end-to-end through the relay. **This is a decision for Donny.** WebRTC is not substituted.
+
+## 10. Video (Donny t4454u, 12:01 AM)
+- **Codecs.** H.264 is the base on every platform. AV1 is used only where the hardware has an AV1 encoder/decoder, negotiated per device: AV1 is offered in SDP only when the device reports HW AV1, otherwise H.264 only.
+- **Encoders.** PJSIP encodes with hardware acceleration: VideoToolbox on iOS (`PJMEDIA_HAS_VID_TOOLBOX_CODEC`) and MediaCodec on Android (`PJMEDIA_HAS_ANDROID_MEDIACODEC`). Both are enabled in the branch CI builds of the pjproject libraries.
+- **Simulcast.** Simulcast goes through mediasoup (§8). Each subscriber gets the layer it can handle (bandwidth/CPU/screen).
+- **QuickHD-style start.** For the first ~3–5 s of a call, the encoder starts at the high layer at an elevated bitrate (keyframe-forward) for instant sharpness, then hands off to normal rate adaptation.
+- **Tuning.** Encoder parameters (bitrates per layer, keyframe interval, QuickHD duration/boost) are starting values and **will be iterated from production data**.
