@@ -11,11 +11,8 @@ Pod::Spec.new do |s|
   s.source         = { git: '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.vendored_frameworks = 'pjproject.xcframework' # pjproject 2.17, built by .github/workflows/ios-xcframework.yml
-  s.libraries = 'c++'
-  s.frameworks = 'CallKit', 'PushKit', 'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'CoreMedia', 'Network'
-  s.source_files   = ['*.{h,m,c,swift}']
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule', 'GCC_PREPROCESSOR_DEFINITIONS' => 'PJ_AUTOCONF=1', 'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/pjinclude"' }
-  s.public_header_files = 'OLPjsip.h'
-  s.preserve_paths = ['pjproject.xcframework', 'pjinclude/**/*']
+  s.dependency 'OpenLoungeCallEngine' # native PJSIP engine (modules/openlounge-call-engine)
+  s.frameworks = 'CallKit', 'PushKit', 'AVFoundation'
+  s.source_files   = '**/*.{h,m,swift}'
+  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule' }
 end

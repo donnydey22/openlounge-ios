@@ -48,9 +48,9 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 22 }  # no caches: from-scratch build
       - uses: actions/download-artifact@v4
-        with: { name: pjproject-2.17-xcframework, path: modules/openlounge-calls/ios/pjproject.xcframework }
+        with: { name: pjproject-2.17-xcframework, path: modules/openlounge-call-engine/ios/pjproject.xcframework }
       - uses: actions/download-artifact@v4
-        with: { name: pjproject-2.17-headers, path: modules/openlounge-calls/ios/pjinclude }
+        with: { name: pjproject-2.17-headers, path: modules/openlounge-call-engine/ios/pjinclude }
       - run: npm ci
       - run: npx tsc --noEmit
       - name: guard — no WebRTC, no setActive in app code
@@ -65,8 +65,11 @@ jobs:
           WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
           rm -rf ~/Library/Developer/Xcode/DerivedData
           xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO -derivedDataPath $PWD/dd clean build > ../xb.log 2>&1 && rc=0 || rc=$?
-          grep -B2 -A12 -iE 'error:|ExpoModulesJSI.*fail' ../xb.log | grep -v '^\s*$' | head -80; grep -E 'error:|\*\* BUILD' ../xb.log | sort -u | head -60; grep -A3 'The following build commands failed' ../xb.log | head -20
+          grep -E ' error: |\*\* BUILD' ../xb.log | sort -u | head -60 || true
           exit $rc
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with: { name: xcodebuild-log, path: xb.log }
       - name: fail if any WebRTC / libpeerconnection symbol, import or dependency remains
         run: |
           set -euo pipefail

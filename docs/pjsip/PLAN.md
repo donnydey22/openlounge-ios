@@ -105,3 +105,10 @@ Pass = callee rings, answers, and the receiver gets decoded media for >=30 s: au
 | 36 | Browser → Browser | video | Browser→Browser | Playwright (fake mic/cam) + WASM stats ⇄ Playwright (fake mic/cam) + WASM stats; tone/test-pattern injected, received signal analysed |
 
 CI stage 1: Linux pjsua⇄pjsua (exists, green) + pjsua⇄WASM-in-headless-Chrome. Stage 2: simulator/emulator pairs through mediasoup on a test droplet (not prod). Stage 3: real devices (Keiko Android → Donny iPhone, locked phone, redial ×5) — manual sign-off rows.
+
+## 12. Native-only call path (Donny t4462u)
+- **iOS.** The call engine is a standalone Swift framework target `OpenLoungeCallEngine` (`modules/openlounge-call-engine`, its own pod/framework). It contains the PJSIP engine, the C shim, SRTP, the jitter buffer, the sound device and teardown, and links `pjproject.xcframework`. It has no React Native dependency.
+- **iOS call flow.** CallKit/PushKit live in `OpenLoungeCalls` and call the engine directly. The whole call flow runs natively with no JS bridge on the audio path: VoIP push → `reportNewIncomingCall` (setConfiguration first) → answer → `didActivate` → sound device open → media → end → teardown.
+- **Android.** The call engine is a standalone Gradle library module `:callengine`. It contains the Kotlin `PjsipEngine`, the JNI/CMake glue and the pjproject prefab AAR. `:app` depends on it.
+- **What RN/WebView may do.** RN/WebView receives only one-way UI state events (ringing/connected/ended/muted, for display). UI intents (mute, end, speaker) go through a thin native UI call that enqueues to the engine and never touches audio timing. The WS signaling client for SDP/`a=crypto` moves into native code in M4 (Swift `URLSessionWebSocketTask`, Kotlin OkHttp WS) on the existing TLS WebSocket endpoint.
+- **Current branch state.** The engine targets are split out. The remaining JS→native call-control messages in `OpenLoungeCallsModule`/`SessionBridge` are UI-intent only today and are replaced by the thin UI API in M4.
