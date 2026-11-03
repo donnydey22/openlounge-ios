@@ -8,6 +8,9 @@ int ol_pjsip_start(int mn, int mx, int jm) {
   m.jb_discard_algo = PJMEDIA_JB_DISCARD_PROGRESSIVE; m.no_vad = 1; m.clock_rate = 48000; m.snd_clock_rate = 48000;
   if (pjsua_create() != PJ_SUCCESS) return -1;
   if (pjsua_init(&c, NULL, &m) != PJ_SUCCESS) return -2;
+  /* pjsua_acc_add asserts without a SIP transport (signaling is our WS, not SIP): loopback-only ephemeral UDP. */
+  { pjsua_transport_config t; pjsua_transport_config_default(&t); t.port = 0; t.bound_addr = pj_str("127.0.0.1");
+    if (pjsua_transport_create(PJSIP_TRANSPORT_UDP, &t, NULL) != PJ_SUCCESS) return -4; }
   if (pjsua_start() != PJ_SUCCESS) return -3;
   pjsua_set_no_snd_dev(); // no audio until CallKit didActivate
   pjsua_acc_config a; pjsua_acc_config_default(&a);
