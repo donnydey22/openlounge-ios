@@ -100,7 +100,11 @@ jobs:
           cp ../ios/ol_sfu.c Sources/OLSfu/ && cp ../ios/ol_sfu.h Sources/OLSfu/include/
           SIM=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
           echo "SIM=$SIM" >> $GITHUB_ENV; xcrun simctl boot "$SIM" || true
-          xcodebuild build-for-testing -scheme OLSfuHarness -destination "id=$SIM" -derivedDataPath $PWD/dd > ../../../xh.log 2>&1 || { grep -E " error: |BUILD" ../../../xh.log | head -40; exit 1; }
+          # SwiftPM scheme naming differs across Xcode versions (OLSfuHarness / OLSfuHarness-Package / OLSfu): pick what exists
+          xcodebuild -list -json > ../../../xl.json 2>../../../xl.err || { cat ../../../xl.err | tail -40; exit 1; }
+          SCHEME=$(python3 -c 'import json; s=json.load(open("../../../xl.json"))["workspace"]["schemes"]; print(next((x for x in ["OLSfuHarness","OLSfuHarness-Package","OLSfu"] if x in s), s[0]))')
+          echo "schemes: $(cat ../../../xl.json | tr -d '\n ')  -> $SCHEME"; echo "HSCHEME=$SCHEME" >> $GITHUB_ENV
+          xcodebuild build-for-testing -scheme "$SCHEME" -destination "id=$SIM" -derivedDataPath $PWD/dd > ../../../xh.log 2>&1 || { grep -iE "error|BUILD" ../../../xh.log | head -40; exit 1; }
       - name: CI stack deps (wasm browser peer, mediasoup worker)
         working-directory: ol
         run: wasm-call/build.sh && for d in media-sfu ws-media-relay tests/pjsip-matrix; do (cd $d && npm install --no-audit --no-fund); done
@@ -109,7 +113,7 @@ jobs:
         env:
           PHONE: ios
           CELL_SECONDS: "30"
-          IOS_TEST_CMD: cd $GITHUB_WORKSPACE/modules/openlounge-call-engine/ios-harness && xcodebuild test-without-building -scheme OLSfuHarness -destination "id=$SIM" -derivedDataPath $PWD/dd -only-testing:OLSfuTests/SfuLegTests/testAudioLeg
+          IOS_TEST_CMD: cd $GITHUB_WORKSPACE/modules/openlounge-call-engine/ios-harness && xcodebuild test-without-building -scheme "$HSCHEME" -destination "id=$SIM" -derivedDataPath $PWD/dd -only-testing:OLSfuTests/SfuLegTests/testAudioLeg
         run: node tests/pjsip-matrix/run-phone.mjs
       - if: always()
         uses: actions/upload-artifact@v4
