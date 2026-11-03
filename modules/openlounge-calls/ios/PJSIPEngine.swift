@@ -2,6 +2,7 @@
 // Rules: never calls AVAudioSession.setActive; sound device opened only after
 // CallKit didActivate AND session confirmed active; full teardown on every end.
 import AVFoundation
+import pjproject
 
 final class PJSIPEngine {
   static let shared = PJSIPEngine()

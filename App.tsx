@@ -7,7 +7,6 @@ import * as SystemUI from 'expo-system-ui';
 import * as WebBrowser from 'expo-web-browser';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, type AppStateStatus, Keyboard, type LayoutChangeEvent, Linking, Platform, Share, StyleSheet, View } from 'react-native';
-import { RTCView } from '@stream-io/react-native-webrtc';
 import { SafeAreaProvider, initialWindowMetrics, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { WebView, type WebViewMessageEvent, type WebViewNavigation } from 'react-native-webview';
 import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTypes';
@@ -56,7 +55,9 @@ import {
   startNativeCalls,
   syncCallAuthFromSession,
 } from './src/calls';
-import { NativeMediaController, type NativeVideoState } from './src/nativeMedia';
+// WebRTC native media removed (PJSIP rebuild). Video rendering moves to the PJSIP engine (M4).
+type NativeVideoState = { callId: string; local?: any; remote?: any; facing?: string } | null;
+type NativeMediaController = { handle(v: any): Promise<any>; closeAll(): void; onNetworkChange(): void };
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
 
@@ -638,23 +639,6 @@ function Shell() {
   const msPending = useRef(new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const msSeq = useRef(0);
   const nativeMedia = useRef<NativeMediaController | null>(null);
-  if (!nativeMedia.current && nativeCallsAvailable()) {
-    nativeMedia.current = new NativeMediaController(
-      // app → page: ms:* signaling relayed over the page's authenticated realtime socket
-      (event, data) =>
-        new Promise((resolve, reject) => {
-          const id = `nm${Date.now().toString(36)}_${++msSeq.current}`;
-          const timer = setTimeout(() => {
-            msPending.current.delete(id);
-            reject(new Error(`${event} timed out`));
-          }, 8_000);
-          msPending.current.set(id, { resolve, reject, timer });
-          inject(`(function(){try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)});}catch(e){window.OpenLoungeNative&&window.OpenLoungeNative.msReply(${JSON.stringify(id)},false,null,'no relay');}})();true;`);
-        }),
-      (detail) => inject(nativeEventScript('openlounge:native-media', detail)),
-      (state) => setNativeVideo(state),
-    );
-  }
   nativeMediaRef.current = nativeMedia.current;
 
   const onMessage = useCallback(
@@ -872,16 +856,6 @@ function Shell() {
       setWindowFrame({ x: 0, y: 0, width, height });
     }}>
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
-      {visibleNativeVideo && ((nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind)) || (pipTile && nativeVideo?.local)) && (
-        <View pointerEvents="none" style={styles.nativeVideoLayer} accessibilityElementsHidden>
-          {nativeBigLayout && bigTile && streamFor(nativeBigLayout.kind) && <RTCView key={`big-${nativeBigLayout.kind}-${streamFor(nativeBigLayout.kind)!.toURL()}`} streamURL={streamFor(nativeBigLayout.kind)!.toURL()} style={[styles.nativeTile, bigTile]} objectFit={bigFit(nativeBigLayout.kind)} mirror={nativeBigLayout.kind === 'local' && nativeVideo!.facing === 'user'} />}
-          {pipTile && nativeVideo?.local && (
-            <View style={[styles.nativePipFrame, pipTile]}>
-              <RTCView streamURL={nativeVideo.local.toURL()} style={styles.nativeFill} objectFit="contain" mirror={nativeVideo.facing === 'user'} />
-            </View>
-          )}
-        </View>
-      )}
       <View
         style={[
           styles.root,
@@ -911,7 +885,7 @@ function Shell() {
           // the page's own host only (openlounge.app), deny cross-origin frames, so WebKit never re-prompts.
           // Native-video calls (spec v3): the app owns mic + camera, so the page may never grab either while app-owned
           // call media is live (a WebKit capture would steal the mic / start a second camera and fight the RTCViews).
-          mediaCapturePermissionGrantType={nativeVideo ? 'deny' : 'grantIfSameHostElseDeny'}
+          mediaCapturePermissionGrantType="deny"
           allowsInlineMediaPlayback
           mediaPlaybackRequiresUserAction={false}
           allowsAirPlayForMediaPlayback

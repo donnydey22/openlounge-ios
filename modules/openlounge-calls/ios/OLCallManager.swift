@@ -131,7 +131,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   // MARK: - lifecycle / JS
 
   func start() {
-    OLNativeAudio.setUp()
     if started { return }
     started = true
     let cfg = CXProviderConfiguration()
@@ -309,6 +308,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
     // Duplicate push for a call that's already ringing: it still has to be reported (same UUID → harmless error).
     if ok, let existing = call(callId) {
+      provider.configuration = provider.configuration // Apple: setConfiguration before every reportNewIncomingCall
       provider.reportNewIncomingCall(with: existing.uuid, update: update) { _ in DispatchQueue.main.async { completion() } }
       return
     }
@@ -322,6 +322,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     c.expiresAt = expires
     c.declineToken = declineToken
     if !stale && !busy { calls[uuid] = c }
+
+    provider.configuration = provider.configuration // Apple: setConfiguration before every reportNewIncomingCall
 
     provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
       DispatchQueue.main.async {
@@ -500,10 +502,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // remain off. The explicit native-video caller marker is the sole video exception: its one app-owned mic+camera
     // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
     // remain unchanged.
-    let nativeVideo = calls.values.contains(where: { !$0.ended && $0.nativeMedia })
-    if !callVideo || nativeVideo {
-      OLNativeAudio.didActivate(audioSession, video: nativeVideo)
-    }
+    PJSIPEngine.shared.audioSessionDidActivate(audioSession) // PJSIP audio starts only here
     // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
     // that left WKWebView's <audio>/AudioContext "playing" but silent)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
@@ -524,7 +523,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     callKitAudioActive = false
-    OLNativeAudio.didDeactivate(audioSession)
+    PJSIPEngine.shared.audioSessionDidDeactivate()
+    PJSIPEngine.shared.teardown()
   }
 
   // MARK: - page → native (src/calls.ts forwards {type:"call:*"} bridge messages)
@@ -559,6 +559,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       update.supportsGrouping = false
       update.supportsUngrouping = false
       update.supportsDTMF = false
+      if let p = provider { p.configuration = p.configuration } // Apple: setConfiguration before every reportNewIncomingCall
       provider?.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
         DispatchQueue.main.async {
           guard let self = self else { return }
@@ -602,7 +603,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
             self.calls[c.uuid] = nil
             self.configureAudio() // still route ringback to the speaker
             // the page skips its ringback inside the app: without CallKit activation, ring back here directly
-            if (try? AVAudioSession.sharedInstance().setActive(true)) != nil { self.startRingback() }
+            self.startRingback() // never setActive ourselves (Speakerbox)
             return
           }
           let u = CXCallUpdate()
@@ -880,7 +881,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   private func playRingback() {
     if ringback?.isPlaying == true { return reportRingback(true) }
-    if !callKitAudioActive { try? AVAudioSession.sharedInstance().setActive(true) }
     if let p = ringback, p.play() { NSLog("[OLCalls] native ringback resumed"); return reportRingback(true) }
     do {
       let p = try AVAudioPlayer(data: Self.ringbackWav(), fileTypeHint: AVFileType.wav.rawValue)
@@ -938,10 +938,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// and the loudspeaker forced (no headset) — ringtone only, never while a call is live
   private func prepareRingtoneSession() {
     guard !hasLiveCall else { return }
-    OLNativeAudio.stopIdle()
+    PJSIPEngine.shared.teardown()
     prepareHeadsetSession()
     let s = AVAudioSession.sharedInstance()
-    try? s.setActive(true)
     try? s.overrideOutputAudioPort(Self.headsetAttached() ? .none : .speaker)
   }
 
@@ -956,7 +955,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let s = AVAudioSession.sharedInstance()
     try? s.overrideOutputAudioPort(.none)
     try? s.setCategory(saved.0, mode: saved.1, options: saved.2)
-    OLNativeAudio.stopIdle()
+    PJSIPEngine.shared.teardown()
     prepareHeadsetSession()
     _ = force
   }

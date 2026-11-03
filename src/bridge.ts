@@ -303,7 +303,7 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       getBuildNumber: function () { return ${JSON.stringify(appBuild)}; },
       // nativeVideo is deliberately separate from nativeMedia: legacy audio-only wrappers must retain WebView video.
       // nativeQualityV1 gates serialized app-owned camera adaptation to this paired-media wrapper release.
-      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'" : ''}]),
+      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? ", 'calls'" : ''}]),
       // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
       nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
       msReply: function (id, ok, result, error) { post({ __ol: 1, method: 'msReply', value: { id: String(id), ok: !!ok, result: result === undefined ? null : result, error: error ? String(error) : undefined } }); },

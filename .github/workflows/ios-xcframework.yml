@@ -1,12 +1,21 @@
-name: pjsip-ios-xcframework
+name: pjsip-ios
 on: { push: { branches: [pjsip-rebuild] }, workflow_dispatch: {} }
+concurrency: { group: pjsip-ios, cancel-in-progress: true }
 jobs:
-  build:
-    runs-on: macos-14
+  xcframework:
+    runs-on: macos-15
     timeout-minutes: 60
     steps:
-      - run: git clone -q --depth 1 -b 2.17 https://github.com/pjsip/pjproject.git
-      - name: build device + simulator
+      - run: brew install cmake >/dev/null 2>&1 || true
+      - run: |
+          git clone -q --depth 1 -b 2.17 https://github.com/pjsip/pjproject.git
+          git clone -q --depth 1 -b v1.5.2 https://github.com/xiph/opus.git
+      - name: libopus device + simulator
+        run: |
+          for t in device:iphoneos sim:iphonesimulator; do n=${t%%:*}; sdk=${t##*:}
+            cmake -S opus -B ob-$n -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$sdk -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_INSTALL_PREFIX=$PWD/opus-$n -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_BUILD_TESTING=OFF >/dev/null
+            cmake --build ob-$n --target install -j4 >/dev/null; done; ls opus-*/lib
+      - name: pjproject device + simulator (SRTP, opus, VideoToolbox)
         working-directory: pjproject
         run: |
           cat > pjlib/include/pj/config_site.h <<'C'
@@ -17,11 +26,39 @@ jobs:
           #include <pj/config_site_sample.h>
           C
           build() { make distclean >/dev/null 2>&1 || true
-            CXXFLAGS="-std=c++17" ARCH="-arch arm64" $1 ./configure-iphone >/dev/null && make dep >/dev/null 2>&1 && make -j4 >/dev/null
-            mkdir -p ../out/$2; libtool -static -o ../out/$2/libpjproject.a $(find . -path ./pjsip-apps -prune -o -path "*/lib/*.a" -print | grep -v pjsua2 | grep -v libpjsdp) ; }
-          build "env" device
-          build "env DEVPATH=$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer MIN_IOS=-mios-simulator-version-min=15.0" sim
+            env CXXFLAGS="-std=c++17" ARCH="-arch arm64" $1 ./configure-iphone --with-opus=$PWD/../opus-$2 >/dev/null
+            grep -q "PJMEDIA_HAS_OPUS_CODEC 1" pjmedia/include/pjmedia-codec/config_auto.h && echo "opus ON ($2)"
+            make dep >/dev/null 2>&1 && make -j4 >/dev/null
+            mkdir -p ../out/$2; libtool -static -o ../out/$2/libpjproject.a $(find . -path ./pjsip-apps -prune -o -path "*/lib/*.a" -print | grep -v pjsua2 | grep -v libpjsdp) ../opus-$2/lib/libopus.a ; }
+          build "" device
+          build "DEVPATH=$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer MIN_IOS=-mios-simulator-version-min=15.0" sim
           mkdir -p ../out/include; for d in pjlib pjlib-util pjnath pjmedia pjsip; do cp -R $d/include/* ../out/include/; done
-      - run: xcodebuild -create-xcframework -library out/device/libpjproject.a -headers out/include -library out/sim/libpjproject.a -headers out/include -output pjproject.xcframework && ls -la out/*/
+          printf 'module pjproject [system] {\n  header "pjsua-lib/pjsua.h"\n  export *\n}\n' > ../out/include/module.modulemap
+      - run: xcodebuild -create-xcframework -library out/device/libpjproject.a -headers out/include -library out/sim/libpjproject.a -headers out/include -output pjproject.xcframework
       - uses: actions/upload-artifact@v4
         with: { name: pjproject-2.17-xcframework, path: pjproject.xcframework }
+  app:
+    needs: xcframework
+    runs-on: macos-15
+    timeout-minutes: 90
+    env: { EXPO_NO_TELEMETRY: '1' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm }
+      - uses: actions/download-artifact@v4
+        with: { name: pjproject-2.17-xcframework, path: modules/openlounge-calls/ios/pjproject.xcframework }
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - name: guard — no WebRTC, no setActive in app code
+        run: |
+          ! grep -rniE "webrtc|mediasoup-client" package.json App.tsx src modules --include=*.ts --include=*.tsx --include=*.swift --include=*.json --include=*.podspec | grep -v "^\S*:\s*//"
+          ! grep -rn "setActive(" modules --include=*.swift | grep -v "//.*setActive"
+      - name: prebuild + simulator build (unsigned)
+        run: |
+          set -euo pipefail
+          npx expo prebuild --platform ios --no-install --clean
+          cd ios && pod install >/dev/null
+          WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build 2>&1 | tail -40
+          test ${PIPESTATUS[0]} -eq 0

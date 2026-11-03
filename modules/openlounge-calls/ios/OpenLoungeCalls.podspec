@@ -11,8 +11,10 @@ Pod::Spec.new do |s|
   s.source         = { git: '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.dependency 'StreamWebRTC', '~> 125.6422.070' # same build @stream-io/react-native-webrtc 125.4.5 links (RTCAudioSession)
-  s.frameworks     = 'CallKit', 'PushKit', 'AVFoundation'
+  s.vendored_frameworks = 'pjproject.xcframework' # pjproject 2.17, built by .github/workflows/ios-xcframework.yml
+  s.libraries = 'c++'
+  s.frameworks = 'CallKit', 'PushKit', 'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'CoreMedia', 'Network'
   s.source_files   = '**/*.{h,m,swift}'
-  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule' }
+  s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule', 'GCC_PREPROCESSOR_DEFINITIONS' => 'PJ_AUTOCONF=1' }
+  s.preserve_paths = 'pjproject.xcframework'
 end
