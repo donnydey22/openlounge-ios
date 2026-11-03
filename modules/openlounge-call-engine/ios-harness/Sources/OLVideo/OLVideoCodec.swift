@@ -99,7 +99,7 @@ public enum OLAnnexB {
     var total = 0; var ptr: UnsafeMutablePointer<CChar>?
     guard CMBlockBufferGetDataPointer(bb, atOffset: 0, lengthAtOffsetOut: nil, totalLengthOut: &total, dataPointerOut: &ptr) == noErr, let ptr else { return nil }
     let raw = UnsafeRawPointer(ptr); var o = 0
-    while o + 4 <= total { let l = Int(raw.load(fromByteOffset: o, as: UInt32.self).bigEndian); o += 4; if l <= 0 || o + l > total { break }
+    while o + 4 <= total { let l = Int(raw.loadUnaligned(fromByteOffset: o, as: UInt32.self).bigEndian); o += 4; if l <= 0 || o + l > total { break }
       out.append(contentsOf: sc); out.append(raw.advanced(by: o).assumingMemoryBound(to: UInt8.self), count: l); o += l }
     return out.isEmpty ? nil : (out, key)
   }
