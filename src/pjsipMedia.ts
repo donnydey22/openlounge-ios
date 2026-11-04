@@ -22,7 +22,8 @@ const SRTP = 'AES_CM_128_HMAC_SHA1_80';
 const rnd = (base: number) => base + Math.floor(Math.random() * 1_000_000);
 
 export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
-  let leg: { ip: string; port: number; tx: string; rx: string; ssrc: number; rxPt: number } | null = null;
+  let leg: { callId: string; ip: string; port: number; tx: string; rx: string; ssrc: number; rxPt: number; haveRx: boolean } | null = null;
+  let audioPoll: ReturnType<typeof setInterval> | null = null;
   let video: { callId: string; started: boolean; local: boolean; remote: boolean; facing: string } | null = null;
   let sub: { remove(): void } | null = null;
   let poll: ReturnType<typeof setInterval> | null = null;
@@ -68,6 +69,8 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
       const callId = String(v.callId ?? '');
       if (!callId) throw new Error('callId required');
       const d = () => ({ callId });
+      // idempotent: a second connect for the same live call keeps the running leg (a restart used to drop sound)
+      if (leg && leg.callId === callId) return { engine: 'pjsip', video: !!video?.started };
       const tx = engine.newSrtpKey(); const ssrc = rnd(100000);
       await rpc('ms:join', d());
       const c = await rpc('ms:plain:create', d());
@@ -75,10 +78,24 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
       await rpc('ms:plain:produce', { ...d(), kind: 'audio', ssrc, payloadType: 111 });
       const cons = await rpc('ms:plain:consume', d()).catch(() => null);
       const a = cons?.consumers?.find((k: any) => k.kind === 'audio');
-      leg = { ip: c.ip, port: c.port, tx, rx: c.srtpParameters?.keyBase64, ssrc, rxPt: a?.payloadType ?? 100 };
-      // Sound device opens on CallKit didActivate (PJSIPEngine.audioSessionDidActivate); the SRTP leg starts now.
+      leg = { callId, ip: c.ip, port: c.port, tx, rx: c.srtpParameters?.keyBase64, ssrc, rxPt: a?.payloadType ?? 100, haveRx: !!a };
+      // Sound device opens on CallKit didActivate (PJSIPEngine); a leg started after activation reopens it itself.
       const r = start();
       if (r !== 0) throw new Error(`pjsip audio leg start failed: ${r}`);
+      // Symmetric with the web/Android leg: the peer may produce AFTER us (iPhone answers faster than Android connects),
+      // so keep consuming until its audio exists, then restart the leg on the real payload type.
+      if (!a) {
+        const l = leg;
+        audioPoll = setInterval(async () => {
+          if (leg !== l) { if (audioPoll) clearInterval(audioPoll); audioPoll = null; return; }
+          const x = await rpc('ms:plain:consume', d()).catch(() => null);
+          const au = x?.consumers?.find((k: any) => k.kind === 'audio');
+          if (!au || leg !== l) return;
+          if (audioPoll) clearInterval(audioPoll); audioPoll = null;
+          l.haveRx = true;
+          if (au.payloadType !== l.rxPt) { l.rxPt = au.payloadType; engine.sfuStop(); start(); }
+        }, 700);
+      }
       if (v.video === true) {
         video = { callId, started: false, local: false, remote: false, facing: 'user' };
         await startVideo(callId);
@@ -91,6 +108,7 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
     closeAll() {
       if (poll) clearInterval(poll); poll = null; sub?.remove(); sub = null;
       if (video) { if (video.started) engine?.sfuVideoStop(); video = null; emit(); }
+      if (audioPoll) clearInterval(audioPoll); audioPoll = null;
       leg = null; engine?.sfuStop();
     },
     onNetworkChange() { if (leg && engine) { engine.sfuStop(); start(); } },

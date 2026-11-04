@@ -13,7 +13,9 @@ public final class OpenLoungeCallEngineModule: Module {
     }
     Function("sfuAudioStart") { (ip: String, port: Int, txKey: String, rxKey: String, ssrc: Double, txPt: Int, rxPt: Int) -> Int in
       PJSIPEngine.shared.start()
-      return Int(ol_sfu_audio_start(ip, Int32(port), txKey, rxKey, UInt32(ssrc), Int32(txPt), Int32(rxPt), 0))
+      let r = Int(ol_sfu_audio_start(ip, Int32(port), txKey, rxKey, UInt32(ssrc), Int32(txPt), Int32(rxPt), 0))
+      PJSIPEngine.shared.ensureSound() // leg (re)started after didActivate: reopen sound now
+      return r
     }
     Function("sfuStats") { () -> [Int] in
       var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0
