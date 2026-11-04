@@ -34,6 +34,14 @@ public final class PJSIPEngine {
     if ol_pjsip_open_sound() == 0 { audioRunning = true }
   }
 
+  /// b83 onMediaServicesReset / interruption-ended (Telegram: mediaServicesWereLost → setup + activate again):
+  /// the old audio unit is dead, so close and reopen the sound device inside the still-active CallKit session.
+  public func reopenSound() {
+    guard sessionActive else { return }
+    if audioRunning { ol_pjsip_close_sound(); audioRunning = false }
+    ensureSound()
+  }
+
   public func audioSessionDidDeactivate() { ol_pjsip_close_sound(); audioRunning = false; sessionActive = false }
 
   /// Video call start: QuickHD burst (1080p/2.5 Mbps) for 4 s, then steady 720p/1.2 Mbps (tune from prod data).

@@ -150,6 +150,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     NotificationCenter.default.addObserver(
       self, selector: #selector(onInterruption(_:)),
       name: AVAudioSession.interruptionNotification, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(onMediaServicesReset(_:)),
+      name: AVAudioSession.mediaServicesWereResetNotification, object: nil) // b83 observer, restored
     prepareHeadsetSession()
 
     let r = PKPushRegistry(queue: DispatchQueue.main)
@@ -934,7 +937,18 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       if self.wantRingback { self.playRingback() }
       // GSM call / Siri / alarm over: WebKit leaves the remote <audio> paused and the mic muted. Kick the page so it
       // resumes playback and recaptures the mic (checkMicAlive) — the call otherwise stays silent both ways.
-      if self.hasLiveCall { self.emit(["type": "audio", "reason": "interruption-ended"]) }
+      if self.hasLiveCall {
+        PJSIPEngine.shared.reopenSound() // PJSIP unit stops on interruption; reopen in the active CallKit session
+        self.emit(["type": "audio", "reason": "interruption-ended"])
+      }
+    }
+  }
+
+  @objc private func onMediaServicesReset(_ n: Notification) {
+    DispatchQueue.main.async { [weak self] in
+      guard let self, self.hasLiveCall else { return }
+      PJSIPEngine.shared.reopenSound()
+      self.emit(["type": "audio", "reason": "media-services-reset"])
     }
   }
 
