@@ -1,7 +1,10 @@
 #include "OLPjsip.h"
 #include <pjsua-lib/pjsua.h>
+/* Every entry point may be reached from any thread (GCD engine queue, CallKit main): pjlib asserts on an
+   unregistered thread (b93 SIGABRT __assert_rtn on the JS thread), so register the caller first. */
+#define OL_REG() static __thread pj_thread_desc ol_d_; pj_thread_t *ol_t_; if (pjsua_get_state() != PJSUA_STATE_NULL && !pj_thread_is_registered()) pj_thread_register("ol", ol_d_, &ol_t_)
 static int started = 0;
-int ol_pjsip_start(int mn, int mx, int jm) {
+int ol_pjsip_start(int mn, int mx, int jm) { OL_REG();
   if (started) return 0;
   pjsua_config c; pjsua_media_config m; pjsua_config_default(&c); pjsua_media_config_default(&m);
   m.jb_init = -1; m.jb_min_pre = mn; m.jb_max_pre = mx; m.jb_max = jm;
@@ -20,9 +23,9 @@ int ol_pjsip_start(int mn, int mx, int jm) {
   pjsua_acc_add(&a, PJ_TRUE, NULL);
   started = 1; return 0;
 }
-int ol_pjsip_open_sound(void) { return started ? pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV, PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV) : -1; }
-void ol_pjsip_close_sound(void) { if (started) pjsua_set_no_snd_dev(); }
-void ol_pjsip_teardown(void) { if (started) { pjsua_call_hangup_all(); pjsua_set_no_snd_dev(); } }
+int ol_pjsip_open_sound(void) { OL_REG(); return started ? pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV, PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV) : -1; }
+void ol_pjsip_close_sound(void) { OL_REG(); if (started) pjsua_set_no_snd_dev(); }
+void ol_pjsip_teardown(void) { OL_REG(); if (started) { pjsua_call_hangup_all(); pjsua_set_no_snd_dev(); } }
 /* Video (t4464u): H.264 base via VideoToolbox (pjmedia vid_toolbox codec). QuickHD: start at high res/bitrate,
    ol_pjsip_video_steady() drops to steady caps after the burst. pjmedia 2.17 has no AV1 codec; AV1 hw is only
    detected (Swift) and advertised so the SFU picks H.264 unless both ends gain AV1. */
@@ -35,9 +38,9 @@ static int set_h264(int w, int h, int bps) {
   p.enc_fmt.det.vid.avg_bps = bps; p.enc_fmt.det.vid.max_bps = bps;
   return pjsua_vid_codec_set_param(&id, &p) == PJ_SUCCESS ? 0 : -3;
 }
-int ol_pjsip_video_quickhd(void) { return started ? set_h264(1920, 1080, 2500000) : -1; }
-int ol_pjsip_video_steady(void) { return started ? set_h264(1280, 720, 1200000) : -1; }
+int ol_pjsip_video_quickhd(void) { OL_REG(); return started ? set_h264(1920, 1080, 2500000) : -1; }
+int ol_pjsip_video_steady(void) { OL_REG(); return started ? set_h264(1280, 720, 1200000) : -1; }
 #else
-int ol_pjsip_video_quickhd(void) { return -9; }
-int ol_pjsip_video_steady(void) { return -9; }
+int ol_pjsip_video_quickhd(void) { OL_REG(); return -9; }
+int ol_pjsip_video_steady(void) { OL_REG(); return -9; }
 #endif
