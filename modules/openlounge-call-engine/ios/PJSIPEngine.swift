@@ -1,5 +1,5 @@
 // Open Lounge PJSIP media engine (pjproject 2.17) via the OLPjsip C shim. One path for every call.
-// Rules: never calls AVAudioSession.setActive; sound device opened only after CallKit didActivate AND the
+// Rules: setActive(true) only inside ensureSound, i.e. after CallKit didActivate (as build 83); sound device opened only after CallKit didActivate AND the
 // session is confirmed active; full teardown on every call end. SRTP SDES mandatory (keys only in a=crypto).
 import AVFoundation
 
@@ -24,6 +24,12 @@ public final class PJSIPEngine {
   /// Open the sound device iff CallKit has activated the session (never activates the session itself).
   public func ensureSound() {
     guard sessionActive, !audioRunning else { return }
+    // build 83 (5f0efea OLNativeAudio.laneActivate) session setup, same order, right before the device opens
+    let s = AVAudioSession.sharedInstance()
+    do {
+      try s.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetooth])
+      try s.setActive(true)
+    } catch { NSLog("[OLCalls] pjsip session setup failed: %@", error.localizedDescription) }
     start()
     if ol_pjsip_open_sound() == 0 { audioRunning = true }
   }

@@ -1,6 +1,7 @@
 // PJSIP M4 option B (iOS): page op:"connect"{callId} -> SFU PlainTransport RPCs over the page's authenticated socket
 // (window.__olNativeMsReq -> msReply) -> native engine SRTP legs. Audio: one "audio" PlainTransport (Opus PT 111).
 // Video: own "video" PlainTransport + key, 3 simulcast SSRCs, H.264 PT 102 (VideoToolbox; browser peers decode H.264).
+import { createAudioWatch } from './audioWatch';
 import { requireOptionalNativeModule, requireNativeViewManager as requireNativeView } from 'expo-modules-core';
 
 type Engine = {
@@ -23,7 +24,7 @@ const rnd = (base: number) => base + Math.floor(Math.random() * 1_000_000);
 
 export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
   let leg: { callId: string; ip: string; port: number; tx: string; rx: string; ssrc: number; rxPt: number; haveRx: boolean } | null = null;
-  let audioPoll: ReturnType<typeof setInterval> | null = null;
+  let audioWatch: { stop(): void } | null = null;
   let video: { callId: string; started: boolean; local: boolean; remote: boolean; facing: string } | null = null;
   let sub: { remove(): void } | null = null;
   let poll: ReturnType<typeof setInterval> | null = null;
@@ -82,20 +83,17 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
       // Sound device opens on CallKit didActivate (PJSIPEngine); a leg started after activation reopens it itself.
       const r = start();
       if (r !== 0) throw new Error(`pjsip audio leg start failed: ${r}`);
-      // Symmetric with the web/Android leg: the peer may produce AFTER us (iPhone answers faster than Android connects),
-      // so keep consuming until its audio exists, then restart the leg on the real payload type.
-      if (!a) {
-        const l = leg;
-        audioPoll = setInterval(async () => {
-          if (leg !== l) { if (audioPoll) clearInterval(audioPoll); audioPoll = null; return; }
-          const x = await rpc('ms:plain:consume', d()).catch(() => null);
-          const au = x?.consumers?.find((k: any) => k.kind === 'audio');
-          if (!au || leg !== l) return;
-          if (audioPoll) clearInterval(audioPoll); audioPoll = null;
-          l.haveRx = true;
-          if (au.payloadType !== l.rxPt) { l.rxPt = au.payloadType; engine.sfuStop(); start(); }
-        }, 700);
-      }
+      // Remote audio watch (unbounded, for the life of the leg): poll the SFU for the peer's audio consumer AND the
+      // native RTP counter until packets actually arrive; if packets stop mid-call, resume polling. Never one-shot.
+      const l = leg;
+      audioWatch?.stop();
+      audioWatch = createAudioWatch({
+        consume: async () => (await rpc('ms:plain:consume', d()).catch(() => null))?.consumers?.find((k: any) => k.kind === 'audio') ?? null,
+        rxPackets: () => engine.sfuStats()?.[0] ?? 0,
+        restart: (pt) => { if (leg !== l) return; l.rxPt = pt; engine.sfuStop(); start(); },
+        currentPt: () => l.rxPt,
+        log: (m) => console.warn(`[pjsip ${callId}] ${m}`),
+      });
       if (v.video === true) {
         video = { callId, started: false, local: false, remote: false, facing: 'user' };
         await startVideo(callId);
@@ -108,9 +106,10 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
     closeAll() {
       if (poll) clearInterval(poll); poll = null; sub?.remove(); sub = null;
       if (video) { if (video.started) engine?.sfuVideoStop(); video = null; emit(); }
-      if (audioPoll) clearInterval(audioPoll); audioPoll = null;
+      audioWatch?.stop(); audioWatch = null;
       leg = null; engine?.sfuStop();
     },
     onNetworkChange() { if (leg && engine) { engine.sfuStop(); start(); } },
   };
 }
+
