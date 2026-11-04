@@ -139,7 +139,7 @@ jobs:
     timeout-minutes: 90
     env:
       EXPO_NO_TELEMETRY: '1'
-      OL_START_URL: https://turn.openlounge.app:8443 # NON-production pjsip test instance
+      OL_START_URL: https://openlounge.app # production (Donny approved 2026-11-04)
     steps:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
@@ -195,7 +195,7 @@ jobs:
           rm -f out/OpenLounge.ipa credentials/ios/dist.p12 credentials.json
       - uses: actions/upload-artifact@v4
         with:
-          name: openlounge-ios-pjtest-adhoc-encrypted
+          name: openlounge-ios-prod-adhoc-encrypted
           path: |
             out/OpenLounge.ipa.enc
             out/OpenLounge.ipa.sha256
