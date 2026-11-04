@@ -24,7 +24,6 @@ public final class OpenLoungeCallEngineModule: Module {
       OLCallVideo.shared.start(ip: ip, port: port, txKey: txKey, rxKey: rxKey, ssrcs: ssrcs.map { UInt32($0) }, pt: pt)
     }
     AsyncFunction("camera") { (on: Bool, facing: String) in try OLCallVideo.shared.camera(on: on, facing: facing) }
-    Function("sfuVideoStats") { () -> [Int] in OLCallVideo.shared.stats() }
     Function("sfuVideoStop") { () in OLCallVideo.shared.stop() }
     Events("onRemoteVideo")
     OnStartObserving { OLCallVideo.shared.onRemoteFirstFrame = { [weak self] in self?.sendEvent("onRemoteVideo", ["on": true]) } }
