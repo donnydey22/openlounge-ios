@@ -11,7 +11,7 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   const universalLinks = process.env.OPENLOUNGE_UNIVERSAL_LINKS === '1';
   // Staging/test builds only (eas.json profile "staging"): point the WebView AND the native CallKit/decline API at a
   // staging origin. Production builds never set it and keep https://openlounge.app.
-  const startUrl = process.env.OL_START_URL && /^https:\/\/[a-z0-9.-]+$/.test(process.env.OL_START_URL) ? process.env.OL_START_URL : null;
+  const startUrl = process.env.OL_START_URL && /^https:\/\/[a-z0-9.-]+(:[0-9]{2,5})?$/.test(process.env.OL_START_URL) ? process.env.OL_START_URL : null;
   return {
     ...config,
     ...(startUrl ? { extra: { ...config.extra, startUrl } } : {}),
