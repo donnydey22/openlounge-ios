@@ -2,7 +2,7 @@
 // (window.__olNativeMsReq -> msReply) -> native engine SRTP audio leg. Mirrors Android NativeCallMedia.kt (8f6f4d0).
 import { requireOptionalNativeModule } from 'expo-modules-core';
 
-type Engine = { newSrtpKey(): string; sfuAudioStart(ip: string, port: number, tx: string, rx: string, ssrc: number, txPt: number, rxPt: number): number; sfuStats(): number[]; sfuStop(): void };
+type Engine = { newSrtpKey(): string; sfuAudioStart(ip: string, port: number, tx: string, rx: string, ssrc: number, txPt: number, rxPt: number): number; sfuStats(): number[]; sfuStop(): void; setMute(muted: boolean): number };
 const engine = requireOptionalNativeModule<Engine>('OpenLoungeCallEngine');
 export type MsRpc = (event: string, data: Record<string, unknown>) => Promise<any>;
 
@@ -15,7 +15,7 @@ export function createPjsipController(rpc: MsRpc) {
       if (op === 'prewarm') return { engine: engine ? 'pjsip' : 'missing' };
       if (op === 'close' || op === 'end') { this.closeAll(); return true; }
       if (op === 'stats') { const s = engine?.sfuStats() ?? []; return { rxPkt: s[0], rxLost: s[1], txPkt: s[2] }; }
-      if (op === 'mute') return true; // TODO engine mute
+      if (op === 'mute') return (engine?.setMute(v.muted === true) ?? -1) === 0;
       if (op !== 'connect') throw new Error(`unknown op: ${op}`);
       if (!engine) throw new Error('pjsip engine missing');
       const callId = String(v.callId ?? '');

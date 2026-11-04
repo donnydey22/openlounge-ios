@@ -81,3 +81,9 @@ int ol_sfu_diag(int *rb0, int *rb1, unsigned *jb_disc, unsigned *jb_lost, unsign
   pjmedia_jb_state j; pjmedia_rtcp_stat st; *rb0 = rcvbuf_before; *rb1 = rcvbuf_after;
   if (!stream || pjmedia_stream_get_stat_jbuf(stream, &j) != PJ_SUCCESS || pjmedia_stream_get_stat(stream, &st) != PJ_SUCCESS) return -1;
   *jb_disc = j.discard; *jb_lost = j.lost; *jb_empty = j.empty; *jb_avg_ms = j.avg_delay; *rx_discard = st.rx.discard; return 0; }
+
+/* Mute = stop feeding the mic (conf slot 0) into the SFU stream; RTP keeps flowing (comfort silence via Opus DTX/PLC). */
+int ol_sfu_set_mute(int muted) {
+  if (slot < 0) return -1;
+  return muted ? (int)pjsua_conf_disconnect(0, slot) : (int)pjsua_conf_connect(0, slot);
+}

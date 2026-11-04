@@ -20,6 +20,7 @@ public final class OpenLoungeCallEngineModule: Module {
       _ = ol_sfu_stats(&rx, &lost, &tx)
       return [Int(rx), Int(lost), Int(tx)]
     }
+    Function("setMute") { (muted: Bool) -> Int in Int(ol_sfu_set_mute(muted ? 1 : 0)) }
     Function("sfuStop") { () in ol_sfu_stop(); PJSIPEngine.shared.teardown() }
   }
 }
