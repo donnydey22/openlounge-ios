@@ -1,1 +1,1 @@
-{ "platforms": ["apple"], "apple": { "modules": [] } }
+{ "platforms": ["apple"], "apple": { "modules": ["OpenLoungeCallEngineModule"] } }

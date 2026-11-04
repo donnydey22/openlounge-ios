@@ -60,6 +60,7 @@ type NativeVideoState = { callId: string; local?: any; remote?: any; facing?: st
 type NativeMediaController = { handle(v: any): Promise<any>; closeAll(): void; onNetworkChange(): void };
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
+import { createPjsipController } from './src/pjsipMedia';
 
 // Keep the native splash (same artwork/colours as Android's launch screen) up until the page has painted and the
 // web app finished its session check (OpenLoungeNative.ready() or the automatic AuthGate check in bridge.ts).
@@ -639,6 +640,15 @@ function Shell() {
   const msPending = useRef(new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const msSeq = useRef(0);
   const nativeMedia = useRef<NativeMediaController | null>(null);
+  if (!nativeMedia.current) {
+    // ms:* relay: app -> page (window.__olNativeMsReq) -> server; the page answers with the msReply bridge message
+    nativeMedia.current = createPjsipController((event, data) => new Promise((resolve, reject) => {
+      const id = `pj${++msSeq.current}`;
+      const timer = setTimeout(() => { msPending.current.delete(id); reject(new Error('ms relay timeout')); }, 10_000);
+      msPending.current.set(id, { resolve, reject, timer });
+      inject(`try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)})}catch(e){}true;`);
+    }));
+  }
   nativeMediaRef.current = nativeMedia.current;
 
   const onMessage = useCallback(

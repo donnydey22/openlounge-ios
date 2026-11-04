@@ -15,7 +15,8 @@ Pod::Spec.new do |s|
   s.libraries = 'c++'
   s.frameworks = 'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'CoreMedia', 'Network', 'MetalKit', 'Metal', 'CoreVideo', 'UIKit', 'Security'
   s.source_files   = ['*.{h,c,swift}']
-  s.public_header_files = 'OLPjsip.h'
+  s.dependency 'ExpoModulesCore'
+  s.public_header_files = ['OLPjsip.h', 'ol_sfu.h']
   s.preserve_paths = ['pjproject.xcframework', 'pjinclude/**/*']
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'GCC_PREPROCESSOR_DEFINITIONS' => 'PJ_AUTOCONF=1', 'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/pjinclude"' }
 end
