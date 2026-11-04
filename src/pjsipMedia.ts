@@ -6,9 +6,9 @@ import { requireOptionalNativeModule, requireNativeViewManager as requireNativeV
 type Engine = {
   newSrtpKey(): string;
   sfuAudioStart(ip: string, port: number, tx: string, rx: string, ssrc: number, txPt: number, rxPt: number): number;
-  sfuStop(): void; setMute(muted: boolean): number;
+  sfuStats(): number[]; sfuStop(): void; setMute(muted: boolean): number;
   sfuVideoStart(ip: string, port: number, tx: string, rx: string, ssrcs: number[], pt: number): number;
-  camera(on: boolean, facing: string): Promise<void>; sfuVideoStop(): void;
+  camera(on: boolean, facing: string): Promise<void>; sfuVideoStats(): number[]; sfuVideoStop(): void;
   addListener?(ev: string, cb: (e: any) => void): { remove(): void };
 };
 const engine = requireOptionalNativeModule<Engine>('OpenLoungeCallEngine');
@@ -23,11 +23,6 @@ const rnd = (base: number) => base + Math.floor(Math.random() * 1_000_000);
 
 export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
   let leg: { callId: string; ip: string; port: number; tx: string; rx: string; ssrc: number; rxPt: number; haveRx: boolean } | null = null;
-  let audioPoll: ReturnType<typeof setInterval> | null = null;
-  // Engine state arrives pushed from the engine's own queue (onAudioStats); JS never calls into pjlib to read it.
-  let last: { rx: number; lost: number; tx: number; video: number[] } = { rx: 0, lost: 0, tx: 0, video: [] };
-  const statsSub = engine?.addListener?.('onAudioStats', (e: any) => { last = e; }) ?? null;
-  void statsSub;
   let video: { callId: string; started: boolean; local: boolean; remote: boolean; facing: string } | null = null;
   let sub: { remove(): void } | null = null;
   let poll: ReturnType<typeof setInterval> | null = null;
@@ -57,8 +52,8 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
       const op = v?.op;
       if (op === 'prewarm') return { engine: engine ? 'pjsip' : 'missing' };
       if (op === 'close' || op === 'end') { this.closeAll(); return true; }
-      if (op === 'stats') { const vs = video?.started ? last.video ?? [] : [];
-        return [[{ id: 'pjsip-audio', type: 'pjsip', rxPkt: last.rx, rxLost: last.lost, txPkt: last.tx }, ...(vs.length ? [{ id: 'pjsip-video', type: 'pjsip-video', rxPkt: vs[0], rxAu: vs[1], txPkt: vs[4], txAu: vs[5], frames: vs[7] }] : [])]]; }
+      if (op === 'stats') { const s = engine?.sfuStats() ?? []; const vs = video?.started ? engine?.sfuVideoStats() ?? [] : [];
+        return [[{ id: 'pjsip-audio', type: 'pjsip', rxPkt: s[0], rxLost: s[1], txPkt: s[2] }, ...(vs.length ? [{ id: 'pjsip-video', type: 'pjsip-video', rxPkt: vs[0], rxAu: vs[1], txPkt: vs[4], txAu: vs[5], frames: vs[7] }] : [])]]; }
       if (op === 'mute') return (engine?.setMute(v.muted === true) ?? -1) === 0;
       if (op === 'camera') {
         if (!engine || !leg) throw new Error('no call');
@@ -86,18 +81,6 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
       // Sound device opens on CallKit didActivate (PJSIPEngine); a leg started after activation reopens it itself.
       const r = start();
       if (r !== 0) throw new Error(`pjsip audio leg start failed: ${r}`);
-      // The peer may produce AFTER us (iPhone answers faster than Android connects): consume until its audio
-      // consumer exists, then restart the leg on its payload type. SFU RPCs only; no native stats reads from JS.
-      const l = leg;
-      if (audioPoll) clearInterval(audioPoll); audioPoll = null;
-      if (!a) audioPoll = setInterval(async () => {
-        if (leg !== l) { if (audioPoll) clearInterval(audioPoll); audioPoll = null; return; }
-        const au = (await rpc('ms:plain:consume', d()).catch(() => null))?.consumers?.find((k: any) => k.kind === 'audio');
-        if (!au || leg !== l) return;
-        if (audioPoll) clearInterval(audioPoll); audioPoll = null;
-        l.haveRx = true;
-        if (au.payloadType !== l.rxPt) { l.rxPt = au.payloadType; engine.sfuStop(); start(); }
-      }, 700);
       if (v.video === true) {
         video = { callId, started: false, local: false, remote: false, facing: 'user' };
         await startVideo(callId);
@@ -110,7 +93,6 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
     closeAll() {
       if (poll) clearInterval(poll); poll = null; sub?.remove(); sub = null;
       if (video) { if (video.started) engine?.sfuVideoStop(); video = null; emit(); }
-      if (audioPoll) clearInterval(audioPoll); audioPoll = null; last = { rx: 0, lost: 0, tx: 0, video: [] };
       leg = null; engine?.sfuStop();
     },
     onNetworkChange() { if (leg && engine) { engine.sfuStop(); start(); } },

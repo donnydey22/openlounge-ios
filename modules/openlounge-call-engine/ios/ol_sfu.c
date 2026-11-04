@@ -2,9 +2,6 @@
    (rtcp-mux) + SRTP SDES (AES_CM_128_HMAC_SHA1_80, keys from signaling a=crypto / plain:create) + pjmedia_stream
    (Opus, adaptive jbuf progressive discard + PLC) on the pjsua conference bridge. Shared by iOS and Android shims. */
 #include <pjsua-lib/pjsua.h>
-/* Every entry point may be reached from any thread (GCD engine queue, CallKit main): pjlib asserts on an
-   unregistered thread (b93 SIGABRT __assert_rtn on the JS thread), so register the caller first. */
-#define OL_REG() static __thread pj_thread_desc ol_d_; pj_thread_t *ol_t_; if (pjsua_get_state() != PJSUA_STATE_NULL && !pj_thread_is_registered()) pj_thread_register("ol", ol_d_, &ol_t_)
 #include <pjmedia-codec/opus.h>
 #include <pjlib-util/base64.h>
 #include "ol_sfu.h"
@@ -15,7 +12,7 @@ static pjmedia_port *tone; static int rcvbuf_before, rcvbuf_after;
 static int b64key(const char *b64, char *out30) { int n = 30; pj_str_t s = pj_str((char *)b64);
   return pj_base64_decode(&s, (pj_uint8_t *)out30, &n) == PJ_SUCCESS && n == 30 ? 0 : -1; }
 
-int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char *rx_b64, unsigned ssrc, int tx_pt, int rx_pt, int test_tone_hz) { OL_REG();
+int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char *rx_b64, unsigned ssrc, int tx_pt, int rx_pt, int test_tone_hz) {
   pjmedia_endpt *ep = pjsua_get_pjmedia_endpt(); if (!ep) return -1;
   ol_sfu_stop();
   pool = pjsua_pool_create("olsfu", 4000, 4000);
@@ -68,11 +65,11 @@ int ol_sfu_audio_start(const char *ip, int port, const char *tx_b64, const char 
   return 0;
 }
 /* Received level 0..255 (pjsua conf rx level of the stream port) and stream stats for the matrix. */
-int ol_sfu_rx_level(void) { OL_REG(); unsigned tx = 0, rx = 0; if (slot < 0) return -1; pjsua_conf_get_signal_level(slot, &tx, &rx); return (int)rx; }
-int ol_sfu_stats(unsigned *rx_pkt, unsigned *rx_lost, unsigned *tx_pkt) { OL_REG(); pjmedia_rtcp_stat st; if (!stream || pjmedia_stream_get_stat(stream, &st) != PJ_SUCCESS) return -1;
+int ol_sfu_rx_level(void) { unsigned tx = 0, rx = 0; if (slot < 0) return -1; pjsua_conf_get_signal_level(slot, &tx, &rx); return (int)rx; }
+int ol_sfu_stats(unsigned *rx_pkt, unsigned *rx_lost, unsigned *tx_pkt) { pjmedia_rtcp_stat st; if (!stream || pjmedia_stream_get_stat(stream, &st) != PJ_SUCCESS) return -1;
   *rx_pkt = st.rx.pkt; *rx_lost = st.rx.loss; *tx_pkt = st.tx.pkt; return 0; }
-int ol_sfu_local_port(void) { OL_REG(); pjmedia_transport_info ti; if (!udp) return -1; pjmedia_transport_info_init(&ti); pjmedia_transport_get_info(udp, &ti); return pj_sockaddr_get_port(&ti.sock_info.rtp_addr_name); }
-void ol_sfu_stop(void) { OL_REG();
+int ol_sfu_local_port(void) { pjmedia_transport_info ti; if (!udp) return -1; pjmedia_transport_info_init(&ti); pjmedia_transport_get_info(udp, &ti); return pj_sockaddr_get_port(&ti.sock_info.rtp_addr_name); }
+void ol_sfu_stop(void) {
   if (tone_slot >= 0) { pjsua_conf_remove_port(tone_slot); tone_slot = -1; } if (tone) { pjmedia_port_destroy(tone); tone = NULL; }
   if (slot >= 0) { pjsua_conf_remove_port(slot); slot = -1; }
   if (stream) { pjmedia_stream_destroy(stream); stream = NULL; }
@@ -80,13 +77,13 @@ void ol_sfu_stop(void) { OL_REG();
   if (pool) { pj_pool_release(pool); pool = NULL; }
 }
 /* Diagnostics for the matrix: kernel rcvbuf before/after, jitter-buffer counters, stream rx discards. */
-int ol_sfu_diag(int *rb0, int *rb1, unsigned *jb_disc, unsigned *jb_lost, unsigned *jb_empty, unsigned *jb_avg_ms, unsigned *rx_discard) { OL_REG();
+int ol_sfu_diag(int *rb0, int *rb1, unsigned *jb_disc, unsigned *jb_lost, unsigned *jb_empty, unsigned *jb_avg_ms, unsigned *rx_discard) {
   pjmedia_jb_state j; pjmedia_rtcp_stat st; *rb0 = rcvbuf_before; *rb1 = rcvbuf_after;
   if (!stream || pjmedia_stream_get_stat_jbuf(stream, &j) != PJ_SUCCESS || pjmedia_stream_get_stat(stream, &st) != PJ_SUCCESS) return -1;
   *jb_disc = j.discard; *jb_lost = j.lost; *jb_empty = j.empty; *jb_avg_ms = j.avg_delay; *rx_discard = st.rx.discard; return 0; }
 
 /* Mute = stop feeding the mic (conf slot 0) into the SFU stream; RTP keeps flowing (comfort silence via Opus DTX/PLC). */
-int ol_sfu_set_mute(int muted) { OL_REG();
+int ol_sfu_set_mute(int muted) {
   if (slot < 0) return -1;
   return muted ? (int)pjsua_conf_disconnect(0, slot) : (int)pjsua_conf_connect(0, slot);
 }

@@ -12,22 +12,28 @@ public final class OpenLoungeCallEngineModule: Module {
       return Data(b).base64EncodedString()
     }
     Function("sfuAudioStart") { (ip: String, port: Int, txKey: String, rxKey: String, ssrc: Double, txPt: Int, rxPt: Int) -> Int in
-      PJSIPEngine.shared.audioStart(ip: ip, port: port, txKey: txKey, rxKey: rxKey, ssrc: UInt32(ssrc), txPt: Int32(txPt), rxPt: Int32(rxPt))
+      PJSIPEngine.shared.start()
+      let r = Int(ol_sfu_audio_start(ip, Int32(port), txKey, rxKey, UInt32(ssrc), Int32(txPt), Int32(rxPt), 0))
+      PJSIPEngine.shared.ensureSound() // leg (re)started after didActivate: reopen sound now
+      return r
     }
-    Function("setMute") { (muted: Bool) -> Int in PJSIPEngine.shared.setMute(muted) }
-    Function("sfuStop") { () in PJSIPEngine.shared.audioStop() }
+    Function("sfuStats") { () -> [Int] in
+      var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0
+      _ = ol_sfu_stats(&rx, &lost, &tx)
+      return [Int(rx), Int(lost), Int(tx)]
+    }
+    Function("setMute") { (muted: Bool) -> Int in Int(ol_sfu_set_mute(muted ? 1 : 0)) }
+    Function("sfuStop") { () in ol_sfu_stop(); PJSIPEngine.shared.teardown() }
     // Video leg: own PlainTransport ("video" purpose) + SRTP key, 3 simulcast SSRCs, H.264 PT 102
     Function("sfuVideoStart") { (ip: String, port: Int, txKey: String, rxKey: String, ssrcs: [Double], pt: Int) -> Int in
-      PJSIPEngine.shared.q.sync { OLCallVideo.shared.start(ip: ip, port: port, txKey: txKey, rxKey: rxKey, ssrcs: ssrcs.map { UInt32($0) }, pt: pt) }
+      OLCallVideo.shared.start(ip: ip, port: port, txKey: txKey, rxKey: rxKey, ssrcs: ssrcs.map { UInt32($0) }, pt: pt)
     }
     AsyncFunction("camera") { (on: Bool, facing: String) in try OLCallVideo.shared.camera(on: on, facing: facing) }
-    Function("sfuVideoStop") { () in PJSIPEngine.shared.q.sync { OLCallVideo.shared.stop() } }
-    Events("onRemoteVideo", "onAudioStats")
-    OnStartObserving {
-      OLCallVideo.shared.onRemoteFirstFrame = { [weak self] in self?.sendEvent("onRemoteVideo", ["on": true]) }
-      PJSIPEngine.shared.onAudioStats = { [weak self] s in self?.sendEvent("onAudioStats", s) }
-    }
-    OnStopObserving { OLCallVideo.shared.onRemoteFirstFrame = nil; PJSIPEngine.shared.onAudioStats = nil }
+    Function("sfuVideoStats") { () -> [Int] in OLCallVideo.shared.stats() }
+    Function("sfuVideoStop") { () in OLCallVideo.shared.stop() }
+    Events("onRemoteVideo")
+    OnStartObserving { OLCallVideo.shared.onRemoteFirstFrame = { [weak self] in self?.sendEvent("onRemoteVideo", ["on": true]) } }
+    OnStopObserving { OLCallVideo.shared.onRemoteFirstFrame = nil }
     View(OLRemoteVideoView.self) {}
     View(OLLocalVideoView.self) {}
   }
