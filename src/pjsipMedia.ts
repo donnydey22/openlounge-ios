@@ -6,9 +6,9 @@ import { requireOptionalNativeModule, requireNativeViewManager as requireNativeV
 type Engine = {
   newSrtpKey(): string;
   sfuAudioStart(ip: string, port: number, tx: string, rx: string, ssrc: number, txPt: number, rxPt: number): number;
-  sfuStats(): number[]; sfuStop(): void; setMute(muted: boolean): number;
+  sfuStop(): void; setMute(muted: boolean): number;
   sfuVideoStart(ip: string, port: number, tx: string, rx: string, ssrcs: number[], pt: number): number;
-  camera(on: boolean, facing: string): Promise<void>; sfuVideoStats(): number[]; sfuVideoStop(): void;
+  camera(on: boolean, facing: string): Promise<void>; sfuVideoStop(): void;
   addListener?(ev: string, cb: (e: any) => void): { remove(): void };
 };
 const engine = requireOptionalNativeModule<Engine>('OpenLoungeCallEngine');
@@ -52,8 +52,6 @@ export function createPjsipController(rpc: MsRpc, hooks: PjsipHooks = {}) {
       const op = v?.op;
       if (op === 'prewarm') return { engine: engine ? 'pjsip' : 'missing' };
       if (op === 'close' || op === 'end') { this.closeAll(); return true; }
-      if (op === 'stats') { const s = engine?.sfuStats() ?? []; const vs = video?.started ? engine?.sfuVideoStats() ?? [] : [];
-        return [[{ id: 'pjsip-audio', type: 'pjsip', rxPkt: s[0], rxLost: s[1], txPkt: s[2] }, ...(vs.length ? [{ id: 'pjsip-video', type: 'pjsip-video', rxPkt: vs[0], rxAu: vs[1], txPkt: vs[4], txAu: vs[5], frames: vs[7] }] : [])]]; }
       if (op === 'mute') return (engine?.setMute(v.muted === true) ?? -1) === 0;
       if (op === 'camera') {
         if (!engine || !leg) throw new Error('no call');

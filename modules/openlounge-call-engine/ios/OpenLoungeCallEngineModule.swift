@@ -17,11 +17,6 @@ public final class OpenLoungeCallEngineModule: Module {
       PJSIPEngine.shared.ensureSound() // leg (re)started after didActivate: reopen sound now
       return r
     }
-    Function("sfuStats") { () -> [Int] in
-      var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0
-      _ = ol_sfu_stats(&rx, &lost, &tx)
-      return [Int(rx), Int(lost), Int(tx)]
-    }
     Function("setMute") { (muted: Bool) -> Int in Int(ol_sfu_set_mute(muted ? 1 : 0)) }
     Function("sfuStop") { () in ol_sfu_stop(); PJSIPEngine.shared.teardown() }
     // Video leg: own PlainTransport ("video" purpose) + SRTP key, 3 simulcast SSRCs, H.264 PT 102
