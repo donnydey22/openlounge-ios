@@ -619,6 +619,18 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         }
       }
 
+    case "call:answering":
+      // b83 restore (Donny 2026-11-04): Accept on the page's ring screen answers the CallKit call at the tap, so iOS shows
+      // the native FaceTime-audio-style call UI / green status pill for in-app answers too (not only lock-screen answers).
+      guard Self.valid(callId) else { return }
+      if let c = call(callId), c.incoming, !c.answered {
+        c.answeredInPage = true
+        stopRingback()
+        controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { err in
+          if let err = err { NSLog("[OLCalls] in-app CXAnswerCallAction failed: %@", err.localizedDescription) }
+        }
+      }
+
     case "call:connected":
       stopRingback()
       if let c = call(callId) {
