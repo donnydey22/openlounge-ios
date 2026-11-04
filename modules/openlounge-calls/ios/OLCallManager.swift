@@ -140,6 +140,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     cfg.maximumCallsPerCallGroup = 1
     cfg.supportedHandleTypes = [.generic]
     cfg.includesCallsInRecents = false
+    // Bundled as a pod resource and resolved by CallKit from the app bundle.
+    cfg.ringtoneSound = "openlounge-incoming.caf"
     let p = CXProvider(configuration: cfg)
     p.setDelegate(self, queue: nil) // main queue
     provider = p

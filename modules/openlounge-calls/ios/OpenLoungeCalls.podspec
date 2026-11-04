@@ -14,5 +14,6 @@ Pod::Spec.new do |s|
   s.dependency 'OpenLoungeCallEngine' # native PJSIP engine (modules/openlounge-call-engine)
   s.frameworks = 'CallKit', 'PushKit', 'AVFoundation'
   s.source_files   = '**/*.{h,m,swift}'
+  s.resources      = ['resources/openlounge-incoming.caf']
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'SWIFT_COMPILATION_MODE' => 'wholemodule' }
 end
