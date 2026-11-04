@@ -60,7 +60,7 @@ type NativeVideoState = { callId: string; local?: any; remote?: any; facing?: st
 type NativeMediaController = { handle(v: any): Promise<any>; closeAll(): void; onNetworkChange(): void };
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
-import { createPjsipController } from './src/pjsipMedia';
+import { LocalVideoView, RemoteVideoView, createPjsipController, pjsipAvailable } from './src/pjsipMedia';
 
 // Keep the native splash (same artwork/colours as Android's launch screen) up until the page has painted and the
 // web app finished its session check (OpenLoungeNative.ready() or the automatic AuthGate check in bridge.ts).
@@ -175,7 +175,7 @@ function Shell() {
   const [windowFrame, setWindowFrame] = useState<WebFrame | null>(null);
   const [kbHeight, setKbHeight] = useState(0);
 
-  const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD), []);
+  const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD, pjsipAvailable()), []);
 
   // ---- refs read from long-lived listeners ----
   const offlineRef = useRef(false);
@@ -647,7 +647,13 @@ function Shell() {
       const timer = setTimeout(() => { msPending.current.delete(id); reject(new Error('ms relay timeout')); }, 10_000);
       msPending.current.set(id, { resolve, reject, timer });
       inject(`try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)})}catch(e){}true;`);
-    }));
+    }), {
+      // app-owned PJSIP video: native views render under the transparent page tiles; tell the page when remote pixels exist
+      onVideo: (v) => {
+        setNativeVideo(v && (v.local || v.remote) ? { callId: v.callId, local: v.local, remote: v.remote, facing: v.facing } : null);
+        if (v) inject(nativeEventScript('openlounge:native-media', { state: 'remote-video', callId: v.callId, on: v.remote }));
+      },
+    });
   }
   nativeMediaRef.current = nativeMedia.current;
 
@@ -850,14 +856,14 @@ function Shell() {
     : null;
   // FX-061: the remote tile only ever renders a stream that carries none of this phone's own camera tracks. If the
   // remote slot is empty (or would alias the local capture) it stays unrendered: the page paints the placeholder.
-  const localTrackIds = new Set((nativeVideo?.local?.getTracks?.() ?? []).map((t: any) => t.id));
-  const remoteStream = nativeVideo?.remote && !(nativeVideo.remote.getTracks?.() ?? []).some((t: any) => localTrackIds.has(t.id)) && (!nativeVideo.local || nativeVideo.remote.toURL() !== nativeVideo.local.toURL()) ? nativeVideo.remote : null;
+  // PJSIP video: booleans only (pixels never cross the bridge); the views below render the engine's frames.
+  const remoteStream = nativeVideo?.remote ? true : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? null : remoteStream;
   // Fill edge to edge like FaceTime/Telegram. Only a known landscape source (wider than tall) on the big tile falls
   // back to aspect-fit so a rotated/landscape caller is not over-cropped; unknown dimensions default to cover.
   const bigFit = (kind: 'local' | 'remote'): 'cover' | 'contain' => {
-    const s = (streamFor(kind)?.getVideoTracks?.()[0] as any)?.getSettings?.() ?? {};
-    return typeof s.width === 'number' && typeof s.height === 'number' && s.width > s.height * 1.1 ? 'contain' : 'cover';
+    void streamFor(kind);
+    return 'cover';
   };
 
   return (
@@ -866,6 +872,12 @@ function Shell() {
       setWindowFrame({ x: 0, y: 0, width, height });
     }}>
       <StatusBar style={theme === 'light' ? 'dark' : 'light'} animated />
+      {visibleNativeVideo && RemoteVideoView && bigTile && nativeBigLayout?.kind === 'remote' && (
+        <View pointerEvents="none" style={[styles.nativeVideoLayer, bigTile, { position: 'absolute' }]}><RemoteVideoView style={StyleSheet.absoluteFill} /></View>
+      )}
+      {visibleNativeVideo && LocalVideoView && (pipTile || (bigTile && nativeBigLayout?.kind === 'local')) && (
+        <View pointerEvents="none" style={[styles.nativeVideoLayer, (nativeBigLayout?.kind === 'local' ? bigTile : pipTile) as any, { position: 'absolute', overflow: 'hidden', borderRadius: nativeBigLayout?.kind === 'local' ? 0 : 12 }]}><LocalVideoView style={StyleSheet.absoluteFill} /></View>
+      )}
       <View
         style={[
           styles.root,

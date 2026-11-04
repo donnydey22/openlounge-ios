@@ -4,17 +4,17 @@ import VideoToolbox
 
 /// Camera capture, opened only after CallKit didActivate.
 public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
-  private var session: AVCaptureSession?
+  public private(set) var session: AVCaptureSession?
   private let q = DispatchQueue(label: "ol.video.capture", qos: .userInteractive)
   public private(set) var encoder: OLSimulcastEncoder?
 
-  public func start(engine: PJSIPEngine = .shared) throws {
+  public func start(engine: PJSIPEngine = .shared, position: AVCaptureDevice.Position = .front, forceH264: Bool = false) throws {
     guard engine.audioRunning else { throw OLVideoError.notActivated } // didActivate gate
-    let enc = try OLSimulcastEncoder(); encoder = enc
+    let enc = try OLSimulcastEncoder(forceH264: forceH264); encoder = enc
     // Video spec v2 send path: each layer's Annex-B AU -> engine RTP/SRTP on the "video" PlainTransport (own SSRC per layer)
     enc.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
     let s = AVCaptureSession(); s.sessionPreset = .hd1920x1080
-    if let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front), let input = try? AVCaptureDeviceInput(device: cam), s.canAddInput(input) { s.addInput(input) }
+    if let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position), let input = try? AVCaptureDeviceInput(device: cam), s.canAddInput(input) { s.addInput(input) }
     let out = AVCaptureVideoDataOutput(); out.alwaysDiscardsLateVideoFrames = true; out.setSampleBufferDelegate(self, queue: q)
     if s.canAddOutput(out) { s.addOutput(out) }
     session = s; q.async { s.startRunning() }

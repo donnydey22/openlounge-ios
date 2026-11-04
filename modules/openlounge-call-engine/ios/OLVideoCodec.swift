@@ -40,8 +40,9 @@ public final class OLSimulcastEncoder {
   public var onAnnexB: ((_ layer: Int, _ au: Data, _ key: Bool, _ ts90k: UInt32) -> Void)?
 
   /// `layers` override is for CI only (the simulator encodes in software; 3 layers up to 1080p starve the runner).
-  public init(layers override: [OLVideoLayer]? = nil) throws {
-    codec = OLVideoSpecV2.hardwareAV1Available() ? kCMVideoCodecType_AV1 : kCMVideoCodecType_H264
+  public init(layers override: [OLVideoLayer]? = nil, forceH264: Bool = false) throws {
+    // forceH264: calls with a browser peer (WASM leg decodes H.264 only)
+    codec = !forceH264 && OLVideoSpecV2.hardwareAV1Available() ? kCMVideoCodecType_AV1 : kCMVideoCodecType_H264
     let spec = OLVideoSpecV2.requireHW
     for (i, l) in (override ?? OLVideoSpecV2.layers).enumerated() {
       var s: VTCompressionSession?
@@ -112,6 +113,8 @@ public final class OLVideoDecoder {
   private var fd: CMVideoFormatDescription?; private var session: VTDecompressionSession?; private var sps: Data?, pps: Data?
   private let lock = NSLock()
   public private(set) var decoded = 0, errors = 0, nonBlack = 0, firstAt: Date?, width = 0, height = 0
+  /// Decoded frame for on-screen rendering (decoder thread).
+  public var onFrame: ((CVPixelBuffer) -> Void)?
   public init() {}
   static func nals(_ d: Data) -> [Data] { var out: [Data] = []; let b = [UInt8](d); var starts: [(Int, Int)] = []; var i = 0
     while i + 3 <= b.count { if b[i] == 0, b[i + 1] == 0, b[i + 2] == 1 { starts.append((i, 3)); i += 3 } else if i + 4 <= b.count, b[i] == 0, b[i + 1] == 0, b[i + 2] == 0, b[i + 3] == 1 { starts.append((i, 4)); i += 4 } else { i += 1 } }
@@ -134,6 +137,7 @@ public final class OLVideoDecoder {
       self.decoded += 1; if self.firstAt == nil { self.firstAt = Date() }
       self.width = CVPixelBufferGetWidth(img); self.height = CVPixelBufferGetHeight(img)
       if self.decoded % 10 == 1, Self.meanLuma(img) > 16 { self.nonBlack += 1 }
+      self.onFrame?(img)
     }
     if st != noErr { lock.lock(); errors += 1; lock.unlock() }
   }
