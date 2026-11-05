@@ -174,6 +174,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       self, selector: #selector(onMediaServicesLost(_:)),
       name: AVAudioSession.mediaServicesWereLostNotification, object: nil) // Telegram ManagedAudioSession.swift:429
     prepareHeadsetSession()
+    NativeCallMedia.shared.onIsCaller = { [weak self] id in self?.call(id).map { !$0.incoming } ?? false }
     NativeCallMedia.shared.onVideo = { [weak self] id, local, remote in
       self?.emit(["type": "video", "callId": id, "local": local, "remote": remote])
     }
@@ -542,6 +543,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   /// Server push on our own socket (server/calls/service.ts: call:incoming :389, call:state broadcast).
   private func onSignal(_ ev: String, _ d: [String: Any]) {
+    if ev == "call:p2p" { NativeCallMedia.shared.onP2pSignal(d); return } // phone-to-phone leg details (media only)
     guard let info = d["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else { return }
     let phase = (info["phase"] as? String) ?? ""
     switch ev {

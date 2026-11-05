@@ -21,14 +21,24 @@ static unsigned st_pli_rx, st_pli_tx, st_tx_drop; static volatile unsigned keyre
 static void send_pli(pj_uint32_t media);
 static unsigned st_rx_pkt, st_rx_au, st_rx_key, st_rx_gap, st_tx_pkt, st_tx_au[3], st_tx_key[3];
 static pj_sockaddr vrem;
+/* Phone-to-phone route (ol_p2p.c): tgcalls 38dcea1 v2 runs video on the same RTP transport as audio
+   (InstanceV2Impl.cpp:154/335 audio, :460/:760 video SetRtpTransport(rtpTransport), one transport from :1135) with one
+   outgoing H.264 stream (:458, :479), no simulcast. So: top layer only, PT 102, same ICE+SRTP as the P2P audio.
+   mode 1 = trying (top layer sent on both routes; P2P rx counted, not shown), 2 = live (P2P only; SFU send stopped). */
+static int (*p2p_rtp)(const void *, int), (*p2p_rtcp)(const void *, int); static volatile int p2pmode;
+static unsigned st_p2p_rx, st_p2p_tx; static pj_timestamp p2p_last_rx;
 
 static int b64key(const char *b64, char *out30) { int n = 30; pj_str_t s = pj_str((char *)b64);
   return pj_base64_decode(&s, (pj_uint8_t *)out30, &n) == PJ_SUCCESS && n == 30 ? 0 : -1; }
 static void au_put(const pj_uint8_t *p, int l, int sc) { if (aulen + l + 4 > OL_AU_MAX) { auloss = 1; return; }
   if (sc) { au[aulen++] = 0; au[aulen++] = 0; au[aulen++] = 0; au[aulen++] = 1; if ((p[0] & 0x1f) == 5) auKey = 1; }
   memcpy(au + aulen, p, l); aulen += l; }
+static void rx_rtp(pj_uint8_t *pkt, int len);
 static void on_rtp(pjmedia_tp_cb_param *prm) {
-  pj_uint8_t *pkt = (pj_uint8_t *)prm->pkt; int len = (int)prm->size;
+  if (p2pmode == 2) { pj_timestamp now; pj_get_timestamp(&now); /* live on P2P: SFU video only if P2P went quiet > 1 s */
+    if (p2p_last_rx.u64 && pj_elapsed_msec(&p2p_last_rx, &now) < 1000) return; }
+  rx_rtp((pj_uint8_t *)prm->pkt, (int)prm->size); }
+static void rx_rtp(pj_uint8_t *pkt, int len) {
   if (len < 12 || (pkt[1] & 0x7f) >= 72 && (pkt[1] & 0x7f) <= 76) return; /* rtcp-mux */
   int hl = 12 + 4 * (pkt[0] & 0x0f); if (pkt[0] & 0x10) { if (len < hl + 4) return; hl += 4 + 4 * (pkt[hl + 2] << 8 | pkt[hl + 3]); }
   if (pkt[0] & 0x20) len -= pkt[len - 1]; if (hl >= len) return;
@@ -56,6 +66,7 @@ static void send_pli(pj_uint32_t media) {
   if (last_pli.u64 && pj_elapsed_msec(&last_pli, &now) < 300) return; last_pli = now;
   pj_uint8_t b[12] = { 0x81, 206, 0, 2 }; unsigned s = vssrc[0];
   b[4] = s >> 24; b[5] = s >> 16; b[6] = s >> 8; b[7] = (pj_uint8_t)s; b[8] = media >> 24; b[9] = media >> 16; b[10] = media >> 8; b[11] = (pj_uint8_t)media;
+  if (p2pmode == 2 && p2p_rtcp) { if (p2p_rtcp(b, sizeof b) == 0) st_pli_tx++; return; }
   if (vsrtp && pjmedia_transport_send_rtcp(vsrtp, b, sizeof b) == PJ_SUCCESS) st_pli_tx++; }
 /* PLI (PSFB fmt 1) / FIR (PSFB fmt 4) from mediasoup (consumer join, layer switch, loss) -> force an IDR on that layer. */
 static void on_rtcp(void *u, void *p, pj_ssize_t n) { (void)u; const pj_uint8_t *b = (const pj_uint8_t *)p; int o = 0;
@@ -107,6 +118,8 @@ static int vpkt(int layer, pj_uint32_t ts, int marker, const pj_uint8_t *pl, int
   o[0] = 0x80; o[1] = (pj_uint8_t)((marker ? 0x80 : 0) | vpt); o[2] = vseq[layer] >> 8; o[3] = (pj_uint8_t)vseq[layer]; o[4] = ts >> 24; o[5] = ts >> 16; o[6] = ts >> 8; o[7] = (pj_uint8_t)ts;
   o[8] = s >> 24; o[9] = s >> 16; o[10] = s >> 8; o[11] = (pj_uint8_t)s;
   memcpy(o + 12, pre, prel); memcpy(o + 12 + prel, pl, pll); vseq[layer]++; st_tx_pkt++;
+  if (p2pmode && p2p_rtp && layer == (int)vnl - 1 && p2p_rtp(o, 12 + prel + pll) == 0) st_p2p_tx++;
+  if (p2pmode == 2) return 0; /* server video route dropped */
   /* Non-blocking UDP: a keyframe burst can fill the socket buffer (EAGAIN/ENOBUFS). Retry briefly instead of dropping the rest of the AU. */
   for (int t = 0; t < 50; t++) { pj_status_t st = pjmedia_transport_send_rtp(vsrtp, o, 12 + prel + pll); if (st == PJ_SUCCESS) return 0; pj_thread_sleep(1); }
   st_tx_drop++; return 0;
@@ -147,3 +160,17 @@ void ol_sfu_video_set_keyframe_cb(ol_video_keyframe_cb cb, void *user) { OLV_REG
 void ol_sfu_video_fb_stats(unsigned *pli_rx, unsigned *pli_tx, unsigned *tx_drop) { *pli_rx = st_pli_rx; *pli_tx = st_pli_tx; *tx_drop = st_tx_drop; }
 /* Polling alternative to the callback: layers the SFU asked to refresh since the last call (bitmask). */
 unsigned ol_sfu_video_take_keyreq(void) { return __atomic_exchange_n(&keyreq, 0u, __ATOMIC_SEQ_CST); }
+
+/* ---- phone-to-phone route hooks (called by ol_p2p.c) ---- */
+void ol_sfu_video_p2p_route(int (*rtp)(const void *, int), int (*rtcp)(const void *, int)) {
+  p2pmode = 0; p2p_rtp = rtp; p2p_rtcp = rtcp; st_p2p_rx = st_p2p_tx = 0; p2p_last_rx.u64 = 0; if (rtp) p2pmode = 1; }
+/* PT 102 packets demuxed off the P2P audio transport (already SRTP-decrypted). */
+void ol_sfu_video_p2p_rx(void *pkt, int len) { OLV_REG(); if (!vmx) return;
+  pj_mutex_lock(vmx); st_p2p_rx++; pj_get_timestamp(&p2p_last_rx); pj_mutex_unlock(vmx);
+  if (p2pmode == 2) rx_rtp((pj_uint8_t *)pkt, len); }
+void ol_sfu_video_p2p_rtcp(void *pkt, int len) { if (vnl) on_rtcp(NULL, pkt, len); }
+/* 1 = switch video onto P2P (caller checks both directions first); 0 = back to the server route. */
+int ol_sfu_video_p2p_live(int on) { OLV_REG(); if (!p2p_rtp) return -1;
+  if (vmx) pj_mutex_lock(vmx); p2pmode = on ? 2 : 1; needKey = 1; last_pli.u64 = 0; if (vmx) pj_mutex_unlock(vmx);
+  keyreq |= vnl ? 1u << (vnl - 1) : 0; /* fresh IDR on the new route */ return 0; }
+void ol_sfu_video_p2p_stats(unsigned *rx, unsigned *tx) { *rx = st_p2p_rx; *tx = st_p2p_tx; }

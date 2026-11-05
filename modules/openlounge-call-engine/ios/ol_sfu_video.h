@@ -14,6 +14,12 @@ typedef void (*ol_video_keyframe_cb)(void *user, int layer);
 void ol_sfu_video_set_keyframe_cb(ol_video_keyframe_cb cb, void *user);
 unsigned ol_sfu_video_take_keyreq(void);
 void ol_sfu_video_fb_stats(unsigned *pli_rx, unsigned *pli_tx, unsigned *tx_drop);
+/* Phone-to-phone route (bundled with the P2P audio transport, tgcalls v2). */
+void ol_sfu_video_p2p_route(int (*rtp)(const void *, int), int (*rtcp)(const void *, int));
+void ol_sfu_video_p2p_rx(void *pkt, int len);
+void ol_sfu_video_p2p_rtcp(void *pkt, int len);
+int ol_sfu_video_p2p_live(int on);
+void ol_sfu_video_p2p_stats(unsigned *rx, unsigned *tx);
 #ifdef __cplusplus
 }
 #endif

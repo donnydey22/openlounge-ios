@@ -66,6 +66,7 @@ public final class NativeCallMedia {
               if rc != 0 { self.leg = nil; done(false, "pjsip audio leg start failed: \(rc)"); return }
               done(true, nil)
               if video { self.startVideo(sig, callId: callId, cameraOn: true) }
+              self.p2pPrepare(sig, callId: callId) // direct leg alongside the server route (server route stays until proven)
             }
           }
         }
@@ -119,10 +120,16 @@ public final class NativeCallMedia {
 
   private func report() { if let id = videoCallId { onVideo?(id, localOn, remoteOn) } }
 
-  public func setMute(_ muted: Bool) { _ = ol_sfu_set_mute(muted ? 1 : 0) }
+  public func setMute(_ muted: Bool) { self.muted = muted; if p2p != .off { _ = ol_p2p_set_mute(muted ? 1 : 0) }; _ = ol_sfu_set_mute(muted ? 1 : 0) }
 
   /// pjsipMedia.ts onNetworkChange (:96-98): same tuple and keys, fresh socket on the new interface.
-  public func networkChanged() { if let l = leg { ol_sfu_stop(); startLeg(l) } }
+  public func networkChanged() {
+    guard let l = leg else { return }
+    if p2p == .live { _ = ol_p2p_activate(0) }
+    if videoP2p { videoP2p = false; _ = ol_p2p_video_live(0) }
+    ol_sfu_stop(); startLeg(l); if muted { _ = ol_sfu_set_mute(1) }
+    if p2p == .trying || p2p == .live { p2pRestart(tellPeer: true) } // regather on network change (tgcalls :635-637)
+  }
 
   /// pjsipMedia.ts closeAll (:92-95) + sfuStop/teardown. Every call end.
   public func closeAll() {
@@ -132,7 +139,126 @@ public final class NativeCallMedia {
     let hadVideo = videoCallId
     videoStarted = false; localOn = false; remoteOn = false; videoCallId = nil
     if let id = hadVideo { onVideo?(id, false, false) }
+    p2pStopAll()
     leg = nil; connecting = nil
     ol_sfu_stop(); PJSIPEngine.shared.teardown()
+  }
+
+  // ---- Phone-to-phone direct leg (ol_p2p.c, same file as Android 44). NO encryption: plain RTP over ICE.
+  // Port of the b81046b/589ba6d controller (Android NativeCallMedia.kt 90670f7/0a1040a) to Swift for b104's native calls.
+  // Connectivity = tgcalls 38dcea1 v2/NativeNetworkingImpl.cpp: :576-606 one allocator host+STUN+TURN, :596-601 relay-only,
+  // :610-626 TURN from config (our coturn, logins from the existing call:turnRefresh), :635-637 regather on network change.
+  // Video bundled on the same transport: InstanceV2Impl.cpp:460/:1135. Any failure -> the server route, which never stops
+  // until the direct leg is proven both ways. Nothing here touches dial/ring/active/end or any UI.
+  private enum P2p { case off, trying, live, failed }
+  private struct P2pCfg { let offerer: Bool; let turn: String; let user: String; let pass: String; let tcp: Bool }
+  private var p2p: P2p = .off
+  private var p2pCfg: P2pCfg?
+  private var pendingOffer: String?
+  private var gen = 0
+  private var muted = false
+  private var lastRx: UInt32 = 0
+  private var lastRxAt = Date()
+  private var p2pCallId = ""
+  private var videoP2p = false
+  private weak var p2pSig: CallSignalClient?
+
+  /// call:p2p from the peer (server forwards verbatim). Called by OLCallManager.onSignal. Main queue.
+  public func onP2pSignal(_ d: [String: Any]) {
+    let callId = (d["callId"] as? String) ?? ""
+    guard let msg = d["msg"] as? [String: Any] else { return }
+    if !p2pCallId.isEmpty && callId != p2pCallId { return }
+    guard let c = p2pCfg else { if let o = msg["sdp"] as? String { pendingOffer = o }; return }
+    if msg["restart"] as? Bool == true { if c.offerer && p2p != .off { backToServer(); p2pRestart(tellPeer: false) }; return }
+    guard let sdp = msg["sdp"] as? String, !sdp.isEmpty else { return }
+    if c.offerer { if p2p == .trying && ol_p2p_remote(sdp) != 0 { p2pFail("answer") }; return }
+    backToServer(); pendingOffer = sdp; p2pBegin(c)
+  }
+
+  /// relay logins the server already mints (call:turnRefresh, server/calls/index.ts:334); prefer UDP over TCP
+  private func p2pPrepare(_ sig: CallSignalClient, callId: String) {
+    p2pSig = sig; p2pCallId = callId
+    let offerer = (onIsCaller?(callId)) ?? false
+    sig.request("call:turnRefresh", ["callId": callId], timeout: 5) { [weak self] r in
+      guard let self, self.p2pCallId == callId, self.leg?.callId == callId else { return }
+      var best: P2pCfg?
+      for s in (r["iceServers"] as? [[String: Any]]) ?? [] {
+        let urls = (s["urls"] as? [String]) ?? ((s["urls"] as? String).map { [$0] } ?? [])
+        for u in urls where u.hasPrefix("turn:") {
+          var rest = String(u.dropFirst(5)); var tcp = false
+          if let q = rest.range(of: "?transport=") { tcp = rest[q.upperBound...] == "tcp"; rest = String(rest[..<q.lowerBound]) }
+          if best == nil || (!tcp && best!.tcp) { best = P2pCfg(offerer: offerer, turn: rest, user: (s["username"] as? String) ?? "", pass: (s["credential"] as? String) ?? "", tcp: tcp) }
+        }
+      }
+      guard let c = best else { NSLog("[OLP2P] no TURN config; staying on the server route"); return }
+      self.p2pCfg = c
+      if !c.offerer && self.pendingOffer == nil { self.p2p = .trying; self.armTimeout(); return }
+      self.p2pBegin(c)
+    }
+  }
+  /// set by OLCallManager: true when this phone placed the call (caller = ICE controlling, sends the offer)
+  public var onIsCaller: ((String) -> Bool)?
+
+  private static let evCb: ol_p2p_cb = { ev, text, _ in
+    let t = text.map { String(cString: $0) } ?? ""
+    DispatchQueue.main.async { NativeCallMedia.shared.p2pEvent(Int(ev), t) }
+  }
+  private func p2pEvent(_ ev: Int, _ text: String) {
+    guard p2p == .trying || p2p == .live else { return }
+    if ev == 1 { sendP2p(["sdp": text, "offer": p2pCfg?.offerer == true]) }
+    else if ev == 3 { p2pFail(text) }
+  }
+  private func sendP2p(_ msg: [String: Any]) {
+    guard !p2pCallId.isEmpty, let sig = p2pSig else { return }
+    sig.request("call:p2p", ["callId": p2pCallId, "msg": msg], timeout: 5) { [weak self] r in if r["ok"] as? Bool != true { self?.p2pFail("send") } }
+  }
+  private func p2pBegin(_ c: P2pCfg) {
+    PJSIPEngine.shared.start()
+    var cfg = ol_p2p_cfg(); cfg.offerer = c.offerer ? 1 : 0; cfg.turn_tcp = c.tcp ? 1 : 0; cfg.relay_only = 0; cfg.test_tone_hz = 0
+    let r: Int32 = c.turn.withCString { a in c.user.withCString { u in c.pass.withCString { p in
+      cfg.stun = a; cfg.turn = a; cfg.turn_user = u; cfg.turn_pass = p   // ol_p2p_begin copies the strings
+      return ol_p2p_begin(&cfg, Self.evCb, nil) } } }
+    if r != 0 { return p2pFail("begin \(r)") }
+    p2p = .trying; if muted { _ = ol_p2p_set_mute(1) }
+    if let o = pendingOffer { pendingOffer = nil; _ = ol_p2p_remote(o) }
+    poll(armTimeout())
+  }
+  @discardableResult private func armTimeout() -> Int {
+    gen += 1; let g = gen
+    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in if let self, g == self.gen, self.p2p == .trying { self.p2pFail("timeout") } }
+    return g
+  }
+  private func poll(_ g: Int) {
+    guard g == gen, p2p == .trying || p2p == .live else { return }
+    var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0
+    _ = ol_p2p_stats(&rx, &lost, &tx)
+    if p2p == .trying && rx >= 10 && tx >= 10 { // connected = RTP flowing both ways on the direct leg
+      _ = ol_p2p_activate(1); p2p = .live; lastRx = rx; lastRxAt = Date(); ol_sfu_stop() // drop only the server audio leg
+    } else if p2p == .live {
+      if rx != lastRx { lastRx = rx; lastRxAt = Date() }
+      else if Date().timeIntervalSince(lastRxAt) > 3 { backToServer(); return p2pRestart(tellPeer: true) }
+      if videoStarted && !videoP2p { var vr: UInt32 = 0, vt: UInt32 = 0; ol_p2p_video_stats(&vr, &vt)
+        if vr >= 10 && vt >= 10 && ol_p2p_video_live(1) == 0 { videoP2p = true } }
+    }
+    DispatchQueue.main.asyncAfter(deadline: .now() + (p2p == .live ? 0.5 : 0.05)) { [weak self] in self?.poll(g) }
+  }
+  private func backToServer() {
+    if videoP2p { videoP2p = false; _ = ol_p2p_video_live(0) }
+    if p2p == .live { _ = ol_p2p_activate(0); if let l = leg { startLeg(l); if muted { _ = ol_sfu_set_mute(1) } } }
+  }
+  private func p2pFail(_ why: String) {
+    guard p2p != .off else { return }
+    NSLog("[OLP2P] direct leg off (%@); server route", why)
+    backToServer(); gen += 1; p2p = .failed; ol_p2p_stop()
+  }
+  private func p2pRestart(tellPeer: Bool) {
+    guard let c = p2pCfg else { return }
+    p2p = .trying
+    if c.offerer { if ol_p2p_restart() != 0 { return p2pFail("restart") }; poll(armTimeout()) }
+    else { ol_p2p_stop(); armTimeout(); if tellPeer { sendP2p(["restart": true]) } }
+  }
+  private func p2pStopAll() {
+    videoP2p = false; gen += 1; p2p = .off; p2pCfg = nil; pendingOffer = nil; p2pCallId = ""; muted = false
+    ol_p2p_stop()
   }
 }
