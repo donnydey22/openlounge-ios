@@ -1,7 +1,7 @@
 // @ts-nocheck -- Node's built-in test runner.
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { BUTTONS, stateFor, statusText, takesOver } from '../src/nativeCallFlow.ts';
+import { BUTTONS, initials, stateFor, statusText, takesOver } from '../src/nativeCallFlow.ts';
 
 test('page call messages map to Telegram PresentationCall states, nothing else', () => {
   assert.equal(stateFor('call:outgoing'), 'waiting');
@@ -26,4 +26,11 @@ test('gate: audio calls with a callId only; video keeps the web screen', () => {
 });
 test('buttons row = CallControllerButtonsNode .active order', () => {
   assert.deepEqual([...BUTTONS], ['camera', 'speaker', 'mute', 'end']);
+});
+
+test('avatar initials match the web initials()', () => {
+  assert.equal(initials('Ada Lovelace'), 'AL');
+  assert.equal(initials('donny'), 'DO');
+  assert.equal(initials('Mary Ann Smith'), 'MS');
+  assert.equal(initials('  '), '?');
 });

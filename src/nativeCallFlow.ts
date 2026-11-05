@@ -5,7 +5,7 @@ export type NativeCallState = 'waiting' | 'connecting' | 'active' | 'terminated'
 
 export function stateFor(type: unknown): NativeCallState | null {
   switch (type) {
-    case 'call:outgoing': return 'waiting';     // .waiting (WhatsApp wording "Calling…")
+    case 'call:outgoing': return 'waiting';     // .waiting (status "Calling…", Open Lounge web wording)
     case 'call:answering': return 'connecting'; // .connecting
     case 'call:connected': return 'active';     // engine .connected -> .active (updateSessionState)
     case 'call:ended': return 'terminated';     // .terminated -> controller dismissed
@@ -25,5 +25,13 @@ export function takesOver(v: { type?: unknown; callId?: unknown; video?: unknown
   return (v.type === 'call:outgoing' || v.type === 'call:answering') && typeof v.callId === 'string' && v.callId.length > 0 && v.video !== true;
 }
 
-/** CallControllerButtonsNode.swift (.active, no video): [enableCamera][soundOutput][mute][end]; camera shown disabled. */
+/** CallControllerButtonsNode.swift (.active) order [enableCamera][soundOutput][mute][end]; like the web, voice calls omit camera. */
 export const BUTTONS = ['camera', 'speaker', 'mute', 'end'] as const;
+
+/** Web src/lib/utils.ts initials(): whole code points; one word -> first two, 2+ words -> first + last initial. */
+export function initials(name: string): string {
+  const words = name.trim().split(/\s+/).filter(Boolean);
+  if (!words.length) return '?';
+  if (words.length === 1) return Array.from(words[0]).slice(0, 2).join('').toUpperCase();
+  return (Array.from(words[0])[0] + Array.from(words[words.length - 1])[0]).toUpperCase();
+}
