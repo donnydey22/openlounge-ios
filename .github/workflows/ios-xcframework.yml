@@ -1,5 +1,5 @@
 name: pjsip-ios
-on: { push: { branches: [pjsip-rebuild] }, workflow_dispatch: {} }
+on: { push: { branches: [pjsip-rebuild, native-call-ui] }, workflow_dispatch: {} }
 concurrency: { group: pjsip-ios, cancel-in-progress: true }
 jobs:
   xcframework:
