@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from 'react';
-import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { Animated, Easing, Image, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { BUTTONS, NativeCallState, initials, statusText } from './nativeCallFlow';
 
 // Native 1:1 audio call screen (outgoing / connecting / active / end).
@@ -13,6 +13,30 @@ const ICON = {
   speaker: require('../assets/call/volume2.png'), phone: require('../assets/call/ear.png'),
   mic: require('../assets/call/mic.png'), micOff: require('../assets/call/mic_off.png'), end: require('../assets/call/phone_off.png'),
 };
+// web calls.module.css .rings/.ring: three white/35 2pt rings, 2.4 s, 0.8 s apart, scale 1 -> 1.9, fading out
+function Ring({ delay }: { delay: number }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const a = Animated.loop(Animated.timing(v, { toValue: 1, duration: 2400, easing: Easing.bezier(0.2, 0.6, 0.35, 1), useNativeDriver: true }));
+    const t = setTimeout(() => a.start(), delay);
+    return () => { clearTimeout(t); a.stop(); };
+  }, [v, delay]);
+  return <Animated.View pointerEvents="none" style={[s.ring, { opacity: v.interpolate({ inputRange: [0, 1], outputRange: [0.8, 0] }), transform: [{ scale: v.interpolate({ inputRange: [0, 1], outputRange: [1, 1.9] }) }] }]} />;
+}
+// web Background(): two slowly drifting colour blobs (peer colour, #6366f1) + the blurred profile photo + shade
+function Blob({ color, start, to, size }: { color: string; start: { left?: number; top?: number; right?: number; bottom?: number }; to: [number, number]; size: number }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const a = Animated.loop(Animated.sequence([
+      Animated.timing(v, { toValue: 1, duration: 14000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      Animated.timing(v, { toValue: 0, duration: 14000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+    ]));
+    a.start(); return () => a.stop();
+  }, [v]);
+  return <Animated.View pointerEvents="none" style={{ position: 'absolute', ...start, width: size, height: size, borderRadius: size / 2, backgroundColor: color, opacity: 0.35,
+    transform: [{ translateX: v.interpolate({ inputRange: [0, 1], outputRange: [0, to[0]] }) }, { translateY: v.interpolate({ inputRange: [0, 1], outputRange: [0, to[1]] }) }] }} />;
+}
+
 export function NativeCallScreen(p: {
   name: string; photo?: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean; bottomInset: number;
   onMute: () => void; onSpeaker: () => void; onEnd: () => void;
@@ -28,6 +52,9 @@ export function NativeCallScreen(p: {
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
   }, [p.state]);
+  const { width, height } = useWindowDimensions();
+  const vmax = Math.max(width, height);
+  const video = !!p.underlay;
   const sec = p.activeAt ? Math.max(0, Math.floor((now - p.activeAt) / 1000)) : 0;
   const btn = {
     speaker: { label: p.speaker ? 'Speaker' : 'Phone', icon: p.speaker ? ICON.speaker : ICON.phone, active: p.speaker, onPress: p.onSpeaker },
@@ -37,14 +64,22 @@ export function NativeCallScreen(p: {
   return (
     <View style={s.root} accessibilityViewIsModal testID="native-call-screen">
       {p.underlay}
+      {!video && (
+        <View style={StyleSheet.absoluteFill} pointerEvents="none">
+          <Blob color="#64748B" size={vmax * 0.7} start={{ left: -vmax * 0.25, top: -vmax * 0.2 }} to={[vmax * 0.18, vmax * 0.14]} />
+          <Blob color="#6366f1" size={vmax * 0.7} start={{ right: -vmax * 0.3, bottom: -vmax * 0.25 }} to={[-vmax * 0.16, -vmax * 0.12]} />
+          {p.photo && photoOk && <Image source={{ uri: p.photo }} blurRadius={36} resizeMode="cover" style={[StyleSheet.absoluteFill, { opacity: 0.55, transform: [{ scale: 1.15 }] }]} />}
+        </View>
+      )}
       <View style={s.shadeTop} /><View style={s.shadeBottom} />
-      <View style={s.top}>
+      <View style={[s.top, video && s.topVideo]}>
+        {!video && <View style={s.rings}>{p.state === 'waiting' && [0, 800, 1600].map((d) => <Ring key={d} delay={d} />)}
         <View style={s.avatar}>
           {/* web Avatar.tsx/AvatarPhoto.tsx: initials stay underneath; the photo fades in once loaded; a broken URL leaves the initials */}
           {!photoOk && <Text style={s.initials}>{initials(p.name)}</Text>}
           {p.photo && !photoErr && <Image source={{ uri: p.photo }} style={[StyleSheet.absoluteFill, { opacity: photoOk ? 1 : 0 }]} resizeMode="cover" fadeDuration={200} onLoad={() => setPhotoOk(true)} onError={() => setPhotoErr(true)} />}
-        </View>
-        <Text style={s.name} numberOfLines={1}>{p.name}</Text>
+        </View></View>}
+        <Text style={[s.name, video && s.nameVideo]} numberOfLines={1}>{p.name}</Text>
         <Text style={s.status} testID="native-call-status">{statusText(p.state, sec)}</Text>
       </View>
       <View style={[s.row, { marginBottom: 40 + p.bottomInset }]}>
@@ -69,7 +104,11 @@ const s = StyleSheet.create({
   shadeTop: { position: 'absolute', top: 0, left: 0, right: 0, height: '40%', backgroundColor: 'rgba(0,0,0,0.15)' },
   shadeBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '35%', backgroundColor: 'rgba(0,0,0,0.3)' },
   top: { alignItems: 'center', paddingHorizontal: 24, marginBottom: 80 },
-  avatar: { width: 112, height: 112, borderRadius: 47, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: '#64748B', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  rings: { width: 112, height: 112, marginBottom: 12, alignItems: 'center', justifyContent: 'center' },
+  ring: { position: 'absolute', width: 112, height: 112, borderRadius: 56, borderWidth: 2, borderColor: 'rgba(255,255,255,0.35)' },
+  topVideo: { position: 'absolute', top: 64, left: 0, right: 0, marginBottom: 0 },
+  nameVideo: { fontSize: 20 },
+  avatar: { width: 112, height: 112, borderRadius: 47, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: '#64748B', alignItems: 'center', justifyContent: 'center' },
   initials: { color: '#fff', fontSize: 30, fontWeight: '500' },
   name: { color: '#fff', fontSize: 28, fontWeight: '600', letterSpacing: -0.3 },
   status: { color: 'rgba(255,255,255,0.8)', fontSize: 15, marginTop: 4, fontVariant: ['tabular-nums'] },
