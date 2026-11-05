@@ -27,6 +27,7 @@ static pj_sockaddr vrem;
    mode 1 = trying (top layer sent on both routes; P2P rx counted, not shown), 2 = live (P2P only; SFU send stopped). */
 static int (*p2p_rtp)(const void *, int), (*p2p_rtcp)(const void *, int); static volatile int p2pmode;
 static unsigned st_p2p_rx, st_p2p_tx; static pj_timestamp p2p_last_rx;
+static volatile int vdirect; /* phone<->phone single path: no SFU socket at all, video only on the direct ICE link */
 
 static int b64key(const char *b64, char *out30) { int n = 30; pj_str_t s = pj_str((char *)b64);
   return pj_base64_decode(&s, (pj_uint8_t *)out30, &n) == PJ_SUCCESS && n == 30 ? 0 : -1; }
@@ -113,13 +114,25 @@ int ol_sfu_video_start(const char *ip, int port, const char *tx_b64, const char 
     pjmedia_transport_send_rtcp(vsrtp, rr, sizeof rr); }
   return 0;
 }
+/* Phone <-> phone: the one path is the direct ICE link (ol_p2p.c). No UDP/SRTP/SFU transport is created. */
+int ol_sfu_video_start_direct(const unsigned *ssrcs, int nlayers, int pt) { OLV_REG();
+  if (nlayers < 1 || nlayers > 3) return -12;
+  ol_sfu_video_stop();
+  vpool = pjsua_pool_create("olsfuv", 4000, 4000); if (!vpool) return -1;
+  pj_mutex_create_simple(vpool, "olv", &vmx); pj_mutex_create_simple(vpool, "olvt", &txmx); last_pli.u64 = 0; keyreq = 0; needKey = 1; st_pli_rx = st_pli_tx = st_tx_drop = 0;
+  au = (pj_uint8_t *)pj_pool_alloc(vpool, OL_AU_MAX);
+  vnl = (unsigned)nlayers; vpt = pt; for (int i = 0; i < nlayers; i++) { vssrc[i] = ssrcs[i]; vseq[i] = (pj_uint16_t)(ssrcs[i] & 0xffff); }
+  st_rx_pkt = st_rx_au = st_rx_key = st_rx_gap = st_tx_pkt = 0; memset(st_tx_au, 0, sizeof st_tx_au); memset(st_tx_key, 0, sizeof st_tx_key);
+  have = 0; aulen = 0; auloss = 0; auKey = 0; rxssrc = 0; vdirect = 1;
+  return 0;
+}
 static int vpkt(int layer, pj_uint32_t ts, int marker, const pj_uint8_t *pl, int pll, const pj_uint8_t *pre, int prel) {
   pj_uint8_t o[1500]; unsigned s = vssrc[layer];
   o[0] = 0x80; o[1] = (pj_uint8_t)((marker ? 0x80 : 0) | vpt); o[2] = vseq[layer] >> 8; o[3] = (pj_uint8_t)vseq[layer]; o[4] = ts >> 24; o[5] = ts >> 16; o[6] = ts >> 8; o[7] = (pj_uint8_t)ts;
   o[8] = s >> 24; o[9] = s >> 16; o[10] = s >> 8; o[11] = (pj_uint8_t)s;
   memcpy(o + 12, pre, prel); memcpy(o + 12 + prel, pl, pll); vseq[layer]++; st_tx_pkt++;
   if (p2pmode && p2p_rtp && layer == (int)vnl - 1 && p2p_rtp(o, 12 + prel + pll) == 0) st_p2p_tx++;
-  if (p2pmode == 2) return 0; /* server video route dropped */
+  if (p2pmode == 2 || vdirect) return 0; /* server video route dropped / never exists on the direct path */
   /* Non-blocking UDP: a keyframe burst can fill the socket buffer (EAGAIN/ENOBUFS). Retry briefly instead of dropping the rest of the AU. */
   for (int t = 0; t < 50; t++) { pj_status_t st = pjmedia_transport_send_rtp(vsrtp, o, 12 + prel + pll); if (st == PJ_SUCCESS) return 0; pj_thread_sleep(1); }
   st_tx_drop++; return 0;
@@ -128,7 +141,7 @@ static int vpkt(int layer, pj_uint32_t ts, int marker, const pj_uint8_t *pl, int
 static int send_locked(int layer, const unsigned char *a, int len, unsigned ts90k, int key);
 /* The 3 layer encoders call back on different threads: libsrtp contexts and per-layer seq are not thread-safe, so serialize. */
 int ol_sfu_video_send(int layer, const unsigned char *a, int len, unsigned ts90k, int key) { OLV_REG();
-  if (!vsrtp || !txmx || layer < 0 || layer >= (int)vnl) return -1;
+  if ((!vsrtp && !vdirect) || !txmx || layer < 0 || layer >= (int)vnl) return -1;
   pj_mutex_lock(txmx); int r = send_locked(layer, a, len, ts90k, key); pj_mutex_unlock(txmx); return r; }
 static int send_locked(int layer, const unsigned char *a, int len, unsigned ts90k, int key) {
   int cnt = 0; const pj_uint8_t *nal[256]; int scpos[257];
@@ -154,7 +167,7 @@ void ol_sfu_video_stop(void) { OLV_REG();
   if (txmx) { pj_mutex_lock(txmx); pj_mutex_unlock(txmx); pj_mutex_destroy(txmx); txmx = NULL; }
   if (vmx) { pj_mutex_destroy(vmx); vmx = NULL; }
   if (vpool) { pj_pool_release(vpool); vpool = NULL; }
-  vnl = 0;
+  vnl = 0; vdirect = 0;
 }
 void ol_sfu_video_set_keyframe_cb(ol_video_keyframe_cb cb, void *user) { OLV_REG(); kfcb = cb; kf_user = user; }
 void ol_sfu_video_fb_stats(unsigned *pli_rx, unsigned *pli_tx, unsigned *tx_drop) { *pli_rx = st_pli_rx; *pli_tx = st_pli_tx; *tx_drop = st_tx_drop; }

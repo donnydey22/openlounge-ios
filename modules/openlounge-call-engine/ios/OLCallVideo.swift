@@ -26,7 +26,8 @@ public final class OLCallVideo {
       guard let au, len > 0 else { return }
       OLCallVideo.shared.decoder?.decode(annexB: Data(bytes: au, count: Int(len)))
     }, nil)
-    return ssrcs.withUnsafeBufferPointer { Int(ol_sfu_video_start(ip, Int32(port), txKey, rxKey, $0.baseAddress, Int32($0.count), Int32(pt))) }
+    // empty ip = phone<->phone: the direct ICE link is the only path (no SFU socket)
+    return ssrcs.withUnsafeBufferPointer { ip.isEmpty ? Int(ol_sfu_video_start_direct($0.baseAddress, Int32($0.count), Int32(pt))) : Int(ol_sfu_video_start(ip, Int32(port), txKey, rxKey, $0.baseAddress, Int32($0.count), Int32(pt))) }
   }
 
   public func camera(on: Bool, facing: String) throws {

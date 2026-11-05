@@ -39,6 +39,8 @@ final class OLCall {
   var photo: String?
   /// b104: this call was placed/accepted by the app's own socket (native signaling)
   var native = false
+  /// the other side's platform from the server's call info (callerPlatform / calleePlatform): ios|android|web
+  var peerPlatform: String?
   var connected = false
   var ended = false
   var expiresAt: Date?
@@ -500,12 +502,15 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         self.endFromRemote(c, reason: reason)
         return
       }
+      if let info = r["call"] as? [String: Any], let p = info["callerPlatform"] as? String { c.peerPlatform = p }
       self.connectMedia(c)
     }
   }
 
   private func connectMedia(_ c: OLCall) {
-    NativeCallMedia.shared.connect(signal, callId: c.callId, video: c.video) { [weak self] ok, err in
+    // one path per call: peer is a phone -> direct only; peer is a browser (or unknown) -> server only
+    let direct = c.peerPlatform == "ios" || c.peerPlatform == "android"
+    NativeCallMedia.shared.connect(signal, callId: c.callId, video: c.video, direct: direct) { [weak self] ok, err in
       guard let self, self.calls[c.uuid] === c, !c.ended else { return }
       if !ok { NSLog("[OLCalls] native media setup failed: %@", err ?? "?"); return }
       self.markConnected(c)
@@ -557,6 +562,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         reportSocketIncoming(m)
       }
       if let c = call(callId) {
+        if let p = info["callerPlatform"] as? String { c.peerPlatform = p }
         if let n = caller["name"] as? String, !n.isEmpty { c.name = String(n.prefix(80)) }
         if let ph = caller["photoUrl"] as? String, ph.hasPrefix("http") { c.photo = ph }
         emit(["type": "incoming", "callId": callId, "name": c.name, "video": c.video])
@@ -564,6 +570,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       signal.ack(callId) // ring delivered → caller sees "Ringing…" (service.ts ack)
     case "call:state":
       guard let c = call(callId) else { return }
+      if c.peerPlatform == nil, let p = info[c.incoming ? "callerPlatform" : "calleePlatform"] as? String { c.peerPlatform = p }
       if phase == "ended" {
         endFromRemote(c, reason: c.incoming && !c.answered ? .unanswered : .remoteEnded)
       } else if phase == "active" {
@@ -581,6 +588,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       signal.request("call:get", ["callId": c.callId]) { [weak self] r in
         guard let self, self.calls[c.uuid] === c else { return }
         let phase = ((r["call"] as? [String: Any])?["phase"] as? String) ?? ""
+        if c.peerPlatform == nil, let p = (r["call"] as? [String: Any])?[c.incoming ? "callerPlatform" : "calleePlatform"] as? String { c.peerPlatform = p }
         if r["ok"] as? Bool != true || phase == "ended" { self.endFromRemote(c, reason: .remoteEnded) }
         else if phase == "active" && !c.incoming && !c.connected { self.connectMedia(c) }
       }
@@ -608,6 +616,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       let peer = ((glare ? info["caller"] : info["callee"]) as? [String: Any]) ?? [:]
       let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video)
       c.native = true
+      c.peerPlatform = (glare ? info["callerPlatform"] : info["calleePlatform"]) as? String
       if let n = peer["name"] as? String, !n.isEmpty { c.name = String(n.prefix(80)) }
       if let ph = peer["photoUrl"] as? String, ph.hasPrefix("http") { c.photo = ph }
       self.calls[c.uuid] = c
