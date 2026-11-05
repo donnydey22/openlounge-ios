@@ -153,8 +153,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       self, selector: #selector(onInterruption(_:)),
       name: AVAudioSession.interruptionNotification, object: nil)
     NotificationCenter.default.addObserver(
-      self, selector: #selector(onMediaServicesReset(_:)),
-      name: AVAudioSession.mediaServicesWereResetNotification, object: nil) // b83 observer, restored
+      self, selector: #selector(onMediaServicesLost(_:)),
+      name: AVAudioSession.mediaServicesWereLostNotification, object: nil) // Telegram ManagedAudioSession.swift:429
     prepareHeadsetSession()
 
     let r = PKPushRegistry(queue: DispatchQueue.main)
@@ -502,29 +502,11 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    // Telegram ManagedAudioSession.swift:1260-1270 callKitActivatedAudioSession: set the flag, notify the holders.
+    // Category/mode were set before activation (CXStart/CXAnswer actions → configureAudio, Telegram setup() :940-984).
     callKitAudioActive = true
-    configureAudio()
-    // Ungranted video calls retain the established WKWebView-media behavior, so their native WebRTC audio unit must
-    // remain off. The explicit native-video caller marker is the sole video exception: its one app-owned mic+camera
-    // connection must be enabled only after CallKit has handed over the videoChat session. Audio-only native calls
-    // remain unchanged.
-    PJSIPEngine.shared.audioSessionDidActivate(audioSession) // PJSIP audio starts only here
-    // outgoing call still waiting for the callee: ring back natively on the CallKit session (survives the session swap
-    // that left WKWebView's <audio>/AudioContext "playing" but silent)
+    PJSIPEngine.shared.audioSessionDidActivate(audioSession) // holder: PJSIP audio starts only here
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
-    // CallKit activating the session (outgoing CXStartCallAction, or answer) interrupts WebKit's AudioContext and
-    // pauses the page's ring <audio>: the web ringback went silent the moment the call was mirrored into CallKit.
-    // Tell JS so it re-runs the page's audio resume (AudioContext + ring element) on the new session.
-    emit(["type": "audio", "reason": "callkit-activate"])
-    // WebKit re-binds its audio units a few hundred ms after CallKit hands over the session; a single kick can land
-    // before that and the ring <audio> / remote voice stays paused (ring "plays briefly then stops", silent audio-only
-    // call). Re-kick twice more — the page side is idempotent.
-    for delay in [0.35, 1.2] {
-      DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
-        guard let self = self, self.hasLiveCall else { return }
-        self.emit(["type": "audio", "reason": "callkit-activate-settle"])
-      }
-    }
   }
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
@@ -735,9 +717,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       if let v = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt { reason = Int(v) }
       let why = AVAudioSession.RouteChangeReason(rawValue: UInt(reason)) ?? .unknown
       guard Self.isDeviceRouteChange(why) else { return }
-      // AirPods in/out, cable in/out: a new situation, so automatic routing takes over again (FaceTime does the same)
-      self.userRoute = nil
-      if self.savedAudio != nil { self.configureAudio() } else { self.prepareHeadsetSession() }
+      // Telegram ManagedAudioSession.swift:403-407: route change only refreshes the current route info
       self.emit(self.routePayload(reason: reason, source: "device"))
     }
   }
@@ -804,10 +784,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private func configureAudio() {
     let s = AVAudioSession.sharedInstance()
     if savedAudio == nil { savedAudio = (s.category, s.mode, s.categoryOptions) }
-    var opts: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
+    // Telegram ManagedAudioSession.swift:957-963 (.voiceCall/.videoCall); speaker via overrideOutputAudioPort (:1062)
+    let opts: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
     let headset = Self.headsetAttached()
-    // never force the loudspeaker while a headset is attached; it falls back to speaker when removed
-    if speaker && !headset { opts.insert(.defaultToSpeaker) }
     let mode: AVAudioSession.Mode = callVideo ? .videoChat : .voiceChat
     // idempotent: every redundant setCategory / override is itself a route change + voice-processing reset
     if s.category != .playAndRecord || s.mode != mode || s.categoryOptions != opts {
@@ -933,24 +912,20 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   @objc private func onInterruption(_ n: Notification) {
+    // Telegram ManagedAudioSession.swift:409-426: act on .began only (updateHolders(interruption: true)); nothing on .ended
     DispatchQueue.main.async {
       guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-            AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
-      if self.wantRingback { self.playRingback() }
-      // GSM call / Siri / alarm over: WebKit leaves the remote <audio> paused and the mic muted. Kick the page so it
-      // resumes playback and recaptures the mic (checkMicAlive) — the call otherwise stays silent both ways.
-      if self.hasLiveCall {
-        PJSIPEngine.shared.reopenSound() // PJSIP unit stops on interruption; reopen in the active CallKit session
-        self.emit(["type": "audio", "reason": "interruption-ended"])
-      }
+            AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+      if self.hasLiveCall { PJSIPEngine.shared.audioSessionDidDeactivate() }
     }
   }
 
-  @objc private func onMediaServicesReset(_ n: Notification) {
-    DispatchQueue.main.async { [weak self] in
+  @objc private func onMediaServicesLost(_ n: Notification) {
+    // Telegram ManagedAudioSession.swift:429-437: mediaServicesWereLost → after 1.0 s setup(type, activateNow: true)
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       guard let self, self.hasLiveCall else { return }
+      self.configureAudio()
       PJSIPEngine.shared.reopenSound()
-      self.emit(["type": "audio", "reason": "media-services-reset"])
     }
   }
 
