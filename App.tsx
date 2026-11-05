@@ -14,6 +14,8 @@ import type { ShouldStartLoadRequest } from 'react-native-webview/lib/WebViewTyp
 import { LaunchOverlay } from './src/LaunchOverlay';
 import { LockScreen } from './src/LockScreen';
 import { IncomingCallCard } from './src/IncomingCallCard';
+import { NativeCallScreen } from './src/NativeCallScreen';
+import { type NativeCallState, stateFor, takesOver } from './src/nativeCallFlow';
 import * as BioLock from './src/biometricLock';
 import { isCallAcceptPath, shouldReportVisible } from './src/lockPolicy';
 import { OfflineScreen } from './src/OfflineScreen';
@@ -220,6 +222,8 @@ function Shell() {
   lockRef.current = lock;
   const prompting = useRef(false);
   const backgroundedAt = useRef(0);
+  // Native call screen (audio 1:1). Fallback = the page's own call screen underneath, exactly as before.
+  const [nativeCall, setNativeCall] = useState<{ callId: string; name: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean } | null>(null);
   const [incomingCard, setIncomingCard] = useState<{ callId: string; name: string; video: boolean } | null>(null);
 
   const unlockForCall = useCallback(() => {
@@ -736,6 +740,15 @@ function Shell() {
             setNativeVideoLayout(null);
           }
           forwardPageCallMessage(msg.value);
+          {
+            const st = stateFor(v?.type);
+            const m = msg.value as { muted?: unknown; speaker?: unknown; video?: unknown };
+            if (takesOver(v ?? {})) setNativeCall((c) => (c && c.callId === v.callId ? { ...c, state: st! } : { callId: v.callId!, name: typeof v.name === 'string' && v.name ? v.name : 'Open Lounge', state: st!, activeAt: 0, muted: false, speaker: false }));
+            else if (st === 'active') setNativeCall((c) => (!c || (v.callId && v.callId !== c.callId) ? c : m.video === true ? null : { ...c, state: 'active', activeAt: c.activeAt || Date.now() }));
+            else if (st === 'terminated') setNativeCall((c) => (!c || (v.callId && v.callId !== c.callId) ? c : null));
+            else if (v?.type === 'call:muted') setNativeCall((c) => (c ? { ...c, muted: m.muted === true } : c));
+            else if (v?.type === 'call:audioRoute' && typeof m.speaker === 'boolean') setNativeCall((c) => (c ? { ...c, speaker: m.speaker === true } : c));
+          }
           if (v?.type === 'call:incoming' && typeof v.callId === 'string' && lockRef.current !== 'unlocked') {
             // Fallback card above LockScreen if CallKit is delayed / refused; CallKit still gets the page message.
             setIncomingCard({ callId: v.callId, name: typeof v.name === 'string' ? v.name : 'Incoming call', video: v.video === true });
@@ -973,6 +986,23 @@ function Shell() {
           failed={lockFailed}
           onRetry={() => promptUnlock(false)}
           onOtherWay={() => promptUnlock(true)}
+        />
+      )}
+      {nativeCall && (
+        <NativeCallScreen
+          name={nativeCall.name}
+          state={nativeCall.state}
+          activeAt={nativeCall.activeAt}
+          muted={nativeCall.muted}
+          speaker={nativeCall.speaker}
+          bottomInset={insets.bottom}
+          onMute={() => inject(nativeEventScript('openlounge:native-call', { type: 'call:mute', muted: !nativeCall.muted }))}
+          onSpeaker={() => {
+            const speaker = !nativeCall.speaker;
+            setNativeCall((c) => (c ? { ...c, speaker } : c));
+            forwardPageCallMessage({ type: 'call:audioRoute', speaker, route: speaker ? 'speaker' : 'earpiece', user: true });
+          }}
+          onEnd={() => inject(nativeEventScript('openlounge:native-call', { type: 'call:hangup' }))}
         />
       )}
       {incomingCard && (
