@@ -467,6 +467,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   // MARK: - CallKit
 
   public func providerDidReset(_ provider: CXProvider) {
+    OLCallDiskLog.shared.mark("callkit", "reset")
     for c in calls.values {
       stopTimers(c)
       if c.answered || !c.incoming { signal.hangup(c.callId); emit(["type": "hangup", "callId": c.callId]) }
@@ -478,6 +479,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+    OLCallDiskLog.shared.mark("callkit", "answer")
     guard let c = calls[action.callUUID], !c.ended else { action.fail(); return }
     c.answered = true
     stopTimers(c)
@@ -509,7 +511,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   private func connectMedia(_ c: OLCall) {
     // one path per call: peer is a phone -> direct only; peer is a browser (or unknown) -> server only
+    // b107: server route for every pairing (one path); the phone hint is only logged
     let direct = c.peerPlatform == "ios" || c.peerPlatform == "android"
+    OLCallDiskLog.shared.mark("connect-media", "peer=\(c.peerPlatform ?? "?")")
     NativeCallMedia.shared.connect(signal, callId: c.callId, video: c.video, direct: direct) { [weak self] ok, err in
       guard let self, self.calls[c.uuid] === c, !c.ended else { return }
       if !ok { NSLog("[OLCalls] native media setup failed: %@", err ?? "?"); return }
@@ -689,6 +693,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+    OLCallDiskLog.shared.mark("callkit", "end")
     guard let c = calls[action.callUUID] else { action.fulfill(); return }
     c.ended = true
     stopTimers(c)
@@ -710,6 +715,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+    OLCallDiskLog.shared.mark("callkit", "mute")
     action.fulfill()
     NativeCallMedia.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
     emit(["type": "muted", "muted": action.isMuted]) // our call screen's Mute state
@@ -720,6 +726,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
+    OLCallDiskLog.shared.mark("callkit", "start")
     guard let c = calls[action.callUUID] else { action.fail(); return }
     callVideo = c.video
     configureAudio()
@@ -728,14 +735,17 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetHeldCallAction) {
+    OLCallDiskLog.shared.mark("callkit", "held")
     action.fail() // holding isn't supported
   }
 
   public func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
+    OLCallDiskLog.shared.mark("callkit", "timedOut")
     action.fulfill()
   }
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    OLCallDiskLog.shared.mark("callkit", "didActivate")
     // Telegram ManagedAudioSession.swift:1260-1270 callKitActivatedAudioSession: set the flag, notify the holders.
     // Category/mode were set before activation (CXStart/CXAnswer actions → configureAudio, Telegram setup() :940-984).
     callKitAudioActive = true
@@ -744,6 +754,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    OLCallDiskLog.shared.mark("callkit", "didDeactivate")
     callKitAudioActive = false
     PJSIPEngine.shared.audioSessionDidDeactivate()
     PJSIPEngine.shared.teardown()
@@ -756,6 +767,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
           let m = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
           let type = m["type"] as? String else { return }
     let callId = (m["callId"] as? String) ?? ""
+    OLCallDiskLog.shared.mark("page", type) // page messages incl. reload-driven re-sync
     switch type {
     case "call:incoming":
       // Page got call:incoming over WS while App Lock is up — report CallKit the same way a VoIP push would.
@@ -946,6 +958,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   @objc private func onRouteChange(_ n: Notification) {
+    OLCallDiskLog.shared.mark("callkit", "audio-route-change")
     DispatchQueue.main.async {
       var reason = 0
       if let v = n.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt { reason = Int(v) }
@@ -1016,6 +1029,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   private func configureAudio() {
+    OLCallDiskLog.shared.mark("callkit", "audio-session-configure")
     let s = AVAudioSession.sharedInstance()
     if savedAudio == nil { savedAudio = (s.category, s.mode, s.categoryOptions) }
     // Telegram ManagedAudioSession.swift:957-963 (.voiceCall/.videoCall); speaker via overrideOutputAudioPort (:1062)
@@ -1146,6 +1160,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   @objc private func onInterruption(_ n: Notification) {
+    OLCallDiskLog.shared.mark("callkit", "audio-interruption")
     // Telegram ManagedAudioSession.swift:409-426: act on .began only (updateHolders(interruption: true)); nothing on .ended
     DispatchQueue.main.async {
       guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -1155,6 +1170,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   @objc private func onMediaServicesLost(_ n: Notification) {
+    OLCallDiskLog.shared.mark("callkit", "audio-media-services-lost")
     // Telegram ManagedAudioSession.swift:429-437: mediaServicesWereLost → after 1.0 s setup(type, activateNow: true)
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       guard let self, self.hasLiveCall else { return }

@@ -36,44 +36,67 @@ public final class NativeCallMedia {
   /// direct = the peer is a phone: ONE path, the direct ICE link (our coturn is only an ICE candidate); no SFU leg and no
   /// switchover. Peer = browser: the SFU only. (Donny, 9:10 AM Nov 5 2026)
   public func connect(_ sig: CallSignalClient, callId: String, video: Bool, direct: Bool = false, done: @escaping (Bool, String?) -> Void) {
-    if direct { return connectDirect(sig, callId: callId, video: video, done: done) }
+    // b107 scope: ONE path, the server route (SFU) for EVERY pairing; the direct hint is logged and ignored.
     if leg?.callId == callId || connecting == callId { done(true, nil); return }
+    OLCallDiskLog.shared.begin(callId)
+    OLCallDiskLog.shared.mark("connect", "video=\(video) directHint=\(direct) -> server route")
+    sig.emit("call:diag", ["callId": callId, "ev": "calllog", "lines": OLCallDiskLog.shared.tail()])
     connecting = callId
     let d: [String: Any] = ["callId": callId]
     let tx = Self.newSrtpKey(), ssrc = Self.rnd(100_000)
     func fail(_ step: String, _ r: [String: Any]) {
       connecting = nil
+      OLCallDiskLog.shared.mark("fail", "\(step): \((r["error"] as? String) ?? "?")")
       NSLog("[OLMedia] %@ failed: %@", step, (r["error"] as? String) ?? "?")
       done(false, "\(step): \((r["error"] as? String) ?? "failed")")
     }
+    // a reply carrying an error is a failure even if ok=true (e.g. plain:produce "need 3 ssrcs")
+    func good(_ r: [String: Any]) -> Bool { r["ok"] as? Bool == true && (r["error"] == nil || r["error"] is NSNull) }
+    OLCallDiskLog.shared.mark("ms:join")
     sig.request("ms:join", d) { [weak self] r in
       guard let self, self.connecting == callId else { return }
-      guard r["ok"] as? Bool == true else { return fail("ms:join", r) }
+      guard good(r) else { return fail("ms:join", r) }
       sig.request("ms:plain:create", d) { c in
         guard self.connecting == callId else { return }
-        guard c["ok"] as? Bool == true, let ip = c["ip"] as? String, let port = (c["port"] as? NSNumber)?.intValue else { return fail("ms:plain:create", c) }
+        guard good(c), let ip = c["ip"] as? String, let port = (c["port"] as? NSNumber)?.intValue else { return fail("ms:plain:create", c) }
         let rx = ((c["srtpParameters"] as? [String: Any])?["keyBase64"] as? String) ?? ""
         sig.request("ms:plain:connect", ["callId": callId, "srtpParameters": ["cryptoSuite": Self.SRTP, "keyBase64": tx]]) { k in
           guard self.connecting == callId else { return }
-          guard k["ok"] as? Bool == true else { return fail("ms:plain:connect", k) }
+          guard good(k) else { return fail("ms:plain:connect", k) }
           sig.request("ms:plain:produce", ["callId": callId, "kind": "audio", "ssrc": ssrc, "payloadType": 111]) { p in
             guard self.connecting == callId else { return }
-            guard p["ok"] as? Bool == true else { return fail("ms:plain:produce", p) }
+            guard good(p) else { return fail("ms:plain:produce", p) }
             sig.request("ms:plain:consume", d) { cons in
               guard self.connecting == callId else { return }
+              guard good(cons) else { return fail("ms:plain:consume", cons) }
               let a = (cons["consumers"] as? [[String: Any]])?.first { $0["kind"] as? String == "audio" }
               let l = Leg(callId: callId, ip: ip, port: port, tx: tx, rx: rx, ssrc: ssrc, rxPt: (a?["payloadType"] as? NSNumber)?.intValue ?? 100)
               self.leg = l
               self.connecting = nil
               let rc = self.startLeg(l)
+              OLCallDiskLog.shared.mark("leg-start", "rc=\(rc)")
               if rc != 0 { self.leg = nil; done(false, "pjsip audio leg start failed: \(rc)"); return }
-              done(true, nil)
-              if video { self.startVideo(sig, callId: callId, cameraOn: true) }
+              // connected means audio: report connected only once RTP flows both ways on the leg
+              self.awaitTwoWay(callId: callId) { ok, why in
+                if !ok { OLCallDiskLog.shared.mark("fail", "two-way: \(why)"); done(false, "two-way: \(why)"); return }
+                done(true, nil)
+                if video { self.startVideo(sig, callId: callId, cameraOn: true) }
+              }
             }
           }
         }
       }
     }
+  }
+
+  /// >=10 RTP packets received AND sent on the leg (ol_sfu_stats) within 15 s, polled on main.
+  private func awaitTwoWay(callId: String, t0: Date = Date(), _ cb: @escaping (Bool, String) -> Void) {
+    guard leg?.callId == callId else { return cb(false, "leg closed") }
+    var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0
+    _ = ol_sfu_stats(&rx, &lost, &tx)
+    if rx >= 10 && tx >= 10 { OLCallDiskLog.shared.mark("two-way", "rx=\(rx) tx=\(tx)"); return cb(true, "") }
+    if Date().timeIntervalSince(t0) > 15 { OLCallDiskLog.shared.mark("two-way-timeout", "rx=\(rx) tx=\(tx)"); return cb(false, "no two-way audio rx=\(rx) tx=\(tx)") }
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in self?.awaitTwoWay(callId: callId, t0: t0, cb) }
   }
 
   @discardableResult private func startLeg(_ l: Leg) -> Int32 {
