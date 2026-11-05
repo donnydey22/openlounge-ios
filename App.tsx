@@ -15,6 +15,7 @@ import { LaunchOverlay } from './src/LaunchOverlay';
 import { LockScreen } from './src/LockScreen';
 import { IncomingCallCard } from './src/IncomingCallCard';
 import { NativeCallScreen } from './src/NativeCallScreen';
+import { avatarUrl } from './src/nativeCallFlow';
 import { type NativeCallState, stateFor, takesOver } from './src/nativeCallFlow';
 import * as BioLock from './src/biometricLock';
 import { isCallAcceptPath, shouldReportVisible } from './src/lockPolicy';
@@ -223,8 +224,9 @@ function Shell() {
   const prompting = useRef(false);
   const backgroundedAt = useRef(0);
   // Native call screen (audio 1:1). Fallback = the page's own call screen underneath, exactly as before.
-  const [nativeCall, setNativeCall] = useState<{ callId: string; name: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean } | null>(null);
+  const [nativeCall, setNativeCall] = useState<{ callId: string; name: string; photo?: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean } | null>(null);
   const incomingNames = useRef(new Map<string, string>());
+  const incomingPhotos = useRef(new Map<string, string>());
   const [incomingCard, setIncomingCard] = useState<{ callId: string; name: string; video: boolean } | null>(null);
 
   const unlockForCall = useCallback(() => {
@@ -745,7 +747,8 @@ function Shell() {
             const st = stateFor(v?.type);
             const m = msg.value as { muted?: unknown; speaker?: unknown; video?: unknown };
             if (v?.type === 'call:incoming' && typeof v.callId === 'string' && typeof v.name === 'string') incomingNames.current.set(v.callId, v.name);
-            if (takesOver(v ?? {})) setNativeCall((c) => (c && c.callId === v.callId ? { ...c, state: st! } : { callId: v.callId!, name: typeof v.name === 'string' && v.name ? v.name : incomingNames.current.get(v.callId!) || 'Open Lounge', state: st!, activeAt: 0, muted: false, speaker: false }));
+            if (v?.type === 'call:incoming' && typeof v.callId === 'string' && typeof (v as { photo?: unknown }).photo === 'string') incomingPhotos.current.set(v.callId, (v as { photo: string }).photo);
+            if (takesOver(v ?? {})) setNativeCall((c) => (c && c.callId === v.callId ? { ...c, state: st! } : { callId: v.callId!, name: typeof v.name === 'string' && v.name ? v.name : incomingNames.current.get(v.callId!) || 'Open Lounge', photo: avatarUrl((v as { photo?: unknown }).photo) || avatarUrl(incomingPhotos.current.get(v.callId!)), state: st!, activeAt: 0, muted: false, speaker: false }));
             else if (st === 'active') setNativeCall((c) => (!c || (v.callId && v.callId !== c.callId) ? c : m.video === true ? null : { ...c, state: 'active', activeAt: c.activeAt || Date.now() }));
             else if (st === 'terminated') setNativeCall((c) => (!c || (v.callId && v.callId !== c.callId) ? c : null));
             else if (v?.type === 'call:muted') setNativeCall((c) => (c ? { ...c, muted: m.muted === true } : c));
@@ -993,6 +996,7 @@ function Shell() {
       {nativeCall && (
         <NativeCallScreen
           name={nativeCall.name}
+          photo={nativeCall.photo}
           state={nativeCall.state}
           activeAt={nativeCall.activeAt}
           muted={nativeCall.muted}

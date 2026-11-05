@@ -35,3 +35,9 @@ export function initials(name: string): string {
   if (words.length === 1) return Array.from(words[0]).slice(0, 2).join('').toUpperCase();
   return (Array.from(words[0])[0] + Array.from(words[words.length - 1])[0]).toUpperCase();
 }
+
+/** Avatar photo URL the call screen may load: same rule as the server's VoIP push (server/calls/index.ts voipPayload:
+ *  callerPhoto only when it starts with http); anything else -> initials fallback, like the web AvatarPhoto. */
+export function avatarUrl(u: unknown): string | undefined {
+  return typeof u === 'string' && /^https?:\/\//.test(u) ? u : undefined;
+}

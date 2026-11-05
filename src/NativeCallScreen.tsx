@@ -6,7 +6,7 @@ import { BUTTONS, NativeCallState, initials, statusText } from './nativeCallFlow
 // Flow + placement: Telegram-iOS submodules/TelegramCallsUI/Sources/CallControllerNode.swift (name + status centred,
 // buttons row at the bottom) and CallControllerButtonsNode.swift (.active row order: camera, soundOutput, mute, end).
 // Look: Open Lounge's own web call screen (olpj src/components/calls/CallOverlay.tsx, calls.module.css, Avatar.tsx):
-// #0b1220 stage, xl initials avatar, 28pt semibold name, 15pt white/80 status, RoundBtn 56pt white/15 (active = white
+// #0b1220 stage, xl squircle avatar (photo over initials; web avatar-shape.ts ~42% continuous corner), 28pt semibold name, 15pt white/80 status, RoundBtn 56pt white/15 (active = white
 // with zinc-900 icon), red-500 End call, 12pt white/85 label under each button, lucide icons. Like the web, a native
 // voice call has no Video button. Actions go back to the page's engine (openlounge:native-call).
 const ICON = {
@@ -14,10 +14,13 @@ const ICON = {
   mic: require('../assets/call/mic.png'), micOff: require('../assets/call/mic_off.png'), end: require('../assets/call/phone_off.png'),
 };
 export function NativeCallScreen(p: {
-  name: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean; bottomInset: number;
+  name: string; photo?: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean; bottomInset: number;
   onMute: () => void; onSpeaker: () => void; onEnd: () => void;
 }) {
   const [now, setNow] = useState(Date.now());
+  const [photoOk, setPhotoOk] = useState(false);
+  const [photoErr, setPhotoErr] = useState(false);
+  useEffect(() => { setPhotoOk(false); setPhotoErr(false); }, [p.photo]);
   useEffect(() => {
     if (p.state !== 'active') return;
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -33,7 +36,11 @@ export function NativeCallScreen(p: {
     <View style={s.root} accessibilityViewIsModal testID="native-call-screen">
       <View style={s.shadeTop} /><View style={s.shadeBottom} />
       <View style={s.top}>
-        <View style={s.avatar}><Text style={s.initials}>{initials(p.name)}</Text></View>
+        <View style={s.avatar}>
+          {/* web Avatar.tsx/AvatarPhoto.tsx: initials stay underneath; the photo fades in once loaded; a broken URL leaves the initials */}
+          {!photoOk && <Text style={s.initials}>{initials(p.name)}</Text>}
+          {p.photo && !photoErr && <Image source={{ uri: p.photo }} style={[StyleSheet.absoluteFill, { opacity: photoOk ? 1 : 0 }]} resizeMode="cover" fadeDuration={200} onLoad={() => setPhotoOk(true)} onError={() => setPhotoErr(true)} />}
+        </View>
         <Text style={s.name} numberOfLines={1}>{p.name}</Text>
         <Text style={s.status} testID="native-call-status">{statusText(p.state, sec)}</Text>
       </View>
@@ -59,7 +66,7 @@ const s = StyleSheet.create({
   shadeTop: { position: 'absolute', top: 0, left: 0, right: 0, height: '40%', backgroundColor: 'rgba(0,0,0,0.15)' },
   shadeBottom: { position: 'absolute', bottom: 0, left: 0, right: 0, height: '35%', backgroundColor: 'rgba(0,0,0,0.3)' },
   top: { alignItems: 'center', paddingHorizontal: 24, marginBottom: 80 },
-  avatar: { width: 112, height: 112, borderRadius: 56, backgroundColor: '#64748B', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
+  avatar: { width: 112, height: 112, borderRadius: 47, borderCurve: 'continuous', overflow: 'hidden', backgroundColor: '#64748B', alignItems: 'center', justifyContent: 'center', marginBottom: 12 },
   initials: { color: '#fff', fontSize: 30, fontWeight: '500' },
   name: { color: '#fff', fontSize: 28, fontWeight: '600', letterSpacing: -0.3 },
   status: { color: 'rgba(255,255,255,0.8)', fontSize: 15, marginTop: 4, fontVariant: ['tabular-nums'] },
