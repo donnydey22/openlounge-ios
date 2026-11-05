@@ -176,6 +176,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       self, selector: #selector(onMediaServicesLost(_:)),
       name: AVAudioSession.mediaServicesWereLostNotification, object: nil) // Telegram ManagedAudioSession.swift:429
     prepareHeadsetSession()
+    OLCallDiskLog.shared.mark("app-launch", "call manager ready")
     NativeCallMedia.shared.onIsCaller = { [weak self] id in self?.call(id).map { !$0.incoming } ?? false }
     NativeCallMedia.shared.onVideo = { [weak self] id, local, remote in
       self?.emit(["type": "video", "callId": id, "local": local, "remote": remote])

@@ -20,6 +20,8 @@ public final class NativeCallMedia {
   private var videoCallId: String?
   private var consumePoll: Timer?
   private var connecting: String?
+  private var verified: String? // callId whose leg passed the two-way check
+  private var waiters: [(Bool, String?) -> Void] = []
   /// (callId, local camera on, remote video arrived) for the app's video views; main queue
   public var onVideo: ((String, Bool, Bool) -> Void)?
   private var localOn = false
@@ -37,7 +39,13 @@ public final class NativeCallMedia {
   /// switchover. Peer = browser: the SFU only. (Donny, 9:10 AM Nov 5 2026)
   public func connect(_ sig: CallSignalClient, callId: String, video: Bool, direct: Bool = false, done: @escaping (Bool, String?) -> Void) {
     // b107 scope: ONE path, the server route (SFU) for EVERY pairing; the direct hint is logged and ignored.
-    if leg?.callId == callId || connecting == callId { done(true, nil); return }
+    if verified == callId { done(true, nil); return }
+    if leg?.callId == callId || connecting == callId { waiters.append(done); return } // resolves with the two-way result
+    verified = nil; waiters = [done]
+    let done: (Bool, String?) -> Void = { [weak self] ok, err in
+      guard let self else { return }
+      if ok { self.verified = callId }
+      let w = self.waiters; self.waiters = []; w.forEach { $0(ok, err) } }
     OLCallDiskLog.shared.begin(callId)
     OLCallDiskLog.shared.mark("connect", "video=\(video) directHint=\(direct) -> server route")
     sig.emit("call:diag", ["callId": callId, "ev": "calllog", "lines": OLCallDiskLog.shared.tail()])
@@ -66,10 +74,14 @@ public final class NativeCallMedia {
           sig.request("ms:plain:produce", ["callId": callId, "kind": "audio", "ssrc": ssrc, "payloadType": 111]) { p in
             guard self.connecting == callId else { return }
             guard good(p) else { return fail("ms:plain:produce", p) }
-            sig.request("ms:plain:consume", d) { cons in
+            // plain:consume returns only producers that already exist; a later one is only announced as
+            // ms:consumer:available, which this client never handled -> the first phone in never consumed the other
+            // side (one-way audio). Poll consume until the peer's audio consumer exists, then start the leg.
+            self.consumeAudio(sig, d, callId: callId, deadline: Date().addingTimeInterval(20)) { cons, err in
               guard self.connecting == callId else { return }
-              guard good(cons) else { return fail("ms:plain:consume", cons) }
-              let a = (cons["consumers"] as? [[String: Any]])?.first { $0["kind"] as? String == "audio" }
+              if let err { return fail("ms:plain:consume", ["error": err]) }
+              let a = cons
+              OLCallDiskLog.shared.mark("consume", "audio pt=\((a?["payloadType"] as? NSNumber)?.intValue ?? -1)")
               let l = Leg(callId: callId, ip: ip, port: port, tx: tx, rx: rx, ssrc: ssrc, rxPt: (a?["payloadType"] as? NSNumber)?.intValue ?? 100)
               self.leg = l
               self.connecting = nil
@@ -86,6 +98,16 @@ public final class NativeCallMedia {
           }
         }
       }
+    }
+  }
+
+  private func consumeAudio(_ sig: CallSignalClient, _ d: [String: Any], callId: String, deadline: Date, _ cb: @escaping ([String: Any]?, String?) -> Void) {
+    sig.request("ms:plain:consume", d) { [weak self] r in
+      guard let self, self.connecting == callId else { return }
+      guard r["ok"] as? Bool == true && (r["error"] == nil || r["error"] is NSNull) else { return cb(nil, (r["error"] as? String) ?? "consume failed") }
+      if let a = (r["consumers"] as? [[String: Any]])?.first(where: { $0["kind"] as? String == "audio" }) { return cb(a, nil) }
+      if Date() > deadline { return cb(nil, "peer audio never produced") }
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { self.consumeAudio(sig, d, callId: callId, deadline: deadline, cb) }
     }
   }
 
@@ -167,6 +189,8 @@ public final class NativeCallMedia {
     videoStarted = false; localOn = false; remoteOn = false; videoCallId = nil
     if let id = hadVideo { onVideo?(id, false, false) }
     p2pStopAll()
+    OLCallDiskLog.shared.mark("close-all")
+    verified = nil; let w = waiters; waiters = []; w.forEach { $0(false, "ended") }
     leg = nil; connecting = nil
     ol_sfu_stop(); PJSIPEngine.shared.teardown()
   }
