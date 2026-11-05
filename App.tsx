@@ -225,6 +225,8 @@ function Shell() {
   const backgroundedAt = useRef(0);
   // Native call screen (audio 1:1). Fallback = the page's own call screen underneath, exactly as before.
   const [nativeCall, setNativeCall] = useState<{ callId: string; name: string; photo?: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean } | null>(null);
+  const nativeCallRef = useRef<typeof nativeCall>(null);
+  nativeCallRef.current = nativeCall;
   const incomingNames = useRef(new Map<string, string>());
   const incomingPhotos = useRef(new Map<string, string>());
   const [incomingCard, setIncomingCard] = useState<{ callId: string; name: string; video: boolean } | null>(null);
@@ -647,6 +649,12 @@ function Shell() {
   const msPending = useRef(new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>());
   const msSeq = useRef(0);
   const nativeMedia = useRef<NativeMediaController | null>(null);
+  // WebContent died mid-call (b95/b98 1006 + ~15 s reload). Like Telegram, where the call outlives its UI and the
+  // UI re-registers with the surviving call on recreation (tg/ref tgand/.../ui/VoIPFragment.java:529-530
+  // VoIPService.getSharedInstance().registerStateListener(this)), native media, CallKit and the native screen are kept;
+  // the reloaded page re-attaches through its existing resume() -> call:current path (no server or page change).
+  const wcReload = useRef<{ callId: string; at: number; n: number; reported: boolean } | null>(null);
+  const wcReloadCount = useRef(0);
   if (!nativeMedia.current) {
     // ms:* relay: app -> page (window.__olNativeMsReq) -> server; the page answers with the msReply bridge message
     nativeMedia.current = createPjsipController((event, data) => new Promise((resolve, reject) => {
@@ -728,6 +736,12 @@ function Shell() {
           return;
         }
         case 'msReply': {
+          const w = wcReload.current;
+          if (w && !w.reported) {
+            // first relayed ms:* answer from the reloaded page = re-attached; log it to Railway via the existing diag path
+            w.reported = true;
+            inject(nativeEventScript('openlounge:native-media', { state: 'media-diag', ev: 'session-gone', callId: w.callId, kinds: 'wc-reload-reattached', ms: Date.now() - w.at, n: w.n }));
+          }
           const p = msPending.current.get(msg.value.id);
           if (!p) return;
           msPending.current.delete(msg.value.id);
@@ -978,7 +992,17 @@ function Shell() {
           onHttpError={(e) => {
             if (e.nativeEvent.statusCode >= 500 && isAppUrl(e.nativeEvent.url)) goOffline();
           }}
-          onContentProcessDidTerminate={() => webRef.current?.reload()}
+          onContentProcessDidTerminate={() => {
+            const c = nativeCallRef.current;
+            wcReloadCount.current += 1;
+            console.warn(`[ol] webcontent-terminated reload n=${wcReloadCount.current} call=${c ? c.callId + ':' + c.state : 'none'}`);
+            if (c) {
+              wcReload.current = { callId: c.callId, at: Date.now(), n: wcReloadCount.current, reported: false };
+              // the dead page will never answer: fail in-flight ms:* relays now instead of after the 10 s timeout
+              for (const [id, p] of msPending.current) { clearTimeout(p.timer); p.reject(new Error('webcontent terminated')); msPending.current.delete(id); }
+            }
+            webRef.current?.reload();
+          }}
           startInLoadingState={false}
         />
       </View>
