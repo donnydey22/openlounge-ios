@@ -995,7 +995,7 @@ function Shell() {
           onContentProcessDidTerminate={() => {
             const c = nativeCallRef.current;
             wcReloadCount.current += 1;
-            console.warn(`[ol] webcontent-terminated reload n=${wcReloadCount.current} call=${c ? c.callId + ':' + c.state : 'none'}`);
+            console.warn(`[ol] webcontent-terminated reload n=${wcReloadCount.current} call=${c ? c.callId + ':' + c.state : 'none'} app=${appState.current} msPending=${msPending.current.size} t=${Date.now()}`); // failure 2: WKWebView gives no reason; record app state + in-flight ms:* relays
             if (c) {
               wcReload.current = { callId: c.callId, at: Date.now(), n: wcReloadCount.current, reported: false };
               // the dead page will never answer: fail in-flight ms:* relays now instead of after the 10 s timeout
