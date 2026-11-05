@@ -9,7 +9,13 @@ import UIKit
 // Native call ringing for Open Lounge (NATIVE_SPEC.md §3).
 //
 //   VoIP push (PushKit) ─▶ report a CallKit incoming call IMMEDIATELY (iOS kills/throttles apps that don't)
-//   CallKit Answer      ─▶ JS opens https://openlounge.app/call/<id>?accept=1 in the WebView
+//   b104: every call is native. The app's own socket (CallSignalClient) carries call:start/ack/accept/decline/hangup
+//   and the ms:* media setup (NativeCallMedia); the WebView is not in any call (bridge.ts call shim).
+//   Telegram: CXAnswer -> answerCall -> callSessionManager.accept (tgios CallKitIntegration.swift:365-373,
+//   PresentationCall.swift:1453-1527 accept at :1495/:1518); CXEnd -> endCall -> hangUp -> drop + context stop
+//   (CallKitIntegration.swift:376-398, PresentationCall.swift:1530-1544); CXStart fulfils once the call is placed
+//   (CallKitIntegration.swift:337-363); mute -> setIsMuted on the engine (:400-409, PresentationCall.swift:1562-1573).
+//   CallKit Answer      ─▶ (b103 and before) JS opened https://openlounge.app/call/<id>?accept=1 in the WebView
 //   CallKit Decline     ─▶ POST /api/calls/<id>/decline natively (works with the WebView not loaded). Build 19: with
 //                          the push's per-call decline token (X-Call-Decline-Token: call+callee scoped, expires with
 //                          the ring, single-use), so Decline works even when the 1-hour session has expired.
@@ -29,6 +35,10 @@ final class OLCall {
   let nativeMedia: Bool
   var answered = false
   var answeredInPage = false
+  var name = "Open Lounge"
+  var photo: String?
+  /// b104: this call was placed/accepted by the app's own socket (native signaling)
+  var native = false
   var connected = false
   var ended = false
   var expiresAt: Date?
@@ -96,6 +106,14 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private static let declineTokenPattern = "^v1\\.[A-Za-z0-9_-]{8,500}\\.[A-Za-z0-9_-]{20,100}$"
 
   private var started = false
+  /// b104: the app's own signaling socket (wss://openlounge.app/ws), signed in with the Keychain access token
+  private(set) lazy var signal: CallSignalClient = {
+    let c = CallSignalClient(baseURL: Self.base)
+    c.tokenProvider = { OLCallAuth.fresh() }
+    c.onEvent = { [weak self] ev, d in self?.onSignal(ev, d) }
+    c.onAuthed = { [weak self] up in if up { self?.rebindLiveCalls() } }
+    return c
+  }()
   private var registry: PKPushRegistry?
   private var provider: CXProvider?
   private let controller = CXCallController()
@@ -156,6 +174,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       self, selector: #selector(onMediaServicesLost(_:)),
       name: AVAudioSession.mediaServicesWereLostNotification, object: nil) // Telegram ManagedAudioSession.swift:429
     prepareHeadsetSession()
+    NativeCallMedia.shared.onVideo = { [weak self] id, local, remote in
+      self?.emit(["type": "video", "callId": id, "local": local, "remote": remote])
+    }
+    signal.connect() // no-op until the page has mirrored a fresh access token (setAuth -> tokenUpdated)
 
     let r = PKPushRegistry(queue: DispatchQueue.main)
     r.delegate = self
@@ -444,9 +466,11 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func providerDidReset(_ provider: CXProvider) {
     for c in calls.values {
       stopTimers(c)
-      if c.answered || !c.incoming { emit(["type": "hangup", "callId": c.callId]) }
+      if c.answered || !c.incoming { signal.hangup(c.callId); emit(["type": "hangup", "callId": c.callId]) }
+      emitState(c, "terminated")
     }
     calls.removeAll()
+    NativeCallMedia.shared.closeAll()
     restoreAudioIfIdle()
   }
 
@@ -456,8 +480,201 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     stopTimers(c)
     callVideo = c.video
     configureAudio()
-    action.fulfill()
-    if !c.answeredInPage { emit(["type": "answer", "callId": c.callId, "video": c.video]) }
+    action.fulfill() // CallKitIntegration.swift:372-373: answerCall(uuid) then fulfill
+    emit(["type": "answer", "callId": c.callId, "video": c.video]) // JS: unlock + drop the lock-screen card only
+    emitState(c, "connecting")
+    acceptNative(c)
+  }
+
+  // MARK: - b104 native signaling + media
+
+  /// PresentationCall.swift:1495/:1518 callSessionManager.accept → here call:accept on our socket, then media.
+  private func acceptNative(_ c: OLCall) {
+    c.native = true
+    signal.accept(c.callId) { [weak self] r in
+      guard let self, self.calls[c.uuid] === c, !c.ended else { return }
+      if r["ok"] as? Bool != true {
+        NSLog("[OLCalls] call:accept refused: %@", (r["reason"] as? String) ?? (r["error"] as? String) ?? "?")
+        let reason: CXCallEndedReason = (r["reason"] as? String) == "answered_elsewhere" ? .answeredElsewhere : .failed
+        self.endFromRemote(c, reason: reason)
+        return
+      }
+      self.connectMedia(c)
+    }
+  }
+
+  private func connectMedia(_ c: OLCall) {
+    NativeCallMedia.shared.connect(signal, callId: c.callId, video: c.video) { [weak self] ok, err in
+      guard let self, self.calls[c.uuid] === c, !c.ended else { return }
+      if !ok { NSLog("[OLCalls] native media setup failed: %@", err ?? "?"); return }
+      self.markConnected(c)
+    }
+  }
+
+  private func markConnected(_ c: OLCall) {
+    guard !c.connected else { return }
+    c.connected = true
+    stopTimers(c)
+    stopRingback()
+    if !c.incoming { provider?.reportOutgoingCall(with: c.uuid, connectedAt: Date()) }
+    emitState(c, "active")
+  }
+
+  /// Remote end / answered elsewhere / refused: end CallKit, media, UI.
+  private func endFromRemote(_ c: OLCall, reason: CXCallEndedReason) {
+    guard !c.ended else { return }
+    c.ended = true
+    stopTimers(c)
+    calls[c.uuid] = nil
+    provider?.reportCall(with: c.uuid, endedAt: Date(), reason: reason)
+    if c.native { NativeCallMedia.shared.closeAll() }
+    pageMuted = nil; pendingPageMutes = []
+    stopRingback()
+    emitState(c, "terminated")
+    restoreAudioIfIdle(force: true)
+  }
+
+  private func emitState(_ c: OLCall, _ state: String) {
+    var a: [String: Any] = ["type": "state", "callId": c.callId, "state": state, "name": c.name, "video": c.video, "incoming": c.incoming]
+    if let p = c.photo { a["photo"] = p }
+    emit(a)
+  }
+
+  /// Server push on our own socket (server/calls/service.ts: call:incoming :389, call:state broadcast).
+  private func onSignal(_ ev: String, _ d: [String: Any]) {
+    guard let info = d["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else { return }
+    let phase = (info["phase"] as? String) ?? ""
+    switch ev {
+    case "call:incoming":
+      let caller = (info["caller"] as? [String: Any]) ?? [:]
+      if call(callId) == nil {
+        var m: [String: Any] = ["type": "call:incoming", "callId": callId, "video": (info["video"] as? Bool) ?? false,
+                                "name": (caller["name"] as? String) ?? ""]
+        if let e = info["expiresAt"] as? NSNumber { m["expiresAt"] = e.doubleValue }
+        if let ph = caller["photoUrl"] as? String { m["photo"] = ph }
+        reportSocketIncoming(m)
+      }
+      if let c = call(callId) {
+        if let n = caller["name"] as? String, !n.isEmpty { c.name = String(n.prefix(80)) }
+        if let ph = caller["photoUrl"] as? String, ph.hasPrefix("http") { c.photo = ph }
+        emit(["type": "incoming", "callId": callId, "name": c.name, "video": c.video])
+      }
+      signal.ack(callId) // ring delivered → caller sees "Ringing…" (service.ts ack)
+    case "call:state":
+      guard let c = call(callId) else { return }
+      if phase == "ended" {
+        endFromRemote(c, reason: c.incoming && !c.answered ? .unanswered : .remoteEnded)
+      } else if phase == "active" {
+        if c.incoming && !c.answered { endRinging(c, reason: .answeredElsewhere) } // another device answered
+        else if !c.incoming && !c.connected { connectMedia(c) } // callee answered our call
+      }
+    default:
+      return
+    }
+  }
+
+  /// Socket came back (signed in again): bind the live call to the new connection, like the web's resume → call:get.
+  private func rebindLiveCalls() {
+    for c in calls.values where c.native && !c.ended {
+      signal.request("call:get", ["callId": c.callId]) { [weak self] r in
+        guard let self, self.calls[c.uuid] === c else { return }
+        let phase = ((r["call"] as? [String: Any])?["phase"] as? String) ?? ""
+        if r["ok"] as? Bool != true || phase == "ended" { self.endFromRemote(c, reason: .remoteEnded) }
+        else if phase == "active" && !c.incoming && !c.connected { self.connectMedia(c) }
+      }
+    }
+  }
+
+  /// The page's Call button (bridge.ts shim) → call:start on our socket; `done` gets the reply for the page.
+  func dial(peerId: String, video: Bool, done: @escaping ([String: Any]) -> Void) {
+    guard Self.valid(peerId) else { done(["ok": false, "error": "Couldn't start the call"]); return }
+    clearStaleCalls()
+    if hasLiveCall { done(["ok": false, "error": "You're already in a call", "reason": "self_busy"]); return }
+    callVideo = video
+    speaker = true
+    webOwnsRingback = false
+    configureAudio() // pre-call prep before the CallKit transaction (as call:outgoing did)
+    signal.start(peerId: peerId, video: video) { [weak self] r in
+      guard let self else { return }
+      guard r["ok"] as? Bool == true, let info = r["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else {
+        done(r) // busy / not allowed / unavailable: the page shows its own message, as before
+        self.restoreAudioIfIdle(force: true)
+        return
+      }
+      done(["ok": false, "error": "", "reason": "native"]) // page stays out of the call (empty error = no toast)
+      let glare = (info["callerId"] as? String) == peerId // both tapped Call: the server handed back their call to us
+      let peer = ((glare ? info["caller"] : info["callee"]) as? [String: Any]) ?? [:]
+      let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video)
+      c.native = true
+      if let n = peer["name"] as? String, !n.isEmpty { c.name = String(n.prefix(80)) }
+      if let ph = peer["photoUrl"] as? String, ph.hasPrefix("http") { c.photo = ph }
+      self.calls[c.uuid] = c
+      self.emitState(c, "waiting")
+      let a = CXStartCallAction(call: c.uuid, handle: CXHandle(type: .generic, value: c.name))
+      a.isVideo = video
+      a.contactIdentifier = c.name
+      self.controller.request(CXTransaction(action: a)) { [weak self] err in
+        DispatchQueue.main.async {
+          guard let self else { return }
+          if let err = err {
+            NSLog("[OLCalls] outgoing CallKit call refused: %@", err.localizedDescription)
+            self.startRingback()
+          } else {
+            let u = CXCallUpdate()
+            u.remoteHandle = CXHandle(type: .generic, value: c.name)
+            u.localizedCallerName = c.name
+            u.hasVideo = video
+            u.supportsHolding = false
+            u.supportsGrouping = false
+            u.supportsUngrouping = false
+            u.supportsDTMF = false
+            self.provider?.reportCall(with: c.uuid, updated: u)
+          }
+          if glare {
+            self.signal.accept(callId) { r in if r["ok"] as? Bool == true { self.connectMedia(c) } else { self.endFromRemote(c, reason: .failed) } }
+          } else if (info["phase"] as? String) == "active" { self.connectMedia(c) }
+        }
+      }
+    }
+  }
+
+  /// Our own call screen's End / Mute buttons → the same CallKit transactions the system UI uses.
+  /// In-app incoming card Accept / Decline: the same CallKit actions as the system UI (CXAnswer / CXEnd below)
+  func answerFromApp(_ callId: String) {
+    guard let c = call(callId) else { return }
+    controller.request(CXTransaction(action: CXAnswerCallAction(call: c.uuid))) { _ in }
+  }
+  func declineFromApp(_ callId: String) {
+    guard let c = call(callId) else { return }
+    controller.request(CXTransaction(action: CXEndCallAction(call: c.uuid))) { _ in }
+  }
+
+  func endFromApp() {
+    guard let c = calls.values.first(where: { !$0.ended }) else { return }
+    controller.request(CXTransaction(action: CXEndCallAction(call: c.uuid))) { [weak self] err in
+      guard err != nil else { return }
+      // CallKit never had this call (its start was refused): end it on the server and locally ourselves
+      DispatchQueue.main.async {
+        guard let self, self.calls[c.uuid] === c else { return }
+        if c.incoming && !c.answered { self.signal.decline(c.callId) } else { self.signal.hangup(c.callId) }
+        self.endFromRemote(c, reason: .remoteEnded)
+      }
+    }
+  }
+
+  func muteFromApp(_ muted: Bool) {
+    guard let c = calls.values.first(where: { !$0.ended && ($0.answered || !$0.incoming) }) else { return }
+    controller.request(CXTransaction(action: CXSetMutedCallAction(call: c.uuid, muted: muted))) { _ in }
+  }
+
+  /// A fresh access token was mirrored from the page: sign the socket in if it isn't.
+  func tokenUpdated() { signal.connect() }
+
+  /// Same incoming report the page path used (CallKit while the app is foreground and got the ring on the socket).
+  private func reportSocketIncoming(_ m: [String: Any]) {
+    guard let d = try? JSONSerialization.data(withJSONObject: m), let s = String(data: d, encoding: .utf8) else { return }
+    handlePage(s)
+    if let id = m["callId"] as? String, let c = call(id) { c.native = true }
   }
 
   public func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
@@ -467,18 +684,24 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     calls[action.callUUID] = nil
     pageMuted = nil; pendingPageMutes = [] // FX-063: no stale mute echo leaks into the next call's start
     if c.incoming && !c.answered {
-      declineOnServer(c.callId, declineToken: c.declineToken)
+      // socket decline when signed in; the per-call decline token over HTTP otherwise (works with no session)
+      if signal.authed { signal.decline(c.callId) } else { declineOnServer(c.callId, declineToken: c.declineToken) }
       c.declineToken = nil // single-use
       emit(["type": "decline", "callId": c.callId])
     } else {
+      signal.hangup(c.callId) // PresentationCall.swift:1536 callSessionManager.drop(.hangUp)
       emit(["type": "hangup", "callId": c.callId])
     }
-    action.fulfill()
+    NativeCallMedia.shared.closeAll() // PresentationCall.swift:1541 ongoingContext.stop
+    emitState(c, "terminated")
+    action.fulfill(withDateEnded: Date()) // CallKitIntegration.swift:392
     restoreAudioIfIdle()
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
     action.fulfill()
+    NativeCallMedia.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
+    emit(["type": "muted", "muted": action.isMuted]) // our call screen's Mute state
     if let i = pendingPageMutes.firstIndex(of: action.isMuted) { pendingPageMutes.removeSubrange(0...i); return } // echo of a page tap
     if pageMuted == action.isMuted { return } // already the page's state
     pageMuted = action.isMuted

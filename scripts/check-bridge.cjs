@@ -83,8 +83,9 @@ t(B.parseBridgeMessage('{"type":"call:explode"}'), null, 'unknown call type');
 t(B.parseBridgeMessage('{"__ol":1,"type":"call:ended"}'), null, 'enveloped call msg ignored');
 t(B.parseBridgeMessage('{"__ol":1,"id":"a1","method":"nativeMedia","value":{"op":"prewarm"}}')?.value?.op, 'prewarm', 'nativeMedia cmd');
 t(B.parseBridgeMessage('{"__ol":1,"method":"nativeMedia","value":{"op":"prewarm"}}'), null, 'nativeMedia needs id');
-t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"id":"nm1","ok":true,"result":{"a":1}}}')?.value?.ok, true, 'msReply parsed');
-t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"ok":true}}'), null, 'msReply needs id');
+t(B.parseBridgeMessage('{"__ol":1,"method":"msReply","value":{"id":"nm1","ok":true,"result":{"a":1}}}'), null, 'msReply relay removed (b104)');
+t(B.parseBridgeMessage('{"__ol":1,"id":"d1","method":"nativeDial","value":{"peerId":"u_1","video":true}}')?.value, { peerId: 'u_1', video: true }, 'nativeDial parsed');
+t(B.parseBridgeMessage('{"__ol":1,"method":"nativeDial","value":{"peerId":"u_1"}}'), null, 'nativeDial needs id');
 {
   const js = B.injectedBeforeContentLoaded('ios', '0.3.1', true);
   t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'\]/.test(js), true, 'native calls flag on');

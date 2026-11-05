@@ -1,4 +1,5 @@
 import ExpoModulesCore
+import OpenLoungeCallEngine
 
 // JS API (src/calls.ts). Everything that touches CallKit/PushKit state runs on the main queue in OLCallManager.
 public final class OpenLoungeCallsModule: Module {
@@ -31,11 +32,29 @@ public final class OpenLoungeCallsModule: Module {
     // Short-lived access token (1 h) so a CallKit "Decline" can POST /api/calls/<id>/decline without the WebView.
     Function("setAuth") { (token: String, expMs: Double) in
       OLCallAuth.save(token: token, expMs: expMs)
+      DispatchQueue.main.async { OLCallManager.shared.tokenUpdated() } // b104: the native call socket signs in with it
     }
+
+    // b104: the page's Call button (bridge.ts call shim) → native call:start; resolves with the reply for the page
+    AsyncFunction("dial") { (peerId: String, video: Bool, promise: Promise) in
+      DispatchQueue.main.async { OLCallManager.shared.dial(peerId: peerId, video: video) { r in promise.resolve(OpenLoungeCallsModule.json(r)) } }
+    }
+    Function("answerCall") { (callId: String) in DispatchQueue.main.async { OLCallManager.shared.answerFromApp(callId) } }
+    Function("declineCall") { (callId: String) in DispatchQueue.main.async { OLCallManager.shared.declineFromApp(callId) } }
+    Function("endActiveCall") { () in DispatchQueue.main.async { OLCallManager.shared.endFromApp() } }
+    Function("setMuted") { (muted: Bool) in DispatchQueue.main.async { OLCallManager.shared.muteFromApp(muted) } }
+    Function("networkChanged") { () in DispatchQueue.main.async { NativeCallMedia.shared.networkChanged(); OLCallManager.shared.signal.kick() } }
 
     Function("endCall") { (callId: String, reason: String) in
       DispatchQueue.main.async { OLCallManager.shared.endExternally(callId: callId, reason: reason) }
     }
+  }
+}
+
+extension OpenLoungeCallsModule {
+  static func json(_ v: [String: Any]) -> String {
+    guard JSONSerialization.isValidJSONObject(v), let d = try? JSONSerialization.data(withJSONObject: v), let s = String(data: d, encoding: .utf8) else { return "{\"ok\":false}" }
+    return s
   }
 }
 

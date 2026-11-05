@@ -57,13 +57,18 @@ import {
   sanitizeAudioRoute,
   startNativeCalls,
   syncCallAuthFromSession,
+  nativeDial,
+  nativeEndCall,
+  nativeSetMuted,
+  nativeNetworkChanged,
+  nativeAnswer,
+  nativeDecline,
 } from './src/calls';
-// WebRTC native media removed (PJSIP rebuild). Video rendering moves to the PJSIP engine (M4).
-type NativeVideoState = { callId: string; local?: any; remote?: any; facing?: string } | null;
-type NativeMediaController = { handle(v: any): Promise<any>; closeAll(): void; onNetworkChange(): void };
+// b104: calls are native end to end (CallSignalClient + NativeCallMedia + CallKit); the page has no part in a call.
+type NativeVideoState = { callId: string; local?: boolean; remote?: boolean } | null;
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
-import { LocalVideoView, RemoteVideoView, createPjsipController, pjsipAvailable } from './src/pjsipMedia';
+import { LocalVideoView, RemoteVideoView, pjsipAvailable } from './src/callViews';
 
 // Keep the native splash (same artwork/colours as Android's launch screen) up until the page has painted and the
 // web app finished its session check (OpenLoungeNative.ready() or the automatic AuthGate check in bridge.ts).
@@ -378,7 +383,6 @@ function Shell() {
 
   // Network comes back → retry immediately (NWPathMonitor via expo-network).
   const netTypeRef = useRef<string | null>(null);
-  const nativeMediaRef = useRef<NativeMediaController | null>(null);
   useEffect(() => {
     let sub: { remove: () => void } = { remove: () => {} };
     try {
@@ -387,7 +391,7 @@ function Shell() {
       if (s.isConnected !== false && s.type) {
         // native call media restarts ICE itself (no page round trip; works mid page-reload too)
         const t = String(s.type).toLowerCase();
-        if (netTypeRef.current && netTypeRef.current !== t) nativeMediaRef.current?.onNetworkChange();
+        if (netTypeRef.current && netTypeRef.current !== t) nativeNetworkChanged();
         netTypeRef.current = t;
         webRef.current?.injectJavaScript(`try{window.__olNetworkChanged&&window.__olNetworkChanged(${JSON.stringify(String(s.type).toLowerCase())})}catch(e){};true;`);
       }
@@ -555,29 +559,45 @@ function Shell() {
         return;
       }
       if (a.type === 'answer') {
-        // native call media: grab the mic + load WebRTC while the page accepts (CallKit activation then just flips audio on)
-        void nativeMedia.current?.handle({ op: 'prewarm' }).catch(() => {});
+        // b104: CallKit's answer action accepted natively (OLCallManager: call:accept + media); the page is not involved
         unlockForCall();
         setIncomingCard(null);
-        const url = acceptUrl(appOrigin(), a.callId);
-        // Page already loaded (push-woken ring): accept in place — no reload, keeps the warm socket/session (~7 s
-        // faster accept→audio). The page falls back to the /call/<id>?accept=1 navigation itself if it can't.
-        if (!coldStart && everLoaded.current) {
-          inject(`(function(){try{if(window.__olAcceptCall&&window.__olAcceptCall(${JSON.stringify(a.callId)}))return;}catch(e){}location.assign(${JSON.stringify(url)});})();true;`);
-        } else navigate(url); // /call/<id>?accept=1: the web layer joins instantly
         return;
       }
       if (a.type === 'decline' || a.type === 'hangup') {
         setIncomingCard(null);
-        // CallKit can end while WKWebView is cold, terminated, or reloading. App-owned capture is independent of
-        // page delivery, so stop it eagerly before the best-effort signaling injection below.
-        nativeMedia.current?.closeAll();
+        setNativeCall((c) => (c && (!a.callId || c.callId === a.callId) ? null : c));
+        setNativeVideo(null);
+        return;
       }
-      if (coldStart || !everLoaded.current) return; // nothing to tell a page that isn't loaded
-      const detail = a.type === 'mute' ? { type: 'call:mute', muted: a.muted } : { type: a.type === 'decline' ? 'call:decline' : 'call:hangup' };
-      inject(nativeEventScript('openlounge:native-call', detail));
+      if (a.type === 'state') {
+        // OLCallManager.emitState: the app's own call screen follows the native call
+        if (a.state === 'terminated') {
+          setNativeCall((c) => (c && c.callId === a.callId ? null : c));
+          setNativeVideo((v) => (v && v.callId === a.callId ? null : v));
+          return;
+        }
+        if (a.incoming) setIncomingCard((ic) => (ic && ic.callId === a.callId ? null : ic));
+        setNativeCall((c) => c && c.callId === a.callId
+          ? { ...c, state: a.state as NativeCallState, activeAt: a.state === 'active' ? c.activeAt || Date.now() : c.activeAt }
+          : { callId: a.callId, name: a.name, photo: avatarUrl(a.photo), state: a.state as NativeCallState, activeAt: a.state === 'active' ? Date.now() : 0, muted: false, speaker: a.video });
+        return;
+      }
+      if (a.type === 'incoming') {
+        // ring on the app's socket while the app is open: CallKit rings; this card is the in-app fallback
+        setIncomingCard({ callId: a.callId, name: a.name, video: a.video });
+        return;
+      }
+      if (a.type === 'muted') {
+        setNativeCall((c) => (c ? { ...c, muted: a.muted } : c));
+        return;
+      }
+      if (a.type === 'video') {
+        setNativeVideo(a.local || a.remote ? { callId: a.callId, local: a.local, remote: a.remote } : null);
+        return;
+      }
     },
-    [navigate, inject, unlockForCall],
+    [unlockForCall],
   );
   useEffect(() => {
     if (!nativeCallsAvailable()) return;
@@ -645,33 +665,6 @@ function Shell() {
     [inject],
   );
 
-  // ---------------- native call media (src/nativeMedia.ts) ----------------
-  const msPending = useRef(new Map<string, { resolve: (v: any) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> }>());
-  const msSeq = useRef(0);
-  const nativeMedia = useRef<NativeMediaController | null>(null);
-  // WebContent died mid-call (b95/b98 1006 + ~15 s reload). Like Telegram, where the call outlives its UI and the
-  // UI re-registers with the surviving call on recreation (tg/ref tgand/.../ui/VoIPFragment.java:529-530
-  // VoIPService.getSharedInstance().registerStateListener(this)), native media, CallKit and the native screen are kept;
-  // the reloaded page re-attaches through its existing resume() -> call:current path (no server or page change).
-  const wcReload = useRef<{ callId: string; at: number; n: number; reported: boolean } | null>(null);
-  const wcReloadCount = useRef(0);
-  if (!nativeMedia.current) {
-    // ms:* relay: app -> page (window.__olNativeMsReq) -> server; the page answers with the msReply bridge message
-    nativeMedia.current = createPjsipController((event, data) => new Promise((resolve, reject) => {
-      const id = `pj${++msSeq.current}`;
-      const timer = setTimeout(() => { msPending.current.delete(id); reject(new Error('ms relay timeout')); }, 10_000);
-      msPending.current.set(id, { resolve, reject, timer });
-      inject(`try{window.__olNativeMsReq(${JSON.stringify(id)},${JSON.stringify(event)},${JSON.stringify(data)})}catch(e){}true;`);
-    }), {
-      // app-owned PJSIP video: native views render under the transparent page tiles; tell the page when remote pixels exist
-      onVideo: (v) => {
-        setNativeVideo(v && (v.local || v.remote) ? { callId: v.callId, local: v.local, remote: v.remote, facing: v.facing } : null);
-        if (v) inject(nativeEventScript('openlounge:native-media', { state: 'remote-video', callId: v.callId, on: v.remote }));
-      },
-    });
-  }
-  nativeMediaRef.current = nativeMedia.current;
-
   const onMessage = useCallback(
     async (e: WebViewMessageEvent) => {
       // Only the Open Lounge origin may use the native bridge (frame URL, strict parser).
@@ -724,38 +717,17 @@ function Shell() {
             reply(msg.id, true, true);
             return;
           }
-          const ctl = nativeMedia.current;
-          if (!ctl) {
-            reply(msg.id, false, null, 'nativeMedia unavailable');
-            return;
-          }
-          ctl.handle(msg.value).then(
-            (r) => reply(msg.id, true, r),
-            (err: unknown) => reply(msg.id, false, null, String((err as Error)?.message ?? err)),
-          );
+          reply(msg.id, false, null, 'native calls'); // b104: media is native; the page relay is gone
           return;
         }
-        case 'msReply': {
-          const w = wcReload.current;
-          if (w && !w.reported) {
-            // first relayed ms:* answer from the reloaded page = re-attached; log it to Railway via the existing diag path
-            w.reported = true;
-            inject(nativeEventScript('openlounge:native-media', { state: 'media-diag', ev: 'session-gone', callId: w.callId, kinds: 'wc-reload-reattached', ms: Date.now() - w.at, n: w.n }));
-          }
-          const p = msPending.current.get(msg.value.id);
-          if (!p) return;
-          msPending.current.delete(msg.value.id);
-          clearTimeout(p.timer);
-          if (msg.value.ok) p.resolve(msg.value.result);
-          else p.reject(new Error(msg.value.error || 'signaling failed'));
+        case 'nativeDial': {
+          // b104: the page's Call button (bridge.ts /ws shim) -> native call:start; the reply goes back to the page
+          void nativeDial(msg.value.peerId, msg.value.video).then((r) => reply(msg.id, true, r));
           return;
         }
         case 'call': {
           const v = msg.value as { type?: string; callId?: string; name?: string; video?: boolean };
-          if (v?.type === 'call:ended') {
-            nativeMedia.current?.closeAll();
-            setNativeVideoLayout(null);
-          }
+          if (v?.type === 'call:ended') setNativeVideoLayout(null);
           forwardPageCallMessage(msg.value);
           {
             const st = stateFor(v?.type);
@@ -994,13 +966,7 @@ function Shell() {
           }}
           onContentProcessDidTerminate={() => {
             const c = nativeCallRef.current;
-            wcReloadCount.current += 1;
-            console.warn(`[ol] webcontent-terminated reload n=${wcReloadCount.current} call=${c ? c.callId + ':' + c.state : 'none'} app=${appState.current} msPending=${msPending.current.size} t=${Date.now()}`); // failure 2: WKWebView gives no reason; record app state + in-flight ms:* relays
-            if (c) {
-              wcReload.current = { callId: c.callId, at: Date.now(), n: wcReloadCount.current, reported: false };
-              // the dead page will never answer: fail in-flight ms:* relays now instead of after the 10 s timeout
-              for (const [id, p] of msPending.current) { clearTimeout(p.timer); p.reject(new Error('webcontent terminated')); msPending.current.delete(id); }
-            }
+            console.warn(`[ol] webcontent-terminated reload call=${c ? c.callId + ':' + c.state : 'none'} app=${appState.current} t=${Date.now()}`); // the native call is unaffected (b104)
             webRef.current?.reload();
           }}
           startInLoadingState={false}
@@ -1026,13 +992,21 @@ function Shell() {
           muted={nativeCall.muted}
           speaker={nativeCall.speaker}
           bottomInset={insets.bottom}
-          onMute={() => inject(nativeEventScript('openlounge:native-call', { type: 'call:mute', muted: !nativeCall.muted }))}
+          onMute={() => nativeSetMuted(!nativeCall.muted)}
           onSpeaker={() => {
             const speaker = !nativeCall.speaker;
             setNativeCall((c) => (c ? { ...c, speaker } : c));
             forwardPageCallMessage({ type: 'call:audioRoute', speaker, route: speaker ? 'speaker' : 'earpiece', user: true });
           }}
-          onEnd={() => inject(nativeEventScript('openlounge:native-call', { type: 'call:hangup' }))}
+          onEnd={() => nativeEndCall()}
+          underlay={nativeVideo && nativeVideo.callId === nativeCall.callId ? (
+            <>
+              {nativeVideo.remote && RemoteVideoView && <RemoteVideoView pointerEvents="none" style={StyleSheet.absoluteFill} />}
+              {nativeVideo.local && LocalVideoView && windowFrame && (
+                <View pointerEvents="none" style={[{ position: 'absolute', overflow: 'hidden', borderRadius: 12 }, nativePipFrame(windowFrame, insets, true)]}><LocalVideoView style={StyleSheet.absoluteFill} /></View>
+              )}
+            </>
+          ) : undefined}
         />
       )}
       {incomingCard && (
@@ -1040,13 +1014,13 @@ function Shell() {
           name={incomingCard.name}
           video={incomingCard.video}
           onAccept={() => {
-            const id = incomingCard.callId;
+            // b104: answer through CallKit (CXAnswerCallAction -> native call:accept + media), like the lock screen
             unlockForCall();
             setIncomingCard(null);
-            navigate(acceptUrl(appOrigin(), id));
+            nativeAnswer(incomingCard.callId);
           }}
           onDecline={() => {
-            inject(nativeEventScript('openlounge:native-call', { type: 'call:decline' }));
+            nativeDecline(incomingCard.callId);
             setIncomingCard(null);
           }}
         />

@@ -10,7 +10,15 @@ export type CallAction =
   | { type: 'hangup'; callId: string; at?: number }
   | { type: 'mute'; muted: boolean; at?: number }
   /** CallKit activated the audio session: page audio (ringback / ringtone) must be resumed */
-  | { type: 'audio'; reason: string; at?: number };
+  | { type: 'audio'; reason: string; at?: number }
+  /** b104 native call state for the app's call screen (OLCallManager.emitState) */
+  | { type: 'state'; callId: string; state: 'waiting' | 'connecting' | 'active' | 'terminated'; name: string; photo?: string; video: boolean; incoming: boolean; at?: number }
+  /** b104 ring on the app's own socket (lock-screen fallback card) */
+  | { type: 'incoming'; callId: string; name: string; video: boolean; at?: number }
+  /** b104 CallKit mute performed */
+  | { type: 'muted'; muted: boolean; at?: number }
+  /** b104 native video views: local camera on / remote frames arrived */
+  | { type: 'video'; callId: string; local: boolean; remote: boolean; at?: number };
 
 type Sub = { remove(): void };
 type NativeCalls = {
@@ -19,6 +27,12 @@ type NativeCalls = {
   handlePageMessage(json: string): void;
   setAuth(token: string, expMs: number): void;
   endCall(callId: string, reason: string): void;
+  dial(peerId: string, video: boolean): Promise<string>;
+  endActiveCall(): void;
+  answerCall(callId: string): void;
+  declineCall(callId: string): void;
+  setMuted(muted: boolean): void;
+  networkChanged(): void;
   addListener(event: 'onCallAction', fn: (e: { json: string }) => void): Sub;
   addListener(event: 'onVoipToken', fn: (e: { token: string }) => void): Sub;
 };
@@ -64,6 +78,14 @@ export function parseCallAction(raw: unknown): CallAction | null {
     // Actual output route (Speaker/Phone button truth). Previously dropped here, so the page never learned the route.
     if (a.type === 'audioRoute') return { type: 'audioRoute', ...sanitizeAudioRoute(a) } as unknown as CallAction;
     if (a.type === 'mute') return typeof a.muted === 'boolean' ? { type: 'mute', muted: a.muted } : null;
+    if (a.type === 'muted') return typeof a.muted === 'boolean' ? { type: 'muted', muted: a.muted } : null;
+    const STATES = ['waiting', 'connecting', 'active', 'terminated'];
+    if (a.type === 'state' && typeof a.callId === 'string' && CALL_ID.test(a.callId) && typeof a.state === 'string' && STATES.includes(a.state))
+      return { type: 'state', callId: a.callId, state: a.state as 'waiting', name: str(a.name, 80) || 'Open Lounge', ...(typeof a.photo === 'string' && /^https?:\/\//.test(a.photo) ? { photo: a.photo.slice(0, 500) } : {}), video: a.video === true, incoming: a.incoming === true };
+    if (a.type === 'incoming' && typeof a.callId === 'string' && CALL_ID.test(a.callId))
+      return { type: 'incoming', callId: a.callId, name: str(a.name, 80) || 'Incoming call', video: a.video === true };
+    if (a.type === 'video' && typeof a.callId === 'string' && CALL_ID.test(a.callId))
+      return { type: 'video', callId: a.callId, local: a.local === true, remote: a.remote === true };
     if ((a.type === 'answer' || a.type === 'decline' || a.type === 'hangup') && typeof a.callId === 'string') {
       if (a.type !== 'hangup' && !CALL_ID.test(a.callId)) return null;
       return a.type === 'answer' ? { type: 'answer', callId: a.callId, video: a.video === true } : { type: a.type, callId: a.callId };
@@ -157,3 +179,19 @@ export function accessFromSession(sessionJson: string | null): { access: string;
   } catch {}
   return null;
 }
+
+/** b104: the page's Call button → native call:start (OLCallManager.dial). Resolves with the reply for the page. */
+export async function nativeDial(peerId: string, video: boolean): Promise<Record<string, unknown>> {
+  try {
+    const n = native();
+    if (!n) return { ok: false, error: "Couldn't start the call" };
+    return JSON.parse(await n.dial(peerId, video)) as Record<string, unknown>;
+  } catch {
+    return { ok: false, error: "Couldn't start the call" };
+  }
+}
+export function nativeEndCall(): void { try { native()?.endActiveCall(); } catch {} }
+export function nativeSetMuted(muted: boolean): void { try { native()?.setMuted(muted); } catch {} }
+export function nativeNetworkChanged(): void { try { native()?.networkChanged(); } catch {} }
+export function nativeAnswer(callId: string): void { try { if (CALL_ID.test(callId)) native()?.answerCall(callId); } catch {} }
+export function nativeDecline(callId: string): void { try { if (CALL_ID.test(callId)) native()?.declineCall(callId); } catch {} }

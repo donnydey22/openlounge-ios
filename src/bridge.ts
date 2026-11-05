@@ -88,8 +88,8 @@ export type BridgeRequest =
   | { __ol: 1; method: 'call'; value: PageCallMessage }
   /** native call media (src/nativeMedia.ts): page → app command, answered via resolveScript */
   | { __ol: 1; id: string; method: 'nativeMedia'; value: Record<string, unknown> }
-  /** page's answer to an app-originated ms:* signaling request (window.__olNativeMsReq) */
-  | { __ol: 1; method: 'msReply'; value: { id: string; ok: boolean; result: unknown; error?: string } };
+  /** b104: page's Call button (call:start, via the bridge.ts /ws shim) → native dial, answered via resolveScript */
+  | { __ol: 1; id: string; method: 'nativeDial'; value: { peerId: string; video: boolean } };
 
 /** Page → native call messages (NATIVE_SPEC.md §5), sent as plain {type:"call:*"} JSON (no __ol envelope). */
 export type PageCallMessage =
@@ -191,13 +191,11 @@ export function parseBridgeMessage(data: string): BridgeRequest | null {
       case 'requestNotificationPermission':
         return { __ol: 1, method: m.method } as BridgeRequest;
     }
-    if (m.method === 'msReply') {
-      const v = m.value as { id?: unknown; ok?: unknown; result?: unknown; error?: unknown } | null;
-      return v && typeof v.id === 'string' && v.id.length <= 64
-        ? { __ol: 1, method: 'msReply', value: { id: v.id, ok: v.ok === true, result: v.result ?? null, error: typeof v.error === 'string' ? v.error.slice(0, 200) : undefined } }
-        : null;
-    }
     if (typeof m.id !== 'string' || m.id.length > 64) return null;
+    if (m.method === 'nativeDial') {
+      const v = m.value as { peerId?: unknown; video?: unknown } | null;
+      return v && typeof v.peerId === 'string' && /^[\w:.@-]{1,128}$/.test(v.peerId) ? { __ol: 1, id: m.id, method: 'nativeDial', value: { peerId: v.peerId, video: v.video === true } } : null;
+    }
     if (m.method === 'nativeMedia') {
       const v = m.value as Record<string, unknown> | null;
       return v && typeof v === 'object' && typeof v.op === 'string' ? { __ol: 1, id: m.id, method: 'nativeMedia', value: v } : null;
@@ -310,7 +308,9 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? (pjsipMedia ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'" : ", 'calls'") : ''}]),
       // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
       nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
-      msReply: function (id, ok, result, error) { post({ __ol: 1, method: 'msReply', value: { id: String(id), ok: !!ok, result: result === undefined ? null : result, error: error ? String(error) : undefined } }); },
+      // b104: the page relay is gone (the app has its own socket); kept as a no-op so the page stays in app-owned
+      // media mode and never opens the WebView microphone/camera
+      msReply: function () {},
       getPlatform: function () { return ${JSON.stringify(platform)}; },
       // the native side sets window.__olExpoPushToken and calls window.__olPushToken(token) when FCM hands one out
       getPushToken: function () { return typeof window.__olExpoPushToken === 'string' ? window.__olExpoPushToken : ''; },
@@ -355,6 +355,53 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
     };
     // build 18+: the page posts call:* messages and CallKit drives openlounge:native-call (engine.ts postNative)
     if (${nativeCalls ? 'true' : 'false'}) { try { window.__olNativeCalls = 1; window.__olNativeRingback = 2; } catch (e) {} }
+    // b104: no WebView in calls. The server rings every socket of the user (service.ts emitUser -> io.to(user:<id>)),
+    // so the page's socket would ring and answer too. The app's own socket (CallSignalClient) owns every call; on the
+    // page's /ws socket this shim drops call:* / ms:* pushes, answers the page's call requests locally, and hands the
+    // page's Call button (call:start) to the app (method nativeDial). Call history (call:history) passes through.
+    if (${nativeCalls ? 'true' : 'false'}) {
+      try {
+        var NWS = window.WebSocket;
+        var CALL_EV = /^(call|ms):/;
+        var reply = function (ws, id, data) {
+          setTimeout(function () {
+            var h = ws.__olOnMsg;
+            if (typeof h === 'function') { try { h.call(ws, { data: JSON.stringify({ t: 'res', id: id, data: data }) }); } catch (e) {} }
+          }, 0);
+        };
+        var OLWS = function (url, protocols) {
+          var ws = protocols === undefined ? new NWS(url) : new NWS(url, protocols);
+          var app = false;
+          try { var u = new URL(String(url), location.href); app = u.host === location.host && u.pathname === '/ws'; } catch (e) {}
+          if (!app) return ws;
+          var send = ws.send.bind(ws);
+          ws.send = function (raw) {
+            var m = null;
+            try { m = JSON.parse(String(raw)); } catch (e) {}
+            if (!m || typeof m.ev !== 'string' || !CALL_EV.test(m.ev) || m.ev === 'call:history') return send(raw);
+            if (m.t !== 'req') return; // call:* / ms:* fire-and-forget from the page: dropped
+            var d = m.data || {};
+            if (m.ev === 'call:start') {
+              call('nativeDial', { peerId: String(d.peerId || ''), video: d.video === true }, 30000).then(
+                function (r) { reply(ws, m.id, r); },
+                function () { reply(ws, m.id, { ok: false, error: "Couldn't start the call" }); });
+            } else if (m.ev === 'call:current') reply(ws, m.id, { ok: true, call: null });
+            else reply(ws, m.id, { ok: false, error: '', reason: 'native' });
+          };
+          Object.defineProperty(ws, 'onmessage', { configurable: true, get: function () { return ws.__olOnMsg || null; }, set: function (fn) { ws.__olOnMsg = fn; } });
+          NWS.prototype.addEventListener.call(ws, 'message', function (e) {
+            var h = ws.__olOnMsg;
+            if (typeof h !== 'function') return;
+            try { var m = JSON.parse(String(e.data)); if (m && m.t === 'evt' && typeof m.ev === 'string' && CALL_EV.test(m.ev)) return; } catch (x) {}
+            h.call(ws, e);
+          });
+          return ws;
+        };
+        OLWS.prototype = NWS.prototype;
+        OLWS.CONNECTING = 0; OLWS.OPEN = 1; OLWS.CLOSING = 2; OLWS.CLOSED = 3;
+        window.WebSocket = OLWS;
+      } catch (e) {}
+    }
     Object.defineProperty(window, 'OpenLoungeNative', { configurable: false, enumerable: true, writable: false, value: Object.freeze(api) });
 
     // Remember AudioContexts so audio can be resumed after an interruption (see audioResumeScript).

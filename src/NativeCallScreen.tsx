@@ -16,6 +16,8 @@ const ICON = {
 export function NativeCallScreen(p: {
   name: string; photo?: string; state: NativeCallState; activeAt: number; muted: boolean; speaker: boolean; bottomInset: number;
   onMute: () => void; onSpeaker: () => void; onEnd: () => void;
+  /** b104 video call: the engine's native video views, under the same name/status/buttons */
+  underlay?: React.ReactNode;
 }) {
   const [now, setNow] = useState(Date.now());
   const [photoOk, setPhotoOk] = useState(false);
@@ -34,6 +36,7 @@ export function NativeCallScreen(p: {
   } as const;
   return (
     <View style={s.root} accessibilityViewIsModal testID="native-call-screen">
+      {p.underlay}
       <View style={s.shadeTop} /><View style={s.shadeBottom} />
       <View style={s.top}>
         <View style={s.avatar}>
