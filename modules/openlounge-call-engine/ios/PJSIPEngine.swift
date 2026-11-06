@@ -63,10 +63,10 @@ public final class PJSIPEngine {
     case 0: eaud = "ok"
     default: eaud = "other"
     }
-    let net = AVAudioSession.sharedInstance().currentRoute.outputs.first.map { $0.portType.rawValue } ?? "none"
-    OLCallDiskLog.shared.mark("open-sound-result", "path=\(path) status=\(status) eaud=\(eaud) model=\(UIDevice.current.model) net=\(net)")
+    // Net/route must go through OLAudioSessionOwner (CI audio-session gate); log path/status/model only here.
+    OLCallDiskLog.shared.mark("open-sound-result", "path=\(path) status=\(status) eaud=\(eaud) model=\(UIDevice.current.model)")
     if status == 0 { audioRunning = true }
-    else { NSLog("[OLSound] openSound FAIL path=%@ status=%d eaud=%@ net=%@", path, status, eaud, net) }
+    else { NSLog("[OLSound] openSound FAIL path=%@ status=%d eaud=%@", path, status, eaud) }
   }
 
   /// b83 onMediaServicesReset / interruption-ended: close and reopen inside the still-active CallKit session.
