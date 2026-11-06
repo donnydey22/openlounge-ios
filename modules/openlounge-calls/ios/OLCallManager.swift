@@ -475,7 +475,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       emitState(c, "terminated")
     }
     calls.removeAll()
-    NativeCallMedia.shared.closeAll()
+    OLRtcCall.shared.close(sendBye: false)
     endCallAudioSession()
   }
 
@@ -513,23 +513,28 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   }
 
   private func connectMedia(_ c: OLCall) {
-    // one path per call: peer is a phone -> direct only; peer is a browser (or unknown) -> server only
-    // b107: server route for every pairing (one path); the phone hint is only logged
-    let direct = c.peerPlatform == "ios" || c.peerPlatform == "android"
-    OLCallDiskLog.shared.mark("connect-media", "peer=\(c.peerPlatform ?? "?")")
-    NativeCallMedia.shared.connect(signal, callId: c.callId, video: c.video, direct: direct) { [weak self] ok, err in
+    // Single media path for every pairing (iOS/Android/web): one RTCPeerConnection per rtc contract v1.
+    // Order: owner lease (CallKit didActivate) → WebRTC audio enabled → PC created with the live audio track.
+    OLCallDiskLog.shared.mark("connect-media", "p2p peer=\(c.peerPlatform ?? "?")")
+    OLCallAudioEngine.shared.startMedia(lease: { cb in
+      OLAudioSessionOwner.shared.whenActive { r in cb(r.mapError { $0 as Error }) }
+    }) { [weak self] r in
       guard let self, self.calls[c.uuid] === c, !c.ended else { return }
-      if !ok { NSLog("[OLCalls] native media setup failed: %@", err ?? "?"); return }
-      // No connected/media-active UI until audio is actually running (activation precedes capture both directions).
-      OLCallAudioEngine.shared.startMedia(lease: { cb in
-        OLAudioSessionOwner.shared.whenActive { r in cb(r.mapError { $0 as Error }) }
-      }) { [weak self] r in
+      if case .failure(let e) = r {
+        OLCallDiskLog.shared.mark("audio-start-failed", e.description) // LOCAL: end, never relay/TURN
+        return self.endFromRemote(c, reason: .failed)
+      }
+      OLRtcCall.shared.onTerminal = { [weak self] f in
+        guard let self, self.calls[c.uuid] === c, !c.ended else { return }
+        OLCallDiskLog.shared.mark("rtc-terminal", f.description)
+        self.endFromRemote(c, reason: { if case .ended = f { return .remoteEnded } else { return .failed } }())
+      }
+      OLRtcCall.shared.start(self.signal, callId: c.callId, isCaller: !c.incoming) { [weak self] r in
         guard let self, self.calls[c.uuid] === c, !c.ended else { return }
         switch r {
-        case .success: self.markConnected(c)
-        case .failure(let e):
-          // LOCAL audio failure: explicit end, never relay/TURN fallback.
-          OLCallDiskLog.shared.mark("audio-start-failed", e.description)
+        case .success: self.markConnected(c) // connected UI only after audio running AND ICE connected
+        case .failure(let f):
+          OLCallDiskLog.shared.mark("rtc-start-failed", f.description)
           self.endFromRemote(c, reason: .failed)
         }
       }
@@ -552,7 +557,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     stopTimers(c)
     calls[c.uuid] = nil
     provider?.reportCall(with: c.uuid, endedAt: Date(), reason: reason)
-    if c.native { NativeCallMedia.shared.closeAll() }
+    if c.native { OLRtcCall.shared.close(sendBye: false) }
     pageMuted = nil; pendingPageMutes = []
     stopRingback()
     emitState(c, "terminated")
@@ -567,7 +572,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   /// Server push on our own socket (server/calls/service.ts: call:incoming :389, call:state broadcast).
   private func onSignal(_ ev: String, _ d: [String: Any]) {
-    if ev == "call:p2p" { NativeCallMedia.shared.onP2pSignal(d); return } // phone-to-phone leg details (media only)
+    if ev == "rtc:signal" { DispatchQueue.main.async { OLRtcCall.shared.onSignal(d) }; return } // rtc contract v1 (media only)
+    if ev == "call:p2p" { return } // legacy PJSIP direct leg: retired
     guard let info = d["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else { return }
     let phase = (info["phase"] as? String) ?? ""
     switch ev {
@@ -722,7 +728,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       signal.hangup(c.callId) // PresentationCall.swift:1536 callSessionManager.drop(.hangUp)
       emit(["type": "hangup", "callId": c.callId])
     }
-    NativeCallMedia.shared.closeAll() // PresentationCall.swift:1541 ongoingContext.stop
+    OLRtcCall.shared.close(sendBye: true)
     emitState(c, "terminated")
     action.fulfill(withDateEnded: Date()) // CallKitIntegration.swift:392
     endCallAudioSession()
@@ -731,7 +737,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
     OLCallDiskLog.shared.mark("callkit", "mute")
     action.fulfill()
-    NativeCallMedia.shared.setMute(action.isMuted); OLCallAudioEngine.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
+    OLCallAudioEngine.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
     emit(["type": "muted", "muted": action.isMuted]) // our call screen's Mute state
     if let i = pendingPageMutes.firstIndex(of: action.isMuted) { pendingPageMutes.removeSubrange(0...i); return } // echo of a page tap
     if pageMuted == action.isMuted { return } // already the page's state

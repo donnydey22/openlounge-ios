@@ -43,7 +43,7 @@ public final class OpenLoungeCallsModule: Module {
     Function("declineCall") { (callId: String) in DispatchQueue.main.async { OLCallManager.shared.declineFromApp(callId) } }
     Function("endActiveCall") { () in DispatchQueue.main.async { OLCallManager.shared.endFromApp() } }
     Function("setMuted") { (muted: Bool) in DispatchQueue.main.async { OLCallManager.shared.muteFromApp(muted) } }
-    Function("networkChanged") { () in DispatchQueue.main.async { NativeCallMedia.shared.networkChanged(); OLCallManager.shared.signal.kick() } }
+    Function("networkChanged") { () in DispatchQueue.main.async { OLCallManager.shared.signal.kick() } }
 
     Function("endCall") { (callId: String, reason: String) in
       DispatchQueue.main.async { OLCallManager.shared.endExternally(callId: callId, reason: reason) }
