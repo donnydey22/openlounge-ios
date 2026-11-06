@@ -13,94 +13,7 @@ concurrency:
   group: signal-identical-ios-${{ github.ref }}
   cancel-in-progress: true
 jobs:
-  # Leftover video helpers (ol_sfu_video / NativeCallMedia sources) still compile against pjproject.
-  # Call audio/PC uses WebRTC only; physical PJSIP removal is a follow-up once video moves onto the PC.
-  pjproject:
-    runs-on: macos-15
-    timeout-minutes: 60
-    steps:
-      - name: Try prior pjproject artifact (same repo)
-        id: prior
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/pj-art"
-          AID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=pjproject-2.17-xcframework&per_page=20" \
-            --jq '[.artifacts[] | select(.expired==false)][0].id // empty' || true)
-          HID=$(gh api "repos/${{ github.repository }}/actions/artifacts?name=pjproject-2.17-headers&per_page=20" \
-            --jq '[.artifacts[] | select(.expired==false)][0].id // empty' || true)
-          if [[ -n "${AID:-}" && -n "${HID:-}" ]]; then
-            echo "Downloading artifact ids xcframework=$AID headers=$HID"
-            gh api "repos/${{ github.repository }}/actions/artifacts/$AID/zip" > "$RUNNER_TEMP/pj-xcf.zip"
-            gh api "repos/${{ github.repository }}/actions/artifacts/$HID/zip" > "$RUNNER_TEMP/pj-hdr.zip"
-            mkdir -p "$RUNNER_TEMP/pj-xcf" "$RUNNER_TEMP/pj-hdr"
-            unzip -q "$RUNNER_TEMP/pj-xcf.zip" -d "$RUNNER_TEMP/pj-xcf"
-            unzip -q "$RUNNER_TEMP/pj-hdr.zip" -d "$RUNNER_TEMP/pj-hdr"
-            # Normalize layout → pjproject.xcframework/ + pjinclude/
-            if [[ -f "$RUNNER_TEMP/pj-xcf/Info.plist" ]]; then
-              mv "$RUNNER_TEMP/pj-xcf" "$RUNNER_TEMP/pj-art/pjproject.xcframework"
-            elif [[ -d "$RUNNER_TEMP/pj-xcf/pjproject.xcframework" ]]; then
-              mv "$RUNNER_TEMP/pj-xcf/pjproject.xcframework" "$RUNNER_TEMP/pj-art/pjproject.xcframework"
-            else
-              echo "Unexpected xcframework artifact layout:"; find "$RUNNER_TEMP/pj-xcf" | head -40; exit 1
-            fi
-            if [[ -d "$RUNNER_TEMP/pj-hdr/pj" || -f "$RUNNER_TEMP/pj-hdr/pjlib.h" ]]; then
-              mv "$RUNNER_TEMP/pj-hdr" "$RUNNER_TEMP/pj-art/pjinclude"
-            elif [[ -d "$RUNNER_TEMP/pj-hdr/pjinclude" ]]; then
-              mv "$RUNNER_TEMP/pj-hdr/pjinclude" "$RUNNER_TEMP/pj-art/pjinclude"
-            else
-              echo "Unexpected headers artifact layout:"; find "$RUNNER_TEMP/pj-hdr" | head -40; exit 1
-            fi
-            test -f "$RUNNER_TEMP/pj-art/pjproject.xcframework/Info.plist"
-            test -d "$RUNNER_TEMP/pj-art/pjinclude/pj"
-            echo "hit=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "No reusable prior artifact; will build."
-            echo "hit=0" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Build pjproject 2.17 (fallback)
-        if: steps.prior.outputs.hit != '1'
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/pj-art"
-          brew install cmake >/dev/null 2>&1 || true
-          git clone -q --depth 1 -b 2.17 https://github.com/pjsip/pjproject.git
-          git clone -q --depth 1 -b v1.5.2 https://github.com/xiph/opus.git
-          for t in device:iphoneos sim:iphonesimulator; do n=${t%%:*}; sdk=${t##*:}
-            cmake -S opus -B ob-$n -DCMAKE_SYSTEM_NAME=iOS -DCMAKE_OSX_SYSROOT=$sdk -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_OSX_DEPLOYMENT_TARGET=15.0 -DCMAKE_INSTALL_PREFIX=$PWD/opus-$n -DOPUS_BUILD_PROGRAMS=OFF -DOPUS_BUILD_TESTING=OFF >/dev/null
-            cmake --build ob-$n --target install -j4 >/dev/null
-          done
-          cd pjproject
-          cat > pjlib/include/pj/config_site.h <<'C'
-          #define PJ_CONFIG_IPHONE 1
-          #define PJMEDIA_HAS_SRTP 1
-          #define PJMEDIA_HAS_VIDEO 1
-          #define PJMEDIA_HAS_VID_TOOLBOX_CODEC 1
-          #include <pj/config_site_sample.h>
-          C
-          build() { make distclean >/dev/null 2>&1 || true
-            env CXXFLAGS="-std=c++17" ARCH="-arch arm64" $1 ./configure-iphone --with-opus=$PWD/../opus-$2 >/dev/null
-            grep -q "PJMEDIA_HAS_OPUS_CODEC 1" pjmedia/include/pjmedia-codec/config_auto.h && echo "opus ON ($2)"
-            make dep >/dev/null 2>&1 && make -j4 >/dev/null
-            mkdir -p ../out/$2; libtool -static -o ../out/$2/libpjproject.a $(find . -path ./pjsip-apps -prune -o -path "*/lib/*.a" -print | grep -v pjsua2 | grep -v libpjsdp) ../opus-$2/lib/libopus.a ; }
-          build "" device
-          build "DEVPATH=$(xcrun --sdk iphonesimulator --show-sdk-platform-path)/Developer MIN_IOS=-mios-simulator-version-min=15.0" sim
-          mkdir -p ../out/include; for d in pjlib pjlib-util pjnath pjmedia pjsip; do cp -R $d/include/* ../out/include/; done
-          cd ..
-          xcodebuild -create-xcframework -library out/device/libpjproject.a -library out/sim/libpjproject.a -output "$RUNNER_TEMP/pj-art/pjproject.xcframework"
-          mv out/include "$RUNNER_TEMP/pj-art/pjinclude"
-      - uses: actions/upload-artifact@v4
-        with:
-          name: signal-pjproject-2.17-xcframework
-          path: ${{ runner.temp }}/pj-art/pjproject.xcframework
-      - uses: actions/upload-artifact@v4
-        with:
-          name: signal-pjproject-2.17-headers
-          path: ${{ runner.temp }}/pj-art/pjinclude
-
   compile:
-    needs: pjproject
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -118,14 +31,8 @@ jobs:
         run: node scripts/check-bridge.cjs
       - name: Typecheck
         run: npx tsc --noEmit
-      - uses: actions/download-artifact@v4
-        with:
-          name: signal-pjproject-2.17-xcframework
-          path: modules/openlounge-call-engine/ios/pjproject.xcframework
-      - uses: actions/download-artifact@v4
-        with:
-          name: signal-pjproject-2.17-headers
-          path: modules/openlounge-call-engine/ios/pjinclude
+      - name: HARD GATE — no PJSIP in calling (RingRTC session model hard cut)
+        run: bash scripts/check-no-pjsip.sh
       - name: Fetch interim BSD WebRTC.xcframework (M152)
         env:
           # Job-level env cannot use runner.*; set cache under RUNNER_TEMP here.
@@ -143,9 +50,8 @@ jobs:
           ruby -e '
             dir = "modules/openlounge-call-engine/ios"
             abort("WebRTC.xcframework missing") unless File.exist?(File.join(dir, "WebRTC.xcframework"))
-            abort("pjproject.xcframework missing") unless File.exist?(File.join(dir, "pjproject.xcframework"))
             # Mirror OpenLoungeCallEngine.podspec vendored_frameworks expression.
-            vf = ["pjproject.xcframework"] + (File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : [])
+            vf = File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : []
             abort("podspec would omit WebRTC") unless vf.include?("WebRTC.xcframework")
             puts "vendored: #{vf.join(" + ")}"
           '
@@ -201,10 +107,9 @@ jobs:
           grep -q 'canImport(WebRTC)' modules/openlounge-call-engine/ios/OLRtcCall.swift
           echo "OK: canImport(WebRTC) path present; Mac build linked WebRTC"
 
-  # Ad-hoc IPA for device matrix (Signal-identical: WebRTC + pjproject video leftovers).
+  # Ad-hoc IPA for device matrix (RingRTC session model: WebRTC audio+video, no PJSIP).
   # Do NOT host on /download until Donny says build. Artifact is passphrase-encrypted.
   adhoc:
-    needs: pjproject
     runs-on: macos-26
     timeout-minutes: 90
     env:
@@ -223,14 +128,8 @@ jobs:
       - name: Typecheck
         continue-on-error: true
         run: npx tsc --noEmit
-      - uses: actions/download-artifact@v4
-        with:
-          name: signal-pjproject-2.17-xcframework
-          path: modules/openlounge-call-engine/ios/pjproject.xcframework
-      - uses: actions/download-artifact@v4
-        with:
-          name: signal-pjproject-2.17-headers
-          path: modules/openlounge-call-engine/ios/pjinclude
+      - name: HARD GATE — no PJSIP in calling (RingRTC session model hard cut)
+        run: bash scripts/check-no-pjsip.sh
       - name: Fetch interim BSD WebRTC.xcframework (M152)
         env:
           OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
@@ -247,8 +146,7 @@ jobs:
           ruby -e '
             dir = "modules/openlounge-call-engine/ios"
             abort("WebRTC.xcframework missing") unless File.exist?(File.join(dir, "WebRTC.xcframework"))
-            abort("pjproject.xcframework missing") unless File.exist?(File.join(dir, "pjproject.xcframework"))
-            vf = ["pjproject.xcframework"] + (File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : [])
+            vf = File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : []
             abort("podspec would omit WebRTC") unless vf.include?("WebRTC.xcframework")
             puts "vendored: #{vf.join(" + ")}"
           '
@@ -271,9 +169,7 @@ jobs:
           OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
         run: |
           set -euo pipefail
-          # pjproject is NOT gitignored — must be on disk so the EAS project archive includes it.
           # WebRTC is gitignored in git but INCLUDED via .easignore; pre-install also restores as backup.
-          test -f modules/openlounge-call-engine/ios/pjproject.xcframework/Info.plist
           test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
           sudo gem install cocoapods --no-document >/dev/null 2>&1 || true
           mkdir -p out

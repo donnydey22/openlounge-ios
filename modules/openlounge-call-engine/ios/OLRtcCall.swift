@@ -1,6 +1,6 @@
 // OLRtcCall — the iOS P2P call media path per /workspace/builds/signal-rebuild-rtc-contract.md (v1).
-// One RTCPeerConnection per call over the existing OL socket (rtc:signal / rtc:iceConfig). Replaces PJSIP
-// ol_sfu/ol_p2p as the call media path. Audio comes ONLY from OLCallAudioEngine.localAudioTrack, which exists only after
+// One RTCPeerConnection per call over the existing OL socket (rtc:signal / rtc:iceConfig). Replaced
+// the old SIP/SFU legs as the call media path. Audio comes ONLY from OLCallAudioEngine.localAudioTrack, which exists only after
 // CallKit didActivate → OLAudioSessionOwner → engine (activation before media).
 // Failure taxonomy: local (permission/device/session/codec/webrtc-not-linked) → report, never ICE restart / relay.
 // signaling (server error codes) → report, never ICE restart. network (ICE failed / disconnected 2.5 s) → ICE restart
@@ -52,7 +52,7 @@ public final class OLRtcCall: NSObject {
   }
 
   /// Start media for an ACTIVE call. Precondition: OLCallAudioEngine is running (activation already completed).
-  public func start(_ sig: CallSignalClient, callId: String, isCaller: Bool, done: @escaping (Result<Void, OLRtcFailure>) -> Void) {
+  public func start(_ sig: CallSignalClient, callId: String, isCaller: Bool, video: Bool = false, done: @escaping (Result<Void, OLRtcFailure>) -> Void) {
     precondition(Thread.isMainThread)
     close(sendBye: false)
     self.sig = sig; self.callId = callId; self.isCaller = isCaller
@@ -76,6 +76,11 @@ public final class OLRtcCall: NSObject {
       }
       self.pc = pc
       pc.add(track, streamIds: ["ol"])
+      if video {
+        // video on the SAME PC (one engine): m-line negotiated from the first offer; camera starts disabled
+        OLRtcVideo.shared.callId = callId
+        pc.add(OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory), streamIds: ["ol"])
+      }
       OLCallDiskLog.shared.mark("rtc", "pc-created caller=\(isCaller)")
       if isCaller { self.makeOffer(restart: false) } else { self.send("ready") }
     }
@@ -241,6 +246,7 @@ public final class OLRtcCall: NSObject {
     #endif
     if let id = callId { OLRcCallManager.shared.end(id, .normal, .localHangup) }
     rc?.close(); rc = nil
+    OLRtcVideo.shared.end()
     callId = nil; done = nil
   }
 }
@@ -274,5 +280,9 @@ extension OLRtcCall: RTCPeerConnectionDelegate {
   public func peerConnection(_ pc: RTCPeerConnection, didChange s: RTCIceGatheringState) {}
   public func peerConnection(_ pc: RTCPeerConnection, didRemove c: [RTCIceCandidate]) {}
   public func peerConnection(_ pc: RTCPeerConnection, didOpen dc: RTCDataChannel) {}
+  public func peerConnection(_ pc: RTCPeerConnection, didAdd rtpReceiver: RTCRtpReceiver, streams: [RTCMediaStream]) {
+    guard let v = rtpReceiver.track as? RTCVideoTrack else { return }
+    DispatchQueue.main.async { if pc === self.pc { OLRtcVideo.shared.setRemote(v) } }
+  }
 }
 #endif

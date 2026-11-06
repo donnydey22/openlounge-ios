@@ -10,7 +10,7 @@ import UIKit
 //
 //   VoIP push (PushKit) ─▶ report a CallKit incoming call IMMEDIATELY (iOS kills/throttles apps that don't)
 //   b104: every call is native. The app's own socket (CallSignalClient) carries call:start/ack/accept/decline/hangup
-//   and the ms:* media setup (NativeCallMedia); the WebView is not in any call (bridge.ts call shim).
+//   and media (OLRtcCall: RingRTC session model, one WebRTC PC for audio+video); the WebView is not in any call.
 //   Telegram: CXAnswer -> answerCall -> callSessionManager.accept (tgios CallKitIntegration.swift:365-373,
 //   PresentationCall.swift:1453-1527 accept at :1495/:1518); CXEnd -> endCall -> hangUp -> drop + context stop
 //   (CallKitIntegration.swift:376-398, PresentationCall.swift:1530-1544); CXStart fulfils once the call is placed
@@ -181,8 +181,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // Signal-identical activation chain: owner (sole AVAudioSession) → engine (WebRTC manual audio).
     OLAudioSessionOwner.shared.onActivated = { g in OLCallAudioEngine.shared.sessionActivated(g) }
     OLAudioSessionOwner.shared.onDeactivated = { g in OLCallAudioEngine.shared.sessionDeactivated(g) }
-    NativeCallMedia.shared.onIsCaller = { [weak self] id in self?.call(id).map { !$0.incoming } ?? false }
-    NativeCallMedia.shared.onVideo = { [weak self] id, local, remote in
+    OLRtcVideo.shared.onVideo = { [weak self] id, local, remote in
       self?.emit(["type": "video", "callId": id, "local": local, "remote": remote])
     }
     signal.connect() // no-op until the page has mirrored a fresh access token (setAuth -> tokenUpdated)
@@ -533,7 +532,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         OLCallDiskLog.shared.mark("rtc-terminal", f.description)
         self.endFromRemote(c, reason: { if case .ended = f { return .remoteEnded } else { return .failed } }())
       }
-      OLRtcCall.shared.start(self.signal, callId: c.callId, isCaller: !c.incoming) { [weak self] r in
+      OLRtcCall.shared.start(self.signal, callId: c.callId, isCaller: !c.incoming, video: c.video) { [weak self] r in
         guard let self, self.calls[c.uuid] === c, !c.ended else { return }
         switch r {
         case .success: self.markConnected(c) // connected UI only after audio running AND ICE connected

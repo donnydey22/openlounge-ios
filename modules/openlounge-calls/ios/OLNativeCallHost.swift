@@ -144,7 +144,7 @@ struct OLNativeCallView: View {
             if model.video {
               roundBtn(model.camOn ? "Stop video" : "Video", color: Color.white.opacity(0.15)) {
                 model.camOn.toggle()
-                try? OLCallVideo.shared.camera(on: model.camOn, facing: "user")
+                try? OLRtcVideo.shared.camera(on: model.camOn, facing: "user")
               }
             }
             roundBtn(model.muted ? "Unmute" : "Mute", color: Color.white.opacity(0.15)) {

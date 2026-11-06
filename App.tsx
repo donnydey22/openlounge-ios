@@ -64,11 +64,11 @@ import {
   nativeAnswer,
   nativeDecline,
 } from './src/calls';
-// b104: calls are native end to end (CallSignalClient + NativeCallMedia + CallKit); the page has no part in a call.
+// Calls are native end to end (CallSignalClient + OLRtcCall RingRTC session model + CallKit); the page has no part in a call.
 type NativeVideoState = { callId: string; local?: boolean; remote?: boolean } | null;
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
-import { LocalVideoView, RemoteVideoView, pjsipAvailable } from './src/callViews';
+import { LocalVideoView, RemoteVideoView, callEngineAvailable } from './src/callViews';
 
 // Keep the native splash (same artwork/colours as Android's launch screen) up until the page has painted and the
 // web app finished its session check (OpenLoungeNative.ready() or the automatic AuthGate check in bridge.ts).
@@ -183,7 +183,7 @@ function Shell() {
   const [windowFrame, setWindowFrame] = useState<WebFrame | null>(null);
   const [kbHeight, setKbHeight] = useState(0);
 
-  const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD, pjsipAvailable()), []);
+  const injected = useMemo(() => injectedBeforeContentLoaded(Platform.OS, APP_VERSION, nativeCallsAvailable(), APP_BUILD, callEngineAvailable()), []);
 
   // ---- refs read from long-lived listeners ----
   const offlineRef = useRef(false);
@@ -861,7 +861,7 @@ function Shell() {
     : null;
   // FX-061: the remote tile only ever renders a stream that carries none of this phone's own camera tracks. If the
   // remote slot is empty (or would alias the local capture) it stays unrendered: the page paints the placeholder.
-  // PJSIP video: booleans only (pixels never cross the bridge); the views below render the engine's frames.
+  // Native WebRTC video: booleans only (pixels never cross the bridge); the views below render the engine tracks.
   const remoteStream = nativeVideo?.remote ? true : null;
   const streamFor = (kind: 'local' | 'remote') => kind === 'local' ? null : remoteStream;
   // Fill edge to edge like FaceTime/Telegram. Only a known landscape source (wider than tall) on the big tile falls

@@ -11,7 +11,7 @@ Pod::Spec.new do |s|
   s.source         = { git: '' }
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
-  s.dependency 'OpenLoungeCallEngine' # native PJSIP engine (modules/openlounge-call-engine)
+  s.dependency 'OpenLoungeCallEngine' # native call engine: RingRTC session model over WebRTC (modules/openlounge-call-engine)
   s.frameworks = 'CallKit', 'PushKit', 'AVFoundation'
   s.source_files   = '**/*.{h,m,swift}'
   s.resources      = ['resources/openlounge-incoming.caf']

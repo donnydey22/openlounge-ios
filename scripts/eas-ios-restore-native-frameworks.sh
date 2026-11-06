@@ -35,17 +35,11 @@ fi
 test -f "$IOS_MOD/WebRTC.xcframework/Info.plist"
 test -d "$IOS_MOD/WebRTC.xcframework/ios-arm64"
 
-if [[ ! -f "$IOS_MOD/pjproject.xcframework/Info.plist" ]]; then
-  echo "FAIL: pjproject.xcframework missing in EAS build tree." >&2
-  echo "CI must download/build pjproject into modules/openlounge-call-engine/ios/ before eas --local." >&2
-  exit 1
-fi
 
 ruby -e '
   dir = ARGV[0]
   abort("WebRTC.xcframework missing") unless File.exist?(File.join(dir, "WebRTC.xcframework"))
-  abort("pjproject.xcframework missing") unless File.exist?(File.join(dir, "pjproject.xcframework"))
-  vf = ["pjproject.xcframework"] + (File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : [])
+  vf = File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : []
   abort("podspec would omit WebRTC") unless vf.include?("WebRTC.xcframework")
   puts "=== eas-ios-restore-native-frameworks OK — vendored: #{vf.join(" + ")} ==="
 ' "$IOS_MOD"

@@ -1,4 +1,4 @@
-// OLCallAudioEngine — the one call audio engine on iOS (replaces PJSIPEngine sound open + NativeCallMedia audio
+// OLCallAudioEngine — the one call audio engine on iOS (replaces the removed SIP-engine sound open + media
 // orchestration). WebRTC (signalapp/webrtc 8037b-equivalent build, BSD) in MANUAL AUDIO mode, Signal-iOS behavior:
 //   CallKit fulfill → didActivate → OLAudioSessionOwner forwards to RTCAudioSession → owner lease resolves →
 //   this engine sets RTCAudioSession.isAudioEnabled = true → ADM starts capture/playout.
