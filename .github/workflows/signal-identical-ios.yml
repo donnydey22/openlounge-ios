@@ -266,11 +266,15 @@ jobs:
       - name: eas build --local (preview = ad hoc, Release) — WebRTC REQUIRED
         env:
           EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Used by eas-build-post-install → scripts/eas-ios-restore-native-frameworks.sh
+          # (EAS packs with .gitignore, which omits WebRTC.xcframework; hook re-fetches into the temp build tree before pod install.)
+          OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
         run: |
           set -euo pipefail
-          # Frameworks live under modules/.../ios/ and survive expo prebuild of app ios/.
-          test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
+          # pjproject is NOT gitignored — must be on disk so the EAS project archive includes it.
+          # WebRTC IS gitignored — eas-build-post-install re-fetches it inside the EAS temp copy.
           test -f modules/openlounge-call-engine/ios/pjproject.xcframework/Info.plist
+          test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
           sudo gem install cocoapods --no-document >/dev/null 2>&1 || true
           mkdir -p out
           npx --yes eas-cli@latest build --local --platform ios --profile preview --non-interactive --output "$PWD/out/OpenLounge.ipa"

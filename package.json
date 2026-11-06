@@ -14,7 +14,8 @@
     "test:bridge": "node scripts/check-bridge.cjs",
     "assets": "node scripts/generate-assets.mjs",
     "eas-build-pre-install": "bash scripts/check-audio-session-owner.sh",
-    "check:audio-session": "bash scripts/check-audio-session-owner.sh"
+    "check:audio-session": "bash scripts/check-audio-session-owner.sh",
+    "eas-build-post-install": "bash scripts/eas-ios-restore-native-frameworks.sh"
   },
   "dependencies": {
     "@react-native-firebase/app": "^26.4.0",
