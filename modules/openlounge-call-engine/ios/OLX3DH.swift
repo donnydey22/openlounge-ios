@@ -94,18 +94,23 @@ public final class OLX3DHSession {
 
   public func open(_ e: [String: Any]) throws -> Data {
     guard (e["v"] as? NSNumber)?.intValue == 1, let n = (e["n"] as? NSNumber)?.intValue, n >= 0, let ct = (e["ct"] as? String).flatMap(OLB64.dec), ct.count >= 16 else { throw OLX3DHError.badEnvelope }
+    // Authenticate against value snapshots; forged envelopes must not burn receive/skipped keys.
+    var nextN = recvN, nextCk = recvCk
+    var nextSkipped = skipped, nextOrder = skippedOrder
     let ck: Data
-    if n < recvN {
-      guard let k = skipped.removeValue(forKey: n) else { throw OLX3DHError.replay }
-      skippedOrder.removeAll { $0 == n }; ck = k
+    if n < nextN {
+      guard let k = nextSkipped.removeValue(forKey: n) else { throw OLX3DHError.replay }
+      nextOrder.removeAll { $0 == n }; ck = k
     } else {
-      guard n - recvN <= 256 else { throw OLX3DHError.tooFarAhead }
-      while recvN < n { skipped[recvN] = recvCk; skippedOrder.append(recvN); recvN += 1; recvCk = OLKdf.hmac(recvCk, 2) }
-      ck = recvCk; recvCk = OLKdf.hmac(recvCk, 2); recvN += 1
-      while skippedOrder.count > 256 { skipped.removeValue(forKey: skippedOrder.removeFirst()) }
+      guard n - nextN <= 256 else { throw OLX3DHError.tooFarAhead }
+      while nextN < n { nextSkipped[nextN] = nextCk; nextOrder.append(nextN); nextN += 1; nextCk = OLKdf.hmac(nextCk, 2) }
+      ck = nextCk; nextCk = OLKdf.hmac(nextCk, 2); nextN += 1
+      while nextOrder.count > 256 { nextSkipped.removeValue(forKey: nextOrder.removeFirst()) }
     }
     let mk = OLKdf.hmac(ck, 1), nonce = OLKdf.hmac(ck, 3).prefix(12)
     let box = try AES.GCM.SealedBox(nonce: AES.GCM.Nonce(data: nonce), ciphertext: ct.prefix(ct.count - 16), tag: ct.suffix(16))
-    return try AES.GCM.open(box, using: SymmetricKey(data: mk), authenticating: ad + OLKdf.header(n))
+    let plain = try AES.GCM.open(box, using: SymmetricKey(data: mk), authenticating: ad + OLKdf.header(n))
+    recvN = nextN; recvCk = nextCk; skipped = nextSkipped; skippedOrder = nextOrder
+    return plain
   }
 }

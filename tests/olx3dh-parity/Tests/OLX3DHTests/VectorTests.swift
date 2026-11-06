@@ -28,4 +28,22 @@ final class VectorTests: XCTestCase {
     XCTAssertEqual(try sa.open(try sb.seal(Data("answer".utf8))), Data("answer".utf8))
     var bad = bj; bad["spk"] = bj["opk"]; XCTAssertThrowsError(try OLX3DHSession.initiate(a, OLBundle(bad)!))
   }
+  private func receiverPair() throws -> (OLX3DHSession, [[String:Any]]) {
+    let a = OLIdentity(dh: .init(), sig: .init()), b = OLIdentity(dh: .init(), sig: .init())
+    let spk = Curve25519.KeyAgreement.PrivateKey(), opk = Curve25519.KeyAgreement.PrivateKey()
+    let bj: [String: Any] = ["deviceId":"devB", "ikDh":OLB64.enc(b.dh.publicKey.rawRepresentation), "ikSig":OLB64.enc(b.sig.publicKey.rawRepresentation), "spkId":7,
+      "spk":OLB64.enc(spk.publicKey.rawRepresentation), "spkSig":OLB64.enc(try b.sig.signature(for:spk.publicKey.rawRepresentation)), "opkId":3,"opk":OLB64.enc(opk.publicKey.rawRepresentation)]
+    let sa = try OLX3DHSession.initiate(a,OLBundle(bj)!)
+    let e0 = try sa.seal(Data("offer".utf8)), e1 = try sa.seal(Data("ice".utf8))
+    return (try OLX3DHSession.respond(b,spk:spk,opk:opk,pre:e0["pre"] as! [String:Any]),[e0,e1])
+  }
+  func testUnauthenticatedFuturePacketDoesNotAdvanceRatchet() throws {
+    let (receiver,e) = try receiverPair(); var bad=e[1];bad["ct"]=OLB64.enc(Data(repeating:0,count:24))
+    XCTAssertThrowsError(try receiver.open(bad));XCTAssertEqual(try receiver.open(e[1]),Data("ice".utf8));XCTAssertEqual(try receiver.open(e[0]),Data("offer".utf8))
+  }
+  func testUnauthenticatedSkippedPacketDoesNotBurnKey() throws {
+    let (receiver,e) = try receiverPair();XCTAssertEqual(try receiver.open(e[1]),Data("ice".utf8))
+    var bad=e[0];bad["ct"]=OLB64.enc(Data(repeating:0,count:24))
+    XCTAssertThrowsError(try receiver.open(bad));XCTAssertEqual(try receiver.open(e[0]),Data("offer".utf8))
+  }
 }
