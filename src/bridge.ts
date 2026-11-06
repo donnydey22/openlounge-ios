@@ -238,13 +238,17 @@ export function keyboardScript(visible: boolean, height: number, duration: numbe
  * LiveKit tracks), then tell the page so it can do anything LiveKit-specific (room.startAudio()).
  */
 export function audioResumeScript(reason: string): string {
+  // Linphone cut A7: never resume WebView AudioContext / MediaStream <audio> on the call path.
+  // When __olShellAudioLock is set (pjsip-media builds), this is a no-op so WKWebView cannot reclaim the session.
   return `(function(){try{
+  if(window.__olShellAudioLock){return;}
   var n=0;
   var list=window.__olAudioContexts||[];
   for(var i=0;i<list.length;i++){var c=list[i];
     if(c&&(c.state==='suspended'||c.state==='interrupted')){try{var r=c.resume();if(r&&r.catch)r.catch(function(){});n++;}catch(e){}}}
   var els=document.querySelectorAll('audio,video');
   for(var j=0;j<els.length;j++){var el=els[j];
+    if(el.dataset&&el.dataset.olCallAudio){continue;}
     if(el.srcObject&&el.paused&&!el.ended&&!el.muted&&el.autoplay){try{var p=el.play();if(p&&p.catch)p.catch(function(){});n++;}catch(e){}}}
   if(window.__olRingResume){try{window.__olRingResume();n++;}catch(e){}}
   window.dispatchEvent(new CustomEvent('openlounge:native-audio-resume',{detail:{reason:${JSON.stringify(reason)},kicked:n}}));
