@@ -928,7 +928,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   // MARK: - audio session
 
   /// Wired, USB-C/Lightning, Bluetooth HFP/LE and CarPlay outputs that carry their own mic / are personal audio.
-  static func headsetAttached(_ route: AVAudioSessionRouteDescription = AVAudioSession.sharedInstance().currentRoute) -> Bool {
+  static func headsetAttached(_ route: AVAudioSessionRouteDescription = OLAudioSessionOwner.shared.currentRoute) -> Bool {
     let ports: Set<AVAudioSession.Port> = [.headphones, .headsetMic, .bluetoothHFP, .bluetoothA2DP, .bluetoothLE, .usbAudio, .carAudio]
     return route.outputs.contains { ports.contains($0.portType) } || route.inputs.contains { ports.contains($0.portType) }
   }
@@ -978,7 +978,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// Current output + every output the user can pick: Speaker, Phone (iPhone receiver), and each headset input iOS
   /// offers (AirPods/Bluetooth HFP, wired, USB, CarPlay) plus an output-only headset that is currently playing.
   private func routePayload(reason: Int, source: String) -> [String: Any] {
-    let s = AVAudioSession.sharedInstance()
+    let s = OLAudioSessionOwner.shared
     let out = s.currentRoute.outputs.first
     let kind = out.map { Self.routeKind($0.portType) } ?? "system"
     let name = out?.portName ?? ""
@@ -999,21 +999,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// Apply an explicit pick. Speaker overrides any headset (like FaceTime); Phone moves input to the built-in mic so
   /// iOS routes output to the receiver; a headset pick selects that headset's input, which routes output to it too.
   private func applyUserRoute(_ pick: (kind: String, id: String)) {
-    let s = AVAudioSession.sharedInstance()
-    let builtIn = s.availableInputs?.first { $0.portType == .builtInMic }
-    switch pick.kind {
-    case "speaker":
-      try? s.setPreferredInput(builtIn)
-      do { try s.overrideOutputAudioPort(.speaker) } catch { NSLog("[OLCalls] speaker override failed: %@", error.localizedDescription) }
-    case "earpiece":
-      try? s.overrideOutputAudioPort(.none)
-      try? s.setPreferredInput(builtIn)
-    default:
-      try? s.overrideOutputAudioPort(.none)
-      let match = s.availableInputs?.first { Self.routeId(Self.routeKind($0.portType), $0.portName) == pick.id }
-        ?? s.availableInputs?.first { Self.routeKind($0.portType) == pick.kind }
-      if let match { try? s.setPreferredInput(match) } else { try? s.setPreferredInput(nil) } // output-only (A2DP/wired) = system choice
-    }
+    // all session mutation lives in OLAudioSessionOwner (sole AVAudioSession owner)
+    OLAudioSessionOwner.shared.applyUserRoute(kind: pick.kind, id: pick.id) { Self.routeId(Self.routeKind($0.portType), $0.portName) } kindOf: { Self.routeKind($0.portType) }
   }
 
   /// Push call holder + configure playAndRecord/voiceChat BEFORE CallKit activation. Never setActive.
@@ -1052,7 +1039,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   /// Speaker/Phone button truth: log and tell the page the route iOS actually chose (builtInSpeaker vs builtInReceiver
   /// vs headset), so the button reflects the real output instead of the last tap. Headset routing is untouched.
   private func reportActualRoute(reason: String) {
-    let out = AVAudioSession.sharedInstance().currentRoute.outputs.first
+    let out = OLAudioSessionOwner.shared.currentRoute.outputs.first
     let port = out?.portType.rawValue ?? ""
     let onSpeaker = out?.portType == .builtInSpeaker
     NSLog("[OLCalls] audio route (%@): %@ speaker=%d", reason, port, onSpeaker ? 1 : 0)

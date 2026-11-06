@@ -45,6 +45,8 @@ jobs:
     env: { EXPO_NO_TELEMETRY: '1' }
     steps:
       - uses: actions/checkout@v4
+      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+        run: bash scripts/check-audio-session-owner.sh
       - uses: actions/setup-node@v4
         with: { node-version: 22 }  # no caches: from-scratch build
       - uses: actions/download-artifact@v4
@@ -56,7 +58,7 @@ jobs:
       - name: guard — no WebRTC, no setActive in app code
         run: |
           ! grep -rniE "webrtc|mediasoup-client" package.json App.tsx src modules --include=*.ts --include=*.tsx --include=*.swift --include=*.json --include=*.podspec | grep -v "^\S*:\s*//"
-          ! grep -rn "setActive(" modules --include=*.swift | grep -v "//.*setActive"
+          bash scripts/check-audio-session-owner.sh
       - name: prebuild + simulator build (unsigned)
         run: |
           set -euo pipefail
@@ -85,6 +87,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
         with: { repository: donnydey22/openlounge, ref: pjsip-rebuild, path: ol }
+      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+        run: bash scripts/check-audio-session-owner.sh
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
       - uses: mymindstorm/setup-emsdk@v14
@@ -142,6 +146,8 @@ jobs:
       OL_START_URL: https://openlounge.app # production (Donny approved 2026-11-04)
     steps:
       - uses: actions/checkout@v4
+      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+        run: bash scripts/check-audio-session-owner.sh
       - uses: actions/download-artifact@v4
         with: { name: pjproject-2.17-xcframework, path: modules/openlounge-call-engine/ios/pjproject.xcframework }
       - uses: actions/download-artifact@v4
