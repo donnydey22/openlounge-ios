@@ -2,6 +2,7 @@
 // Rules: never calls AVAudioSession.setActive; sound device opened only after CallKit didActivate AND the
 // session is confirmed active; full teardown on every call end. SRTP SDES mandatory (keys only in a=crypto).
 import AVFoundation
+import UIKit
 
 public final class PJSIPEngine {
   public static let shared = PJSIPEngine()
@@ -18,14 +19,30 @@ public final class PJSIPEngine {
   public func audioSessionDidActivate(_ session: AVAudioSession) {
     guard !session.currentRoute.outputs.isEmpty else { return } // session confirmed active by CallKit
     sessionActive = true
-    ensureSound()
+    ensureSound(path: "didActivate")
   }
 
   /// Open the sound device iff CallKit has activated the session (never activates the session itself).
-  public func ensureSound() {
+  /// Logs which caller path hit PJMEDIA_EAUD_INIT (420003 / legacy -201) for Claude instrumentation.
+  public func ensureSound(path: String = "ensureSound") {
     guard sessionActive, !audioRunning else { return }
     start()
-    if ol_pjsip_open_sound() == 0 { audioRunning = true }
+    let status = ol_pjsip_open_sound()
+    let eaud: String
+    switch status {
+    case 420003, -201: eaud = "PJMEDIA_EAUD_INIT"
+    case 420001: eaud = "PJMEDIA_EAUD_ERR"
+    case 420002: eaud = "PJMEDIA_EAUD_SYSERR"
+    case 420004: eaud = "PJMEDIA_EAUD_INVDEV"
+    case 420005: eaud = "PJMEDIA_EAUD_NODEV"
+    case 420007: eaud = "PJMEDIA_EAUD_NOTREADY"
+    case 0: eaud = "ok"
+    default: eaud = "other"
+    }
+    let net = AVAudioSession.sharedInstance().currentRoute.outputs.first.map { $0.portType.rawValue } ?? "none"
+    OLCallDiskLog.shared.mark("open-sound-result", "path=\(path) status=\(status) eaud=\(eaud) model=\(UIDevice.current.model) net=\(net)")
+    if status == 0 { audioRunning = true }
+    else { NSLog("[OLSound] openSound FAIL path=%@ status=%d eaud=%@ net=%@", path, status, eaud, net) }
   }
 
   /// b83 onMediaServicesReset / interruption-ended (Telegram: mediaServicesWereLost → setup + activate again):

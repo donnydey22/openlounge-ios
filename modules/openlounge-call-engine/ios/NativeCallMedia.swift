@@ -124,7 +124,7 @@ public final class NativeCallMedia {
   @discardableResult private func startLeg(_ l: Leg) -> Int32 {
     PJSIPEngine.shared.start()
     let r = ol_sfu_audio_start(l.ip, Int32(l.port), l.tx, l.rx, l.ssrc, 111, Int32(l.rxPt), 0)
-    PJSIPEngine.shared.ensureSound() // leg (re)started after didActivate: reopen sound now (no-op before activation)
+    PJSIPEngine.shared.ensureSound(path: "startLeg") // leg (re)started after didActivate: reopen sound now (no-op before activation)
     return r
   }
 
@@ -202,12 +202,18 @@ public final class NativeCallMedia {
   // Video bundled on the same transport: InstanceV2Impl.cpp:460/:1135. Any failure -> the server route, which never stops
   // until the direct leg is proven both ways. Nothing here touches dial/ring/active/end or any UI.
   private enum P2p { case off, trying, live, failed }
-  private struct P2pCfg { let offerer: Bool; let turn: String; let user: String; let pass: String; let tcp: Bool }
+  private struct P2pCfg {
+    let offerer: Bool; let turn: String; let user: String; let pass: String; let tcp: Bool; let relayOnly: Bool
+    func withRelayOnly() -> P2pCfg { P2pCfg(offerer: offerer, turn: turn, user: user, pass: pass, tcp: true, relayOnly: true) }
+  }
   private var p2p: P2p = .off
   private var p2pCfg: P2pCfg?
   private var pendingOffer: String?
   private var gen = 0
   private var muted = false
+  private var relayRetryUsed = false
+  private let p2pTimeoutSec: TimeInterval = 15
+  private let p2pRelayRetrySec: TimeInterval = 28 // Signal/LiveKit/Jitsi: ~25-30s relay-only before hangup
   private var lastRx: UInt32 = 0
   private var lastRxAt = Date()
   private var p2pCallId = ""
@@ -226,22 +232,49 @@ public final class NativeCallMedia {
     backToServer(); pendingOffer = sdp; p2pBegin(c)
   }
 
-  /// relay logins the server already mints (call:turnRefresh, server/calls/index.ts:334); prefer UDP over TCP
+  /// Relay logins from call:turnRefresh. Offer UDP + TCP + TLS:443 together (Signal/Linphone/Jitsi), not one UDP URL.
   private func p2pPrepare(_ sig: CallSignalClient, callId: String) {
     p2pSig = sig; p2pCallId = callId
     let offerer = (onIsCaller?(callId)) ?? false
     sig.request("call:turnRefresh", ["callId": callId], timeout: 5) { [weak self] r in
       guard let self, self.p2pCallId == callId, self.direct || self.leg?.callId == callId else { return }
-      var best: P2pCfg?
+      var ents = [String]() // "host:port|transport"
+      var user = ""; var pass = ""
       for s in (r["iceServers"] as? [[String: Any]]) ?? [] {
         let urls = (s["urls"] as? [String]) ?? ((s["urls"] as? String).map { [$0] } ?? [])
-        for u in urls where u.hasPrefix("turn:") {
-          var rest = String(u.dropFirst(5)); var tcp = false
-          if let q = rest.range(of: "?transport=") { tcp = rest[q.upperBound...] == "tcp"; rest = String(rest[..<q.lowerBound]) }
-          if best == nil || (!tcp && best!.tcp) { best = P2pCfg(offerer: offerer, turn: rest, user: (s["username"] as? String) ?? "", pass: (s["credential"] as? String) ?? "", tcp: tcp) }
+        for u in urls {
+          let turns = u.lowercased().hasPrefix("turns:")
+          let isTurn = u.lowercased().hasPrefix("turn:")
+          guard turns || isTurn else { continue }
+          var rest = String(u.split(separator: ":", maxSplits: 1).dropFirst().joined(separator: ":"))
+          var transport = "udp"
+          if turns { transport = "tls" }
+          else if let q = rest.range(of: "transport=tcp", options: .caseInsensitive) { _ = q; transport = "tcp" }
+          else if rest.range(of: "transport=udp", options: .caseInsensitive) != nil { transport = "udp" }
+          if let q = rest.range(of: "?") { rest = String(rest[..<q.lowerBound]) }
+          if rest.isEmpty { continue }
+          let hp = (turns && !rest.contains(":")) ? "\(rest):443" : rest
+          let key = "\(hp)|\(transport)"
+          if !ents.contains(key) { ents.append(key) }
+          if user.isEmpty {
+            user = (s["username"] as? String) ?? ""
+            pass = (s["credential"] as? String) ?? ""
+          }
         }
       }
-      guard let c = best else { NSLog("[OLP2P] no TURN config"); if self.direct { self.finishDirect(false, "no relay config") }; return }
+      guard !ents.isEmpty else { NSLog("[OLP2P] no TURN config"); if self.direct { self.finishDirect(false, "no relay config") }; return }
+      let primary = ents[0].split(separator: "|")[0]
+      let parts = primary.split(separator: ":")
+      let host = parts.count > 1 ? parts.dropLast().joined(separator: ":") : String(primary)
+      let basePort = parts.count > 1 ? (Int(String(parts.last!)) ?? 3478) : 3478
+      func has(_ t: String) -> Bool { ents.contains { $0.hasSuffix("|\(t)") } }
+      if !has("udp") { ents.append("\(host):\(basePort)|udp") }
+      if !has("tcp") { ents.append("\(host):\(basePort)|tcp") }
+      if !has("tls") { ents.append("\(host):443|tls") }
+      let turnMulti = ents.prefix(3).joined(separator: ",")
+      OLCallDiskLog.shared.mark("turn-multi", turnMulti)
+      let c = P2pCfg(offerer: offerer, turn: turnMulti, user: user, pass: pass,
+                     tcp: ents.contains { $0.hasSuffix("|tcp") || $0.hasSuffix("|tls") }, relayOnly: false)
       self.p2pCfg = c
       if !c.offerer && self.pendingOffer == nil { self.p2p = .trying; self.armTimeout(); return }
       self.p2pBegin(c)
@@ -264,9 +297,9 @@ public final class NativeCallMedia {
     guard !p2pCallId.isEmpty, let sig = p2pSig else { return }
     sig.request("call:p2p", ["callId": p2pCallId, "msg": msg], timeout: 5) { [weak self] r in if r["ok"] as? Bool != true { self?.p2pFail("send") } }
   }
-  private func p2pBegin(_ c: P2pCfg) {
+  private func p2pBegin(_ c: P2pCfg, budgetSec: TimeInterval? = nil) {
     PJSIPEngine.shared.start()
-    var cfg = ol_p2p_cfg(); cfg.offerer = c.offerer ? 1 : 0; cfg.turn_tcp = c.tcp ? 1 : 0; cfg.relay_only = 0; cfg.test_tone_hz = 0
+    var cfg = ol_p2p_cfg(); cfg.offerer = c.offerer ? 1 : 0; cfg.turn_tcp = c.tcp ? 1 : 0; cfg.relay_only = c.relayOnly ? 1 : 0; cfg.test_tone_hz = 0
     let r: Int32 = c.turn.withCString { a in c.user.withCString { u in c.pass.withCString { p in
       cfg.stun = a; cfg.turn = a; cfg.turn_user = u; cfg.turn_pass = p   // ol_p2p_begin copies the strings
       return ol_p2p_begin(&cfg, Self.evCb, nil) } } }
@@ -274,11 +307,11 @@ public final class NativeCallMedia {
     if direct { _ = ol_p2p_activate(1) } // the only path: wired to mic/speaker from the start
     p2p = .trying; if muted { _ = ol_p2p_set_mute(1) }
     if let o = pendingOffer { pendingOffer = nil; _ = ol_p2p_remote(o) }
-    poll(armTimeout())
+    poll(armTimeout(budgetSec ?? p2pTimeoutSec))
   }
-  @discardableResult private func armTimeout() -> Int {
+  @discardableResult private func armTimeout(_ budgetSec: TimeInterval = 15) -> Int {
     gen += 1; let g = gen
-    DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in if let self, g == self.gen, self.p2p == .trying { self.p2pFail("timeout") } }
+    DispatchQueue.main.asyncAfter(deadline: .now() + budgetSec) { [weak self] in if let self, g == self.gen, self.p2p == .trying { self.p2pFail("timeout") } }
     return g
   }
   private func poll(_ g: Int) {
@@ -307,8 +340,18 @@ public final class NativeCallMedia {
     NSLog("[OLP2P] direct leg off (%@); server route", why)
     backToServer(); gen += 1; p2p = .failed; ol_p2p_stop()
     guard direct else { return }
-    if directDone != nil { return finishDirect(false, why) } // first connect failed: CallKit/UI decide as before
-    let g = gen // mid-call: keep retrying the same single path until the call ends
+    // First-connect miss: one relay-only retry with ~28s budget before hangup (Signal/LiveKit/Jitsi).
+    if directDone != nil && !relayRetryUsed, let base = p2pCfg {
+      relayRetryUsed = true
+      p2pCfg = base.withRelayOnly()
+      OLCallDiskLog.shared.mark("relay-only-retry", "why=\(why) budget=\(Int(p2pRelayRetrySec))")
+      NSLog("[OLP2P] relay-only retry after %@", why)
+      p2p = .trying
+      p2pBegin(p2pCfg!, budgetSec: p2pRelayRetrySec)
+      return
+    }
+    if directDone != nil { return finishDirect(false, why) }
+    let g = gen
     DispatchQueue.main.asyncAfter(deadline: .now() + 1) { [weak self] in if let self, g == self.gen, self.direct, self.p2p == .failed { self.p2pRestart(tellPeer: true) } }
   }
 
@@ -318,7 +361,7 @@ public final class NativeCallMedia {
   private var directVideo = false
   private func connectDirect(_ sig: CallSignalClient, callId: String, video: Bool, done: @escaping (Bool, String?) -> Void) {
     if direct && p2pCallId == callId { done(true, nil); return }
-    direct = true; directDone = done; directVideo = video
+    direct = true; directDone = done; directVideo = video; relayRetryUsed = false
     PJSIPEngine.shared.start()
     p2pPrepare(sig, callId: callId)
     // ICE has its own 15 s timeout (armTimeout); this covers a stuck turnRefresh
@@ -334,7 +377,7 @@ public final class NativeCallMedia {
   private func directUp() {
     p2p = .live; _ = ol_p2p_activate(1)
     var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0; _ = ol_p2p_stats(&rx, &lost, &tx); lastRx = rx; lastRxAt = Date()
-    PJSIPEngine.shared.ensureSound() // no-op until CallKit didActivate
+    PJSIPEngine.shared.ensureSound(path: "directUp") // no-op until CallKit didActivate
     startDirectVideo(callId: p2pCallId, cameraOn: directVideo && directDone != nil) // receive side always ready
     if videoStarted { videoP2p = ol_p2p_video_live(1) == 0 }
     finishDirect(true, nil)

@@ -6,16 +6,19 @@
    ICE = pjnath via pjmedia_transport_ice; NO encryption: plain RTP straight on the ICE transport (Donny: no encryption).
    Same Opus pin as ol_sfu.c. If ICE fails, ev 3 tells the app to keep the SFU leg (existing path). */
 #include <pjsua-lib/pjsua.h>
+#include <pjnath/ice_strans.h>
 #include <pjmedia-codec/opus.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include "ol_p2p.h"
 #include "ol_sfu_video.h"
 
 static pj_pool_t *pool; static pjmedia_transport *ice, *srtp; static pjmedia_stream *stream;
 static pjsua_conf_port_id slot = -1, tone_slot = -1; static pjmedia_port *tone;
 static pjmedia_sdp_session *local_sdp, *remote_sdp; static int gathered, started, live; /* live = wired to mic/speaker (only after the switch) */
-static ol_p2p_cfg cfg; static char s_stun[128], s_turn[128], s_tu[128], s_tp[256];
+static ol_p2p_cfg cfg; static char s_stun[128], s_turn[384], s_tu[128], s_tp[256];
+static char s_turn_host[PJ_ICE_MAX_TURN][128]; /* per-transport host copy for turn_tp[] */
 static ol_p2p_cb cb; static void *cb_user;
 
 /* Bundle demux (tgcalls v2: audio and video share one RTP transport, InstanceV2Impl.cpp:154/:460 + :1135). A thin
@@ -113,13 +116,61 @@ static int create_transports(void) {
   int port;
   if (cfg.relay_only) { ic.stun.max_host_cands = 0; ic.stun_tp_cnt = 0; }               /* tgcalls :596-601 */
   else if (cfg.stun && *cfg.stun) hostport(s_stun, &ic.stun.server, &port), ic.stun.port = (pj_uint16_t)port; /* srflx, :576 */
-  if (cfg.turn && *cfg.turn) {                                                             /* relay fallback, :610-626 */
-    hostport(s_turn, &ic.turn.server, &port); ic.turn.port = (pj_uint16_t)port;
-    ic.turn.conn_type = cfg.turn_tcp ? PJ_TURN_TP_TCP : PJ_TURN_TP_UDP;
-    ic.turn.auth_cred.type = PJ_STUN_AUTH_CRED_STATIC;
-    ic.turn.auth_cred.data.static_cred.username = pj_str(s_tu);
-    ic.turn.auth_cred.data.static_cred.data_type = PJ_STUN_PASSWD_PLAIN;
-    ic.turn.auth_cred.data.static_cred.data = pj_str(s_tp);
+  if (cfg.turn && *cfg.turn) {
+    /* Multi-transport TURN (Signal/Linphone/Jitsi): offer UDP + TCP + TLS:443 together via turn_tp[].
+       turn string formats:
+         legacy: "host:port" (+ cfg.turn_tcp) — auto-expanded to udp/tcp/tcp:443
+         multi:  "host:3478|udp,host:3478|tcp,host:443|tls" (comma-separated, up to PJ_ICE_MAX_TURN)
+       PJ_HAS_SSL_SOCK may be 0 on Android: "|tls" then uses TCP to that host:port (443 firewall path). */
+    pj_stun_auth_cred cred; pj_bzero(&cred, sizeof cred);
+    cred.type = PJ_STUN_AUTH_CRED_STATIC;
+    cred.data.static_cred.username = pj_str(s_tu);
+    cred.data.static_cred.data_type = PJ_STUN_PASSWD_PLAIN;
+    cred.data.static_cred.data = pj_str(s_tp);
+    unsigned n = 0;
+    if (strchr(s_turn, '|')) {
+      char buf[384]; strncpy(buf, s_turn, sizeof buf - 1); buf[sizeof buf - 1] = 0;
+      for (char *tok = strtok(buf, ","); tok && n < PJ_ICE_MAX_TURN; tok = strtok(NULL, ",")) {
+        char *bar = strchr(tok, '|'); const char *tr = "udp";
+        if (bar) { *bar = 0; tr = bar + 1; }
+        while (*tok == ' ') tok++;
+        if (!*tok) continue;
+        strncpy(s_turn_host[n], tok, sizeof s_turn_host[n] - 1); s_turn_host[n][sizeof s_turn_host[n] - 1] = 0;
+        pj_ice_strans_turn_cfg_default(&ic.turn_tp[n]);
+        hostport(s_turn_host[n], &ic.turn_tp[n].server, &port); ic.turn_tp[n].port = (pj_uint16_t)port;
+        if (!strcmp(tr, "tcp")) ic.turn_tp[n].conn_type = PJ_TURN_TP_TCP;
+#if PJ_HAS_SSL_SOCK
+        else if (!strcmp(tr, "tls")) ic.turn_tp[n].conn_type = PJ_TURN_TP_TLS;
+#else
+        else if (!strcmp(tr, "tls")) ic.turn_tp[n].conn_type = PJ_TURN_TP_TCP; /* no SSL sock: TCP to :443 still helps */
+#endif
+        else ic.turn_tp[n].conn_type = PJ_TURN_TP_UDP;
+        ic.turn_tp[n].auth_cred = cred;
+        n++;
+      }
+    } else {
+      /* legacy single host: expand to UDP + TCP + TCP/TLS:443 (Signal pattern) */
+      char raw[128]; strncpy(raw, s_turn, sizeof raw - 1); raw[sizeof raw - 1] = 0;
+      char *colon = strrchr(raw, ':'); int p = 3478;
+      if (colon && *(colon + 1) && strspn(colon + 1, "0123456789") == strlen(colon + 1)) { p = atoi(colon + 1); *colon = 0; }
+      const char *transports[] = { "udp", "tcp", "tls" };
+      const int ports[] = { p, p, 443 };
+      for (int i = 0; i < 3 && n < PJ_ICE_MAX_TURN; i++) {
+        snprintf(s_turn_host[n], sizeof s_turn_host[n], "%s:%d", raw, ports[i]);
+        pj_ice_strans_turn_cfg_default(&ic.turn_tp[n]);
+        hostport(s_turn_host[n], &ic.turn_tp[n].server, &port); ic.turn_tp[n].port = (pj_uint16_t)port;
+        if (!strcmp(transports[i], "tcp")) ic.turn_tp[n].conn_type = PJ_TURN_TP_TCP;
+#if PJ_HAS_SSL_SOCK
+        else if (!strcmp(transports[i], "tls")) ic.turn_tp[n].conn_type = PJ_TURN_TP_TLS;
+#else
+        else if (!strcmp(transports[i], "tls")) ic.turn_tp[n].conn_type = PJ_TURN_TP_TCP;
+#endif
+        else ic.turn_tp[n].conn_type = PJ_TURN_TP_UDP;
+        ic.turn_tp[n].auth_cred = cred;
+        n++;
+      }
+    }
+    ic.turn_tp_cnt = n;
   }
   pjmedia_ice_cb icb; pj_bzero(&icb, sizeof icb); icb.on_ice_complete = &on_ice_complete;
   if (pjmedia_ice_create3(ep, "olp2p", 1 /* rtcp-mux: one component */, &ic, &icb, 0, NULL, &ice) != PJ_SUCCESS) return -2;
