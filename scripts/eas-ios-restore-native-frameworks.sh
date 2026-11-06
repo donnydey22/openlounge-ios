@@ -1,32 +1,37 @@
 #!/usr/bin/env bash
-# EAS packs the project with .gitignore, so modules/.../WebRTC.xcframework (gitignored)
-# is omitted or left as an empty stub in the eas-build-local temp copy. CocoaPods then
-# fails: "plist file at .../WebRTC.xcframework/Info.plist doesn't exist".
-# This hook runs as eas-build-post-install (after npm ci, before pod install) and
-# re-fetches WebRTC into the *current* build tree. pjproject is not gitignored; CI
-# must place it on disk before `eas build --local` so the pack includes it.
+# Restore WebRTC into the EAS build tree before pod install.
+# Why: repo .gitignore omits WebRTC.xcframework; without .easignore un-ignore (or this
+# hook), EAS packs an empty stub and CocoaPods fails on missing Info.plist.
+# Prefer: .easignore includes the framework after CI fetch. This script is belt-and-suspenders.
 set -euo pipefail
+echo "=== eas-ios-restore-native-frameworks: START cwd=$(pwd) EAS_BUILD_PLATFORM=${EAS_BUILD_PLATFORM:-unset} ==="
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+echo "=== eas-ios-restore-native-frameworks: ROOT=$ROOT ==="
 
-# Only needed for iOS native builds (skip Android EAS / local JS).
 if [[ "${EAS_BUILD_PLATFORM:-ios}" != "ios" ]]; then
-  echo "eas-ios-restore-native-frameworks: skip (platform=${EAS_BUILD_PLATFORM:-unset})"
+  echo "=== eas-ios-restore-native-frameworks: skip (platform=${EAS_BUILD_PLATFORM:-unset}) ==="
   exit 0
 fi
 
 export OL_WEBRTC_IOS_CACHE="${OL_WEBRTC_IOS_CACHE:-${RUNNER_TEMP:-${TMPDIR:-/tmp}}/webrtc-bsd-m152-ios}"
-
 IOS_MOD="$ROOT/modules/openlounge-call-engine/ios"
 test -d "$IOS_MOD" || { echo "FAIL: missing $IOS_MOD" >&2; exit 1; }
 
-# Drop empty/partial stub left by gitignore filtering so File.exist? is honest until fetch.
 if [[ -d "$IOS_MOD/WebRTC.xcframework" && ! -f "$IOS_MOD/WebRTC.xcframework/Info.plist" ]]; then
-  echo "Removing incomplete WebRTC.xcframework stub"
+  echo "=== Removing incomplete WebRTC.xcframework stub ==="
   rm -rf "$IOS_MOD/WebRTC.xcframework"
 fi
 
-bash "$ROOT/scripts/ios-fetch-webrtc.sh"
+if [[ -f "$IOS_MOD/WebRTC.xcframework/Info.plist" && -d "$IOS_MOD/WebRTC.xcframework/ios-arm64" ]]; then
+  echo "=== WebRTC.xcframework already present (likely via .easignore pack) — refresh optional ==="
+  # Still re-fetch if incomplete slices; otherwise keep packed copy to save time.
+  du -sh "$IOS_MOD/WebRTC.xcframework" || true
+else
+  echo "=== Fetching WebRTC.xcframework into EAS build tree ==="
+  bash "$ROOT/scripts/ios-fetch-webrtc.sh"
+fi
+
 test -f "$IOS_MOD/WebRTC.xcframework/Info.plist"
 test -d "$IOS_MOD/WebRTC.xcframework/ios-arm64"
 
@@ -42,5 +47,6 @@ ruby -e '
   abort("pjproject.xcframework missing") unless File.exist?(File.join(dir, "pjproject.xcframework"))
   vf = ["pjproject.xcframework"] + (File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : [])
   abort("podspec would omit WebRTC") unless vf.include?("WebRTC.xcframework")
-  puts "eas-ios-restore-native-frameworks OK — vendored: #{vf.join(" + ")}"
+  puts "=== eas-ios-restore-native-frameworks OK — vendored: #{vf.join(" + ")} ==="
 ' "$IOS_MOD"
+echo "=== eas-ios-restore-native-frameworks: DONE ==="

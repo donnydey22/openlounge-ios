@@ -13,7 +13,7 @@
     "prebuild:ios": "expo prebuild --platform ios --no-install --clean",
     "test:bridge": "node scripts/check-bridge.cjs",
     "assets": "node scripts/generate-assets.mjs",
-    "eas-build-pre-install": "bash scripts/check-audio-session-owner.sh",
+    "eas-build-pre-install": "bash scripts/check-audio-session-owner.sh && bash scripts/eas-ios-restore-native-frameworks.sh",
     "check:audio-session": "bash scripts/check-audio-session-owner.sh",
     "eas-build-post-install": "bash scripts/eas-ios-restore-native-frameworks.sh"
   },

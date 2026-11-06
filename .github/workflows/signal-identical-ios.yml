@@ -272,7 +272,7 @@ jobs:
         run: |
           set -euo pipefail
           # pjproject is NOT gitignored — must be on disk so the EAS project archive includes it.
-          # WebRTC IS gitignored — eas-build-post-install re-fetches it inside the EAS temp copy.
+          # WebRTC is gitignored in git but INCLUDED via .easignore; pre-install also restores as backup.
           test -f modules/openlounge-call-engine/ios/pjproject.xcframework/Info.plist
           test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
           sudo gem install cocoapods --no-document >/dev/null 2>&1 || true
