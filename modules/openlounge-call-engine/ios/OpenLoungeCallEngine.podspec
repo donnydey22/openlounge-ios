@@ -15,9 +15,11 @@ Pod::Spec.new do |s|
   s.frameworks = 'AVFoundation', 'AudioToolbox', 'VideoToolbox', 'CoreMedia', 'Network', 'MetalKit', 'Metal', 'CoreVideo', 'UIKit', 'Security'
   s.source_files   = ['*.{h,c,swift}']
   s.dependency 'ExpoModulesCore'
-  # Call audio: WebRTC.xcframework built from signalapp/webrtc ref 8037b (BSD; NOT RingRTC/AGPL), vendored at
-  # ios/WebRTC.xcframework by scripts/ios-fetch-webrtc.sh on a Mac. OLCallAudioEngine compiles against it via
-  # `canImport(WebRTC)`; without it the engine reports `failed("WebRTC framework not linked")` (no silent audio).
+  # Call audio/PC: WebRTC.xcframework (BSD; NOT RingRTC/AGPL). Interim: stasel/WebRTC M152 (branch-heads/7977,
+  # same milestone as Android webrtc-bsd/m152). Eventual: signalapp/webrtc 8037b via
+  # /workspace/builds/signal-webrtc/build-signal-webrtc-ios.sh (Mac). Fetch: scripts/ios-fetch-webrtc.sh →
+  # ios/WebRTC.xcframework. OLCallAudioEngine + OLRtcCall use `canImport(WebRTC)`; without the framework they
+  # report webrtc_not_linked / failed("WebRTC framework not linked") — never silent audio or TURN fallback.
   s.vendored_frameworks = ['pjproject.xcframework'] + (File.exist?(File.join(__dir__, 'WebRTC.xcframework')) ? ['WebRTC.xcframework'] : [])
   s.public_header_files = ['OLPjsip.h', 'ol_sfu.h', 'ol_sfu_video.h', 'ol_p2p.h']
   s.preserve_paths = ['pjproject.xcframework', 'pjinclude/**/*']

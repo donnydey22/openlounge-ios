@@ -43,3 +43,6 @@ yarn-error.*
 # local iOS signing (secrets)
 credentials.json
 credentials/
+
+# Interim/vendored WebRTC (fetch via scripts/ios-fetch-webrtc.sh; do not commit ~96MB binary)
+modules/openlounge-call-engine/ios/WebRTC.xcframework/
