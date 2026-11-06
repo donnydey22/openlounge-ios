@@ -12,13 +12,16 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
   public private(set) var fanout: OLCameraFanout?
   private var observers: [NSObjectProtocol] = []
 
+  /// Portrait-locked call screen: the capture connection is rotated to portrait, so every layer is portrait too
+  /// (180x320, 720x1280, 1080x1920) -- encoder size == fan-out target size == rotated buffer aspect (no stretch).
+  public static let portraitLayers: [OLVideoLayer] = OLVideoSpecV2.layers.map { .init(width: $0.height, height: $0.width, bps: $0.bps, ultrafast: $0.ultrafast) }
   /// Fan-out targets in layer/SSRC order (180p@15, 720p@30, 1080p@30).
-  public static func fanoutTargets() -> [OLCameraFanout.Target] { OLVideoSpecV2.layers.map { .init(width: $0.width, height: $0.height, fps: OLVideoSpecV2.fps($0)) } }
+  public static func fanoutTargets() -> [OLCameraFanout.Target] { portraitLayers.map { .init(width: $0.width, height: $0.height, fps: OLVideoSpecV2.fps($0)) } }
 
   public func start(engine: PJSIPEngine = .shared, position: AVCaptureDevice.Position = .front) throws {
     guard engine.audioRunning else { throw OLVideoError.notActivated } // didActivate gate
     // all 3 hardware layers or nothing
-    let enc = try OLSimulcastEncoder()
+    let enc = try OLSimulcastEncoder(layers: Self.portraitLayers)
     guard enc.layerCount == 3 else { enc.teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: enc.layerCount, status: -3) }
     // Video spec v2 send path: each layer's Annex-B AU -> engine RTP/SRTP on the "video" PlainTransport (own SSRC per layer)
     enc.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
@@ -50,7 +53,7 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
       nc.addObserver(forName: .AVCaptureSessionRuntimeError, object: s, queue: nil) { [weak self, weak s] _ in self?.q.async { s?.startRunning() } },
       nc.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: s, queue: nil) { [weak self] _ in self?.encoder?.forceKeyframe() },
     ]
-    q.async { s.startRunning() }
+    q.async { [weak self] in guard self?.session === s else { return }; s.startRunning() } // never starts after stop()
   }
 
   public func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
