@@ -88,7 +88,7 @@ t(B.parseBridgeMessage('{"__ol":1,"id":"d1","method":"nativeDial","value":{"peer
 t(B.parseBridgeMessage('{"__ol":1,"method":"nativeDial","value":{"peerId":"u_1"}}'), null, 'nativeDial needs id');
 {
   const js = B.injectedBeforeContentLoaded('ios', '0.3.1', true);
-  t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1'\]/.test(js), true, 'native calls flag on');
+  t(/__olNativeCalls = 1/.test(js) && /if \(true\)/.test(js) && /'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1', 'rtcP2P'\]/.test(js), true, 'native calls flag on');
   const off = B.injectedBeforeContentLoaded('ios', '0.3.1');
   // The bridge always exposes the nativeMedia method as a safe no-op API; only its advertised capabilities enable it.
   t(/if \(false\)/.test(off) && !/capabilities: Object\.freeze\(\[[^\]]*'calls'/.test(off), true, 'native calls flag off by default');
