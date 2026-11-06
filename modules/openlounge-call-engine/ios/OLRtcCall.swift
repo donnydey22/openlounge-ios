@@ -41,6 +41,8 @@ public final class OLRtcCall: NSObject {
   private var pc: RTCPeerConnection?
   private var pendingRemote: [RTCIceCandidate] = []
   private var currentOffer: RTCSessionDescription?
+  private var offerInFlight = false
+  private var pendingSignals: [[String: Any]] = []
   #endif
 
   public static var isLinked: Bool {
@@ -76,11 +78,12 @@ public final class OLRtcCall: NSObject {
       }
       self.pc = pc
       pc.add(track, streamIds: ["ol"])
-      if video {
-        // video on the SAME PC (one engine): m-line negotiated from the first offer; camera starts disabled
-        OLRtcVideo.shared.callId = callId
-        pc.add(OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory), streamIds: ["ol"])
-      }
+      // Always negotiate a video slot, including calls that start audio-only. The callee adopts the
+      // offered transceiver after setRemote rather than creating a second video m-line.
+      OLRtcVideo.shared.callId = callId
+      if isCaller { pc.add(OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory), streamIds: ["ol"]) }
+      let queued = self.pendingSignals; self.pendingSignals = []
+      queued.forEach { self.onSignal($0) }
       OLCallDiskLog.shared.mark("rtc", "pc-created caller=\(isCaller)")
       if isCaller { self.makeOffer(restart: false) } else { self.send("ready") }
     }
@@ -114,6 +117,9 @@ public final class OLRtcCall: NSObject {
   public func onSignal(_ d: [String: Any]) {
     precondition(Thread.isMainThread)
     guard let id = d["callId"] as? String, id == callId, let kind = d["kind"] as? String else { return }
+    #if canImport(WebRTC)
+    guard pc != nil else { if pendingSignals.count < 256 { pendingSignals.append(d) }; return }
+    #endif
     let g = (d["gen"] as? NSNumber)?.intValue ?? 0
     if g < remoteGen { return }
     remoteGen = g
@@ -122,7 +128,7 @@ public final class OLRtcCall: NSObject {
     case "ready": if isCaller { if let o = currentOffer { send("offer", extra: ["sdp": o.sdp]) } else { makeOffer(restart: false) } }
     case "offer": if !isCaller, let sdp = d["sdp"] as? String { if g > gen { gen = g; seq = 0 }; acceptOffer(sdp) }
     case "answer":
-      if isCaller, let sdp = d["sdp"] as? String {
+      if isCaller, pc?.signalingState == .haveLocalOffer, let sdp = d["sdp"] as? String {
         pc?.setRemoteDescription(RTCSessionDescription(type: .answer, sdp: sdp)) { [weak self] e in
           DispatchQueue.main.async { if let e { self?.terminal(.local("setRemote answer \(e.localizedDescription)")) } else { self?.flushCandidates() } }
         }
@@ -161,12 +167,14 @@ public final class OLRtcCall: NSObject {
   }
 
   private func makeOffer(restart: Bool) {
+    guard !offerInFlight else { return }; offerInFlight = true
     let c = RTCMediaConstraints(mandatoryConstraints: restart ? ["IceRestart": "true"] : nil, optionalConstraints: nil)
     pc?.offer(for: c) { [weak self] sdp, e in
       DispatchQueue.main.async {
-        guard let self, let sdp else { self?.terminal(.local("offer \(e?.localizedDescription ?? "?")")); return }
+        guard let self, let sdp else { self?.offerInFlight = false; self?.terminal(.local("offer \(e?.localizedDescription ?? "?")")); return }
         self.pc?.setLocalDescription(sdp) { e in
           DispatchQueue.main.async {
+            self.offerInFlight = false
             if let e { self.terminal(.local("setLocal offer \(e.localizedDescription)")); return }
             self.currentOffer = sdp
             self.send("offer", extra: ["sdp": sdp.sdp])
@@ -181,6 +189,10 @@ public final class OLRtcCall: NSObject {
       DispatchQueue.main.async {
         guard let self else { return }
         if let e { return self.terminal(.local("setRemote offer \(e.localizedDescription)")) }
+        if let tx = self.pc?.transceivers.first(where: { $0.mediaType == .video }) {
+          do { try tx.setDirection(.sendRecv) } catch { return self.terminal(.local("video direction \(error)")) }
+          tx.sender.track = OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory)
+        }
         self.flushCandidates()
         self.pc?.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { a, e in
           DispatchQueue.main.async {
@@ -242,7 +254,7 @@ public final class OLRtcCall: NSObject {
     if sendBye, callId != nil { send("bye") }
     discoTimer?.invalidate(); discoTimer = nil
     #if canImport(WebRTC)
-    pc?.close(); pc = nil; pendingRemote = []; currentOffer = nil
+    pc?.close(); pc = nil; pendingRemote = []; currentOffer = nil; offerInFlight = false; pendingSignals = []
     #endif
     if let id = callId { OLRcCallManager.shared.end(id, .normal, .localHangup) }
     rc?.close(); rc = nil

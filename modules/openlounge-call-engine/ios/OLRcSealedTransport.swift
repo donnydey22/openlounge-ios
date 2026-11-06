@@ -17,9 +17,19 @@ public final class OLRcSealedTransport {
 
   public init(_ sig: CallSignalClient, callId: String, isCaller: Bool, keys: OLRcKeyStore = .shared) {
     self.sig = sig; self.callId = callId; self.isCaller = isCaller; self.keys = keys
-    if isCaller {
-      sig.request("rc:keys:fetch", ["callId": callId], timeout: 15) { [weak self] r in DispatchQueue.main.async { self?.initiated(r) } }
-    } else { initDone = true }
+    if isCaller { fetchKeys(0) } else { initDone = true }
+  }
+
+  private func fetchKeys(_ attempt: Int) {
+    guard !closed else { return }
+    sig?.request("rc:keys:fetch", ["callId": callId], timeout: 15) { [weak self] r in
+      DispatchQueue.main.async {
+        guard let self, !self.closed else { return }
+        if r["error"] as? String == "no_keys", attempt < 20 {
+          DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.fetchKeys(attempt + 1) }
+        } else { self.initiated(r) }
+      }
+    }
   }
 
   private func initiated(_ r: [String: Any]) {
