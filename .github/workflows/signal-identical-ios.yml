@@ -104,8 +104,6 @@ jobs:
     timeout-minutes: 90
     env:
       EXPO_NO_TELEMETRY: '1'
-      # GH runners have no /workspace cache; keep zip under runner temp.
-      OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
     steps:
       - uses: actions/checkout@v4
       - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
@@ -128,6 +126,9 @@ jobs:
           name: signal-pjproject-2.17-headers
           path: modules/openlounge-call-engine/ios/pjinclude
       - name: Fetch interim BSD WebRTC.xcframework (M152)
+        env:
+          # Job-level env cannot use runner.*; set cache under RUNNER_TEMP here.
+          OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
         run: |
           set -euo pipefail
           bash scripts/ios-fetch-webrtc.sh
