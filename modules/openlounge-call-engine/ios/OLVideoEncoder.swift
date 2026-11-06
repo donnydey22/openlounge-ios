@@ -22,41 +22,67 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
   /// Fan-out targets in layer/SSRC order (180p@15, 720p@30, 1080p@30).
   public static func fanoutTargets() -> [OLCameraFanout.Target] { portraitLayers.map { .init(width: $0.width, height: $0.height, fps: OLVideoSpecV2.fps($0)) } }
 
+  public private(set) var position: AVCaptureDevice.Position = .front
+  private var input: AVCaptureDeviceInput?, output: AVCaptureVideoDataOutput?
+
+  /// Synchronous part (throws to the caller): didActivate gate, all-3 HW encoders, fan-out, camera device + input.
+  /// AVCaptureSession configuration and startRunning run OFF the main thread on the capture queue.
   public func start(engine: PJSIPEngine = .shared, position: AVCaptureDevice.Position = .front) throws {
     guard engine.audioRunning else { throw OLVideoError.notActivated } // didActivate gate
-    // all 3 hardware layers or nothing
-    let enc = try makeEncoder()
+    guard session == nil else { return try flip(to: position) }
+    let enc = try makeEncoder() // all 3 hardware layers or nothing
     let fan: OLCameraFanout
     do { fan = try OLCameraFanout(targets: Self.fanoutTargets()) { [weak self] i, px, pts in self?.encoder?.encode(layer: i, px, pts: pts) } }
     catch { enc.teardown(); throw error }
-
+    guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+          let inp = try? AVCaptureDeviceInput(device: cam) else { fan.release(); enc.teardown(); throw OLVideoError.cameraUnavailable }
     let s = AVCaptureSession()
     s.automaticallyConfiguresApplicationAudioSession = false // audio session is owned by the CallKit/PJSIP path only
-    s.beginConfiguration()
-    s.sessionPreset = .hd1920x1080
-    guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
-          let input = try? AVCaptureDeviceInput(device: cam), s.canAddInput(input) else { s.commitConfiguration(); fan.release(); enc.teardown(); throw OLVideoError.cameraUnavailable }
-    s.addInput(input)
     let out = AVCaptureVideoDataOutput(); out.alwaysDiscardsLateVideoFrames = true
     out.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange]
-    out.setSampleBufferDelegate(self, queue: q)
-    guard s.canAddOutput(out) else { s.commitConfiguration(); fan.release(); enc.teardown(); throw OLVideoError.captureConfig("output") }
-    s.addOutput(out)
-    if let c = out.connection(with: .video) {
-      if c.isVideoOrientationSupported { c.videoOrientation = .portrait } // portrait-locked call screen
-      if position == .front, c.isVideoMirroringSupported { c.isVideoMirrored = false } // send unmirrored; preview mirrors in the view
-    }
-    if s.isMultitaskingCameraAccessSupported { s.isMultitaskingCameraAccessEnabled = true }
-    s.commitConfiguration()
-    setEncoder(enc); fanout = fan; session = s
+    setEncoder(enc); fanout = fan; session = s; input = inp; output = out; self.position = position
     let nc = NotificationCenter.default
     observers = [
-      nc.addObserver(forName: .AVCaptureSessionRuntimeError, object: s, queue: nil) { [weak self, weak s] _ in self?.q.async { s?.startRunning() } },
+      nc.addObserver(forName: .AVCaptureSessionRuntimeError, object: s, queue: nil) { [weak self, weak s] _ in self?.q.async { guard self?.session === s else { return }; s?.startRunning() } },
       nc.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: s, queue: nil) { [weak self] _ in self?.encoder?.forceKeyframe() },
-      // VideoToolbox drops HW sessions while backgrounded; the next encode returns -12903 -> rebuild (also probe on foreground).
+      // VideoToolbox drops HW sessions while backgrounded; the next encode returns -12903 -> rebuild (also IDR on foreground).
       nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in self?.encoder?.forceKeyframe() },
     ]
-    q.async { [weak self] in guard self?.session === s else { return }; s.startRunning() } // never starts after stop()
+    q.async { [weak self] in
+      guard let self, self.session === s else { return } // never configures/starts after stop()
+      s.beginConfiguration()
+      s.sessionPreset = s.canSetSessionPreset(.hd1920x1080) ? .hd1920x1080 : .hd1280x720
+      guard s.canAddInput(inp), s.canAddOutput(out) else { s.commitConfiguration(); NSLog("[OLVideo] capture config failed"); return }
+      s.addInput(inp); out.setSampleBufferDelegate(self, queue: self.q); s.addOutput(out)
+      self.orient(out, position)
+      // background/PiP: keep the camera running while multitasking where the OS allows it (else iOS freezes capture)
+      if s.isMultitaskingCameraAccessSupported { s.isMultitaskingCameraAccessEnabled = true }
+      s.commitConfiguration()
+      s.startRunning()
+    }
+  }
+
+  private func orient(_ out: AVCaptureVideoDataOutput, _ position: AVCaptureDevice.Position) {
+    guard let c = out.connection(with: .video) else { return }
+    if c.isVideoOrientationSupported { c.videoOrientation = .portrait } // portrait-locked call screen (rotated buffers, no CVO needed)
+    if c.isVideoMirroringSupported { c.isVideoMirrored = false } // send unmirrored; preview mirrors in the view
+  }
+
+  /// Front/back flip WITHOUT rebuilding encoders/fan-out/session: swap the input in one configuration, re-orient, IDR.
+  public func flip(to position: AVCaptureDevice.Position) throws {
+    guard let s = session, position != self.position else { return }
+    guard let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+          let inp = try? AVCaptureDeviceInput(device: cam) else { throw OLVideoError.cameraUnavailable }
+    self.position = position
+    q.async { [weak self] in
+      guard let self, self.session === s else { return }
+      s.beginConfiguration()
+      if let old = self.input { s.removeInput(old) }
+      if s.canAddInput(inp) { s.addInput(inp); self.input = inp } else if let old = self.input, s.canAddInput(old) { s.addInput(old) }
+      if let out = self.output { self.orient(out, position) }
+      s.commitConfiguration()
+      self.encoder?.forceKeyframe()
+    }
   }
 
   public func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
@@ -65,10 +91,16 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
     fanout?.push(sb)
   }
 
-  /// Teardown on every call end. Order (Android parity): session -> fan-out -> encoder.
+  /// Teardown on every call end. Order (Android parity): session -> camera input -> fan-out -> encoder. Never on q.
   public func stop() {
     observers.forEach(NotificationCenter.default.removeObserver); observers = []
-    if let s = session { q.sync { s.stopRunning() } }; session = nil
+    let s = session; session = nil // configure/start blocks queued on q see session !== s and bail
+    if let s { q.sync {
+      if s.isRunning { s.stopRunning() }
+      s.beginConfiguration(); s.inputs.forEach(s.removeInput); s.outputs.forEach(s.removeOutput); s.commitConfiguration()
+      output?.setSampleBufferDelegate(nil, queue: nil)
+    } }
+    input = nil; output = nil
     fanout?.release(); fanout = nil
     let e = encoder; setEncoder(nil); e?.teardown()
   }
