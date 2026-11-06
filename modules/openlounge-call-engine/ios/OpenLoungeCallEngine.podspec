@@ -26,6 +26,6 @@ Pod::Spec.new do |s|
   # onto the PeerConnection. CI: .github/workflows/signal-identical-ios.yml fetches/builds it.
   s.vendored_frameworks = ['pjproject.xcframework'] + (File.exist?(File.join(__dir__, 'WebRTC.xcframework')) ? ['WebRTC.xcframework'] : [])
   s.public_header_files = ['OLPjsip.h', 'ol_sfu.h', 'ol_sfu_video.h', 'ol_p2p.h']
-  s.preserve_paths = ['pjproject.xcframework', 'pjinclude/**/*']
+  s.preserve_paths = ['pjproject.xcframework', 'WebRTC.xcframework', 'pjinclude/**/*']
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES', 'GCC_PREPROCESSOR_DEFINITIONS' => 'PJ_AUTOCONF=1', 'HEADER_SEARCH_PATHS' => '"${PODS_TARGET_SRCROOT}/pjinclude"' }
 end
