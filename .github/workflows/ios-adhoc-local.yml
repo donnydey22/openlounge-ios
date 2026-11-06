@@ -16,6 +16,8 @@ jobs:
       EXPO_NO_TELEMETRY: '1'
     steps:
       - uses: actions/checkout@v4
+      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+        run: bash scripts/check-audio-session-owner.sh
       - uses: actions/setup-node@v4
         with:
           node-version: 22

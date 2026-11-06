@@ -93,4 +93,29 @@ public final class OLAudioSessionOwner {
       catch { NSLog("[OLAudio] forceReactivate failed: %@", error.localizedDescription) }
     }
   }
+
+  // MARK: - Sole AVAudioSession gateway (ARCHITECTURE.md "Audio session ownership"; scripts/check-audio-session-owner.sh)
+  // Every other file reads/changes the call audio session only through these. No other file may name
+  // AVAudioSession.sharedInstance() or call a session mutator; CI fails the build if one does.
+  public var currentRoute: AVAudioSessionRouteDescription { AVAudioSession.sharedInstance().currentRoute }
+  public var availableInputs: [AVAudioSessionPortDescription]? { AVAudioSession.sharedInstance().availableInputs }
+  /// Explicit user route pick. Speaker overrides any headset (like FaceTime); Phone moves input to the built-in mic so
+  /// iOS routes output to the receiver; a headset pick selects that headset's input, which routes output to it too.
+  public func applyUserRoute(kind: String, id: String, idOf: (AVAudioSessionPortDescription) -> String, kindOf: (AVAudioSessionPortDescription) -> String) {
+    assert(Thread.isMainThread)
+    let s = AVAudioSession.sharedInstance()
+    let builtIn = s.availableInputs?.first { $0.portType == .builtInMic }
+    switch kind {
+    case "speaker":
+      try? s.setPreferredInput(builtIn)
+      do { try s.overrideOutputAudioPort(.speaker) } catch { NSLog("[OLAudio] speaker override failed: %@", error.localizedDescription) }
+    case "earpiece":
+      try? s.overrideOutputAudioPort(.none)
+      try? s.setPreferredInput(builtIn)
+    default:
+      try? s.overrideOutputAudioPort(.none)
+      let match = s.availableInputs?.first { idOf($0) == id } ?? s.availableInputs?.first { kindOf($0) == kind }
+      if let match { try? s.setPreferredInput(match) } else { try? s.setPreferredInput(nil) } // output-only (A2DP/wired) = system choice
+    }
+  }
 }

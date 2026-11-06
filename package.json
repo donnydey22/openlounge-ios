@@ -12,7 +12,9 @@
     "doctor": "expo-doctor",
     "prebuild:ios": "expo prebuild --platform ios --no-install --clean",
     "test:bridge": "node scripts/check-bridge.cjs",
-    "assets": "node scripts/generate-assets.mjs"
+    "assets": "node scripts/generate-assets.mjs",
+    "eas-build-pre-install": "bash scripts/check-audio-session-owner.sh",
+    "check:audio-session": "bash scripts/check-audio-session-owner.sh"
   },
   "dependencies": {
     "@react-native-firebase/app": "^26.4.0",

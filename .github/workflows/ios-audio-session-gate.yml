@@ -1,0 +1,14 @@
+name: ios-audio-session-gate
+# Required on EVERY push and EVERY pull request (all branches). No paths filter, no skip input, no continue-on-error.
+on:
+  push: { branches: ['**'] }
+  pull_request: { branches: ['**'] }
+  workflow_dispatch: {}
+permissions: { contents: read }
+jobs:
+  audio-session-owner:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+        run: bash scripts/check-audio-session-owner.sh
