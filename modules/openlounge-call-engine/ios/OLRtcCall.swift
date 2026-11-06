@@ -301,7 +301,7 @@ extension OLRtcCall: RTCPeerConnectionDelegate {
         if !self.everConnected { self.everConnected = true
           if self.isCaller {
             self.turnLeaseTimer = Timer.scheduledTimer(withTimeInterval: 480, repeats: true) { [weak self] _ in
-              guard let self, self.pc != nil else { return }; self.iceRestart()
+              guard let self, self.pc != nil else { return }; self.restartStarted = nil; self.restartAttempt = 0; self.iceRestart()
             }
           }
           self.finish(.success(())) }
