@@ -41,15 +41,17 @@ public final class OLSimulcastEncoder {
     for (i, l) in (override ?? OLVideoSpecV2.layers).enumerated() {
       var s: VTCompressionSession?
       let st = VTCompressionSessionCreate(allocator: nil, width: l.width, height: l.height, codecType: codec, encoderSpecification: spec,
-                                          imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s)
+                                          imageBufferAttributes: [kCVPixelBufferWidthKey: Int(l.width), kCVPixelBufferHeightKey: Int(l.height), kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange] as CFDictionary,
+                                          compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s)
       guard st == noErr, let s else { teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: i, status: st) }
       func set(_ k: CFString, _ v: CFTypeRef) { VTSessionSetProperty(s, key: k, value: v) }
       set(kVTCompressionPropertyKey_RealTime, kCFBooleanTrue)
       set(kVTCompressionPropertyKey_AllowFrameReordering, kCFBooleanFalse)
       set(kVTCompressionPropertyKey_AverageBitRate, l.bps as CFNumber)
-      set(kVTCompressionPropertyKey_DataRateLimits, [l.bps / 8, 1] as CFArray)
+      set(kVTCompressionPropertyKey_DataRateLimits, [l.bps * 3 / 16, 1] as CFArray) // 1.5x avg over 1 s so 2 s IDRs are not starved
       set(kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration, OLVideoSpecV2.keyframeSeconds as CFNumber)
-      set(kVTCompressionPropertyKey_ExpectedFrameRate, (l.ultrafast ? 15 : 30) as CFNumber)
+      set(kVTCompressionPropertyKey_ExpectedFrameRate, OLVideoSpecV2.fps(l) as CFNumber)
+      set(kVTCompressionPropertyKey_MaxKeyFrameInterval, (OLVideoSpecV2.keyframeSeconds * OLVideoSpecV2.fps(l)) as CFNumber)
       // ultrafast = prioritize speed over quality; fast = realtime without the speed override
       set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, (l.ultrafast ? kCFBooleanTrue : kCFBooleanFalse)!)
       if codec == kCMVideoCodecType_H264 { set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel) }
