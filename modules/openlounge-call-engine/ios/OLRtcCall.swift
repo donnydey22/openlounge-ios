@@ -168,13 +168,15 @@ public final class OLRtcCall: NSObject {
   }
 
   private func makeOffer(restart: Bool) {
-    guard !offerInFlight else { return }; offerInFlight = true
+    guard let pc, !offerInFlight else { return }; offerInFlight = true
     let c = RTCMediaConstraints(mandatoryConstraints: restart ? ["IceRestart": "true"] : nil, optionalConstraints: nil)
-    pc?.offer(for: c) { [weak self] sdp, e in
+    pc.offer(for: c) { [weak self] sdp, e in
       DispatchQueue.main.async {
-        guard let self, let sdp else { self?.offerInFlight = false; self?.terminal(.local("offer \(e?.localizedDescription ?? "?")")); return }
-        self.pc?.setLocalDescription(sdp) { e in
+        guard let self, self.pc === pc else { return }
+        guard let sdp else { self.offerInFlight = false; self.terminal(.local("offer \(e?.localizedDescription ?? "?")")); return }
+        pc.setLocalDescription(sdp) { e in
           DispatchQueue.main.async {
+            guard self.pc === pc else { return }
             self.offerInFlight = false
             if let e { self.terminal(.local("setLocal offer \(e.localizedDescription)")); return }
             self.currentOffer = sdp
@@ -193,18 +195,21 @@ public final class OLRtcCall: NSObject {
     answerInFlight = true
     pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] e in
       DispatchQueue.main.async {
-        guard let self else { return }
+        guard let self, self.pc === pc else { return }
         if let e { return self.terminal(.local("setRemote offer \(e.localizedDescription)")) }
-        if let tx = self.pc?.transceivers.first(where: { $0.mediaType == .video }) {
-          do { try tx.setDirection(.sendRecv) } catch { return self.terminal(.local("video direction \(error)")) }
+        if let tx = pc.transceivers.first(where: { $0.mediaType == .video }) {
+          var directionError: NSError?
+          tx.setDirection(.sendRecv, error: &directionError)
+          if let directionError { return self.terminal(.local("video direction \(directionError.domain):\(directionError.code) \(directionError.localizedDescription)")) }
           tx.sender.track = OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory)
         }
         self.flushCandidates()
-        self.pc?.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { a, e in
+        pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { a, e in
           DispatchQueue.main.async {
+            guard self.pc === pc else { return }
             guard let a else { return self.terminal(.local("answer \(e?.localizedDescription ?? "?")")) }
-            self.pc?.setLocalDescription(a) { e in
-              DispatchQueue.main.async { if let e { self.terminal(.local("setLocal answer \(e.localizedDescription)")) } else { self.answerInFlight = false; self.send("answer", extra: ["sdp": a.sdp]) } }
+            pc.setLocalDescription(a) { e in
+              DispatchQueue.main.async { guard self.pc === pc else { return }; if let e { self.terminal(.local("setLocal answer \(e.localizedDescription)")) } else { self.answerInFlight = false; self.send("answer", extra: ["sdp": a.sdp]) } }
             }
           }
         }
