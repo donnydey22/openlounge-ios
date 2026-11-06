@@ -20,8 +20,6 @@ int ol_pjsip_start(int mn, int mx, int jm) {
   pjsua_acc_add(&a, PJ_TRUE, NULL);
   started = 1; return 0;
 }
-int ol_pjsip_open_sound(void) { return started ? pjsua_set_snd_dev(PJMEDIA_AUD_DEFAULT_CAPTURE_DEV, PJMEDIA_AUD_DEFAULT_PLAYBACK_DEV) : -1; }
-void ol_pjsip_close_sound(void) { if (started) pjsua_set_no_snd_dev(); }
 void ol_pjsip_teardown(void) { if (started) { pjsua_call_hangup_all(); pjsua_set_no_snd_dev(); } }
 /* Video (t4464u): H.264 base via VideoToolbox (pjmedia vid_toolbox codec). QuickHD: start at high res/bitrate,
    ol_pjsip_video_steady() drops to steady caps after the burst. pjmedia 2.17 has no AV1 codec; AV1 hw is only

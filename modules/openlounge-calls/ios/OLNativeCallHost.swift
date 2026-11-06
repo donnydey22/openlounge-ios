@@ -149,7 +149,7 @@ struct OLNativeCallView: View {
             }
             roundBtn(model.muted ? "Unmute" : "Mute", color: Color.white.opacity(0.15)) {
               model.muted.toggle()
-              NativeCallMedia.shared.setMute(model.muted)
+              NativeCallMedia.shared.setMute(model.muted); OLCallAudioEngine.shared.setMute(model.muted)
             }
             roundBtn("End", color: Color(red: 0.937, green: 0.267, blue: 0.267)) {
               OLCallManager.shared.endFromApp()

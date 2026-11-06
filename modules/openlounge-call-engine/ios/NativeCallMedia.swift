@@ -4,7 +4,8 @@
 //   -> ms:plain:consume, then the PJSIP SRTP leg (ol_sfu_audio_start). Video: own "video" PlainTransport + key,
 //   3 simulcast SSRCs, H.264 PT 102 (pjsipMedia.ts:33-49), consume polled every 1.5 s until the peer's video exists.
 // Audio is never started by this file: the sound device opens only from CallKit didActivate
-// (PJSIPEngine.audioSessionDidActivate); a leg started after activation reopens it (PJSIPEngine.ensureSound).
+// Call AUDIO capture/playout is owned solely by OLCallAudioEngine (WebRTC manual audio, after CallKit didActivate).
+// This file no longer opens any sound device; PJSIP legs here are transport-only pending the OL rtcSession contract.
 // Telegram does the same: OngoingCallContext is built with audioSessionActive = CallKit's signal
 // (tgios PresentationCall.swift:410-437, :1218-1225; CallKitIntegration.swift:411-414).
 import Foundation
@@ -124,7 +125,6 @@ public final class NativeCallMedia {
   @discardableResult private func startLeg(_ l: Leg) -> Int32 {
     PJSIPEngine.shared.start()
     let r = ol_sfu_audio_start(l.ip, Int32(l.port), l.tx, l.rx, l.ssrc, 111, Int32(l.rxPt), 0)
-    PJSIPEngine.shared.ensureSound(path: "startLeg") // leg (re)started after didActivate: reopen sound now (no-op before activation)
     return r
   }
 
@@ -377,7 +377,6 @@ public final class NativeCallMedia {
   private func directUp() {
     p2p = .live; _ = ol_p2p_activate(1)
     var rx: UInt32 = 0, lost: UInt32 = 0, tx: UInt32 = 0; _ = ol_p2p_stats(&rx, &lost, &tx); lastRx = rx; lastRxAt = Date()
-    PJSIPEngine.shared.ensureSound(path: "directUp") // no-op until CallKit didActivate
     startDirectVideo(callId: p2pCallId, cameraOn: directVideo && directDone != nil) // receive side always ready
     if videoStarted { videoP2p = ol_p2p_video_live(1) == 0 }
     finishDirect(true, nil)

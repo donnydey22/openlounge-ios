@@ -18,8 +18,8 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
   /// Fan-out targets in layer/SSRC order (180p@15, 720p@30, 1080p@30).
   public static func fanoutTargets() -> [OLCameraFanout.Target] { portraitLayers.map { .init(width: $0.width, height: $0.height, fps: OLVideoSpecV2.fps($0)) } }
 
-  public func start(engine: PJSIPEngine = .shared, position: AVCaptureDevice.Position = .front) throws {
-    guard engine.audioRunning else { throw OLVideoError.notActivated } // didActivate gate
+  public func start(position: AVCaptureDevice.Position = .front) throws {
+    guard OLCallAudioEngine.shared.isRunning else { throw OLVideoError.notActivated } // didActivate gate
     // all 3 hardware layers or nothing
     let enc = try OLSimulcastEncoder(layers: Self.portraitLayers)
     guard enc.layerCount == 3 else { enc.teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: enc.layerCount, status: -3) }

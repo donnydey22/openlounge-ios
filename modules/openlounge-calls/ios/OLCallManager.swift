@@ -174,6 +174,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     // Linphone cut: no prepareHeadsetSession at launch — owner configures only for calls.
     OLCallAudioHost.shared.armAtLaunch()
     OLCallDiskLog.shared.mark("app-launch", "call manager ready")
+    // Signal-identical activation chain: owner (sole AVAudioSession) → engine (WebRTC manual audio).
+    OLAudioSessionOwner.shared.onActivated = { g in OLCallAudioEngine.shared.sessionActivated(g) }
+    OLAudioSessionOwner.shared.onDeactivated = { g in OLCallAudioEngine.shared.sessionDeactivated(g) }
     NativeCallMedia.shared.onIsCaller = { [weak self] id in self?.call(id).map { !$0.incoming } ?? false }
     NativeCallMedia.shared.onVideo = { [weak self] id, local, remote in
       self?.emit(["type": "video", "callId": id, "local": local, "remote": remote])
@@ -483,7 +486,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     stopTimers(c)
     callVideo = c.video
     speaker = c.video // earpiece audio / speaker video
-    beginCallAudioSession()
+    guard beginCallAudioSession(c) else { action.fail(); return } // configure BEFORE fulfill
     action.fulfill() // CallKitIntegration.swift:372-373: answerCall(uuid) then fulfill
     emit(["type": "answer", "callId": c.callId, "video": c.video]) // JS: unlock + drop the lock-screen card only
     emitState(c, "connecting")
@@ -517,7 +520,19 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     NativeCallMedia.shared.connect(signal, callId: c.callId, video: c.video, direct: direct) { [weak self] ok, err in
       guard let self, self.calls[c.uuid] === c, !c.ended else { return }
       if !ok { NSLog("[OLCalls] native media setup failed: %@", err ?? "?"); return }
-      self.markConnected(c)
+      // No connected/media-active UI until audio is actually running (activation precedes capture both directions).
+      OLCallAudioEngine.shared.startMedia(lease: { cb in
+        OLAudioSessionOwner.shared.whenActive { r in cb(r.mapError { $0 as Error }) }
+      }) { [weak self] r in
+        guard let self, self.calls[c.uuid] === c, !c.ended else { return }
+        switch r {
+        case .success: self.markConnected(c)
+        case .failure(let e):
+          // LOCAL audio failure: explicit end, never relay/TURN fallback.
+          OLCallDiskLog.shared.mark("audio-start-failed", e.description)
+          self.endFromRemote(c, reason: .failed)
+        }
+      }
     }
   }
 
@@ -605,8 +620,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     clearStaleCalls()
     if hasLiveCall { done(["ok": false, "error": "You're already in a call", "reason": "self_busy"]); return }
     callVideo = video
-    speaker = video // Linphone default: earpiece audio, speaker video
-    beginCallAudioSession()
+    speaker = video // earpiece audio, speaker video; session configured in CXStartCallAction before fulfill
     signal.start(peerId: peerId, video: video) { [weak self] r in
       guard let self else { return }
       guard r["ok"] as? Bool == true, let info = r["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else {
@@ -717,7 +731,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
     OLCallDiskLog.shared.mark("callkit", "mute")
     action.fulfill()
-    NativeCallMedia.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
+    NativeCallMedia.shared.setMute(action.isMuted); OLCallAudioEngine.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
     emit(["type": "muted", "muted": action.isMuted]) // our call screen's Mute state
     if let i = pendingPageMutes.firstIndex(of: action.isMuted) { pendingPageMutes.removeSubrange(0...i); return } // echo of a page tap
     if pageMuted == action.isMuted { return } // already the page's state
@@ -729,7 +743,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "start")
     guard let c = calls[action.callUUID] else { action.fail(); return }
     callVideo = c.video
-    beginCallAudioSession()
+    guard beginCallAudioSession(c) else { action.fail(); return } // configure BEFORE fulfill
     provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
     action.fulfill()
   }
@@ -761,20 +775,18 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     OLCallDiskLog.shared.mark("callkit", "didActivate")
-    // Linphone: flag → owner.applyRoute → open sound. Category already set pre-activation.
+    // Signal: forward activation to the sole owner → RTCAudioSession → lease resolves → engine enables audio.
     callKitAudioActive = true
+    OLAudioSessionOwner.shared.callKitDidActivate(audioSession)
     OLAudioSessionOwner.shared.applyRoute(speakerWanted: speaker, headsetAttached: Self.headsetAttached())
-    PJSIPEngine.shared.audioSessionDidActivate(audioSession)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
   }
 
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     OLCallDiskLog.shared.mark("callkit", "didDeactivate")
     callKitAudioActive = false
-    PJSIPEngine.shared.audioSessionDidDeactivate()
-    // Linphone cut: NO teardown here — teardown only on call end. Pop call holder.
-    endCallAudioSession(popOnly: true)
-    _ = audioSession
+    // Suspend media; KEEP the call holder (resume on the next didActivate). Teardown only on call end.
+    OLAudioSessionOwner.shared.callKitDidDeactivate(audioSession)
   }
 
   // MARK: - page → native (src/calls.ts forwards {type:"call:*"} bridge messages)
@@ -833,8 +845,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       let nativeMedia = video && ((m["nativeMedia"] as? Bool) ?? false)
       callVideo = video
       speaker = video // earpiece audio / speaker video
-      guard Self.valid(callId), call(callId) == nil, !hasLiveCall else { return } // Linphone: never reconfigure a live call
-      beginCallAudioSession()
+      guard Self.valid(callId), call(callId) == nil, !hasLiveCall else { return } // never reconfigure a live call
       var name = String(((m["name"] as? String) ?? "").prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
       if name.isEmpty { name = "Open Lounge" }
       let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video, nativeMedia: nativeMedia)
@@ -908,7 +919,6 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       pageMuted = nil
       pendingPageMutes = []
       stopRingback()
-      PJSIPEngine.shared.teardown()
       endCallAudioSession()
 
     case "call:muted":
@@ -1022,14 +1032,15 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLAudioSessionOwner.shared.applyUserRoute(kind: pick.kind, id: pick.id) { Self.routeId(Self.routeKind($0.portType), $0.portName) } kindOf: { Self.routeKind($0.portType) }
   }
 
-  /// Push call holder + configure playAndRecord/voiceChat BEFORE CallKit activation. Never setActive.
-  private func beginCallAudioSession() {
+  /// Push call holder + configure playAndRecord/voiceChat BEFORE the CallKit action is fulfilled. Never setActive.
+  /// Returns false (caller fails the CXAction) when configuration fails — errors are not swallowed.
+  @discardableResult
+  private func beginCallAudioSession(_ c: OLCall) -> Bool {
     OLCallDiskLog.shared.mark("callkit", "audio-session-configure")
-    if callHolder == nil {
-      callHolder = OLAudioSessionOwner.shared.push(.call)
-    }
-    PJSIPEngine.shared.resetForNewCall()
-    OLAudioSessionOwner.shared.configureForCall(speakerWanted: speaker)
+    if callHolder == nil { callHolder = OLAudioSessionOwner.shared.push(.call) }
+    OLCallAudioEngine.shared.prepare(callId: c.callId)
+    do { try OLAudioSessionOwner.shared.configureForCall(); return true }
+    catch { OLCallDiskLog.shared.mark("audio-configure-failed", "\(error)"); return false }
   }
 
   /// Pop call holder after didDeactivate / call end. Teardown only when popOnly is false (call end).
@@ -1041,6 +1052,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       speaker = true
       callVideo = false
     }
+    OLCallAudioEngine.shared.end()
     OLAudioSessionOwner.shared.pop(callHolder)
     callHolder = nil
   }
@@ -1124,10 +1136,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         if self.hasLiveCall { NSLog("[OLCalls] interruption began (holder kept)") }
         return
       }
-      // .ended: reopen sound if call live and not running
-      if self.hasLiveCall && self.callKitAudioActive && !PJSIPEngine.shared.audioRunning {
-        PJSIPEngine.shared.reopenSound()
-      }
+      // .ended: CallKit re-sends didActivate when it returns the session; the owner/engine resume on that
+      // generation exactly once. No app-side setActive or reopen here.
+      _ = typ
     }
   }
 
@@ -1135,8 +1146,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "audio-media-services-lost")
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       guard let self, self.hasLiveCall else { return }
-      OLAudioSessionOwner.shared.configureForCall(speakerWanted: self.speaker)
-      PJSIPEngine.shared.reopenSound()
+      _ = self // lost → wait for reset notification; nothing to reopen yet
     }
   }
 
@@ -1144,9 +1154,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "audio-media-services-reset")
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       guard let self, self.hasLiveCall else { return }
-      OLAudioSessionOwner.shared.configureForCall(speakerWanted: self.speaker)
-      OLAudioSessionOwner.shared.forceReactivateIfInactive()
-      PJSIPEngine.shared.reopenSound()
+      // Re-configure once; media resumes on the next CallKit activation (owner generation). No forced setActive.
+      do { try OLAudioSessionOwner.shared.mediaServicesReset() }
+      catch { OLCallDiskLog.shared.mark("audio-reset-failed", "\(error)") }
     }
   }
 
