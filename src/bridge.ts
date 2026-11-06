@@ -355,6 +355,7 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
     };
     // build 18+: the page posts call:* messages and CallKit drives openlounge:native-call (engine.ts postNative)
     if (${nativeCalls ? 'true' : 'false'}) { try { window.__olNativeCalls = 1; window.__olNativeRingback = 2; } catch (e) {} }
+    if (${nativeCalls && pjsipMedia ? 'true' : 'false'}) { try { window.__olShellAudioLock = 1; } catch (e) {} }
     // b104: no WebView in calls. The server rings every socket of the user (service.ts emitUser -> io.to(user:<id>)),
     // so the page's socket would ring and answer too. The app's own socket (CallSignalClient) owns every call; on the
     // page's /ws socket this shim drops call:* / ms:* pushes, answers the page's call requests locally, and hands the
