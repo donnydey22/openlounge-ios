@@ -55,8 +55,8 @@ public final class OLSimulcastEncoder {
       // ultrafast = prioritize speed over quality; fast = realtime without the speed override
       set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, (l.ultrafast ? kCFBooleanTrue : kCFBooleanFalse)!)
       if codec == kCMVideoCodecType_H264 { set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel) }
-      var hw: CFBoolean?
-      let hq = VTSessionCopyProperty(s, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, allocator: nil, valueOut: &hw)
+      var hw: CFBoolean? // string key: the kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder symbol is iOS 17.4+
+      let hq = VTSessionCopyProperty(s, key: "UsingHardwareAcceleratedVideoEncoder" as CFString, allocator: nil, valueOut: &hw)
       guard hq == noErr, hw == kCFBooleanTrue else { VTCompressionSessionInvalidate(s); teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: i, status: hq == noErr ? -1 : hq) }
       guard VTCompressionSessionPrepareToEncodeFrames(s) == noErr else { VTCompressionSessionInvalidate(s); teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: i, status: -2) }
       sessions.append(s)
