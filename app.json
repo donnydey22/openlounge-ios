@@ -3,14 +3,14 @@
     "name": "Open Lounge",
     "slug": "openlounge",
     "scheme": "openlounge",
-    "version": "0.3.19",
+    "version": "0.3.20",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "backgroundColor": "#1C1C1E",
     "ios": {
       "bundleIdentifier": "com.donnydey.openlounge",
-      "buildNumber": "114",
+      "buildNumber": "128",
       "deploymentTarget": "16.4",
       "supportsTablet": false,
       "icon": {

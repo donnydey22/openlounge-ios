@@ -309,7 +309,7 @@ export function injectedBeforeContentLoaded(platform: string, appVersion: string
       getBuildNumber: function () { return ${JSON.stringify(appBuild)}; },
       // nativeVideo is deliberately separate from nativeMedia: legacy audio-only wrappers must retain WebView video.
       // nativeQualityV1 gates serialized app-owned camera adaptation to this paired-media wrapper release.
-      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? (nativeEngine ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1', 'rtcP2P'" : ", 'calls'") : ''}]),
+      capabilities: Object.freeze(['session', 'theme', 'ready', 'haptic', 'haptics', 'openAuth', 'openExternal', 'browser', 'camera', 'push', 'share', 'contacts', 'badge', 'biometrics', 'phoneAuth'${nativeCalls ? (nativeEngine ? ", 'calls', 'nativeMedia', 'nativeVideo', 'nativeQualityV1', 'rtcP2P', 'ol-rc-v1'" : ", 'calls'") : ''}]),
       // native call media (iOS app owns mic + transports + AVAudioSession; the page relays signaling)
       nativeMedia: function (cmd) { return call('nativeMedia', cmd, 30000); },
       // b104: the page relay is gone (the app has its own socket); kept as a no-op so the page stays in app-owned

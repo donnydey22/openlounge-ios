@@ -65,11 +65,13 @@ public final class CallSignalClient: NSObject, URLSessionWebSocketDelegate {
 
   /// request/response; `reply` gets the server's data, or {ok:false,error} on timeout / socket loss. Main queue.
   public func request(_ ev: String, _ data: [String: Any], timeout: TimeInterval = 10, reply: Reply? = nil) {
+    var payload = data
+    if ev.hasPrefix("call:") { payload["protocol"] = "ol-rc-v1" }
     // registered now so a socket that never signs in still answers (timeout), sent once signed in
     let id = takeId(registering: reply ?? { _ in }, timeout: timeout + (authed ? 0 : 10))
     whenAuthed { [weak self] in
       guard let self, self.pending[id] != nil, let t = self.task else { return }
-      self.sendFrame(["t": "req", "id": id, "ev": ev, "data": data], on: t)
+      self.sendFrame(["t": "req", "id": id, "ev": ev, "data": payload], on: t)
     }
   }
 
