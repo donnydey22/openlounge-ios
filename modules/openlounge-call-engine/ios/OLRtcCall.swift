@@ -42,6 +42,7 @@ public final class OLRtcCall: NSObject {
   private var pendingRemote: [RTCIceCandidate] = []
   private var currentOffer: RTCSessionDescription?
   private var offerInFlight = false
+  private var answerInFlight = false
   private var pendingSignals: [[String: Any]] = []
   #endif
 
@@ -185,7 +186,12 @@ public final class OLRtcCall: NSObject {
   }
 
   private func acceptOffer(_ sdp: String) {
-    pc?.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] e in
+    guard let pc, !answerInFlight else { return }
+    if pc.remoteDescription?.sdp == sdp, pc.signalingState == .stable, let answer = pc.localDescription, answer.type == .answer {
+      send("answer", extra: ["sdp": answer.sdp]); return
+    }
+    answerInFlight = true
+    pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] e in
       DispatchQueue.main.async {
         guard let self else { return }
         if let e { return self.terminal(.local("setRemote offer \(e.localizedDescription)")) }
@@ -198,7 +204,7 @@ public final class OLRtcCall: NSObject {
           DispatchQueue.main.async {
             guard let a else { return self.terminal(.local("answer \(e?.localizedDescription ?? "?")")) }
             self.pc?.setLocalDescription(a) { e in
-              DispatchQueue.main.async { if let e { self.terminal(.local("setLocal answer \(e.localizedDescription)")) } else { self.send("answer", extra: ["sdp": a.sdp]) } }
+              DispatchQueue.main.async { if let e { self.terminal(.local("setLocal answer \(e.localizedDescription)")) } else { self.answerInFlight = false; self.send("answer", extra: ["sdp": a.sdp]) } }
             }
           }
         }
@@ -254,7 +260,7 @@ public final class OLRtcCall: NSObject {
     if sendBye, callId != nil { send("bye") }
     discoTimer?.invalidate(); discoTimer = nil
     #if canImport(WebRTC)
-    pc?.close(); pc = nil; pendingRemote = []; currentOffer = nil; offerInFlight = false; pendingSignals = []
+    pc?.close(); pc = nil; pendingRemote = []; currentOffer = nil; offerInFlight = false; answerInFlight = false; pendingSignals = []
     #endif
     if let id = callId { OLRcCallManager.shared.end(id, .normal, .localHangup) }
     rc?.close(); rc = nil
