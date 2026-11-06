@@ -14,6 +14,8 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
     // Video spec v2 send path: each layer's Annex-B AU -> engine RTP/SRTP on the "video" PlainTransport (own SSRC per layer)
     enc.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
     let s = AVCaptureSession(); s.sessionPreset = .hd1920x1080
+    // Linphone cut: camera must not reconfigure the call AVAudioSession.
+    s.automaticallyConfiguresApplicationAudioSession = false
     if let cam = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position), let input = try? AVCaptureDeviceInput(device: cam), s.canAddInput(input) { s.addInput(input) }
     let out = AVCaptureVideoDataOutput(); out.alwaysDiscardsLateVideoFrames = true; out.setSampleBufferDelegate(self, queue: q)
     if s.canAddOutput(out) { s.addOutput(out) }

@@ -22,7 +22,7 @@ import UIKit
 //   CallKit End/Mute    ─▶ JS injects openlounge:native-call {call:hangup | call:mute}
 //   page call:*         ─▶ mirror into CallKit (outgoing call, connected, ended, muted) + audio route
 //
-// Audio: while a call is up the app's AVAudioSession is playAndRecord + voiceChat/videoChat with
+// Audio: while a call is up the app's AVAudioSession is playAndRecord + voiceChat (Linphone; video too) with
 // defaultToSpeaker + Bluetooth, so ringback and the call never land on the earpiece unexpectedly;
 // the previous category is restored afterwards. All state lives on the main queue.
 
@@ -128,21 +128,14 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private var jsReady = false
   private weak var module: OpenLoungeCallsModule?
 
-  // audio
-  private var savedAudio: (AVAudioSession.Category, AVAudioSession.Mode, AVAudioSession.CategoryOptions)?
+  // audio — sole path via OLAudioSessionOwner (Linphone-spec). No savedAudio category restore.
   private var speaker = true
   private var callVideo = false
-  /// native outgoing ringback (the page skips its own when window.__olNativeRingback is set)
+  /// Interim ringback player (R3): no session calls, no watchdog. PJSIP ringback shim is the target.
   private var ringback: AVAudioPlayer?
-  /// 1 s watchdog while an outgoing call rings: restarts the player whenever it is not playing (b31 root cause: WebKit's
-  /// mic capture / WebRTC audio unit re-activating the shared AVAudioSession right after CallKit activation stopped the
-  /// AVAudioPlayer, and nothing ever restarted it) and reports {playing} to the page so the web ring can take over.
-  private var ringbackTimer: Timer?
-  private var ringbackReported: Bool?
-  /// CallKit owns activation while it has the session; activating it ourselves mid-call re-routes WebKit's capture
+  /// CallKit owns activation while it has the session
   private var callKitAudioActive = false
-  /// the page's web ringback owns the tone for this call (call:ringbackStop) → native stays silent
-  private var webOwnsRingback = false
+  private var callHolder: OLAudioHolderToken?
   private var pageMuted: Bool?
   /// FX-063: page-requested mute values whose CXSetMutedCallAction has not been performed yet (in tap order). Fast taps
   /// queue several transactions; matching each performed action against this FIFO (not just the latest value) keeps
@@ -174,8 +167,12 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       name: AVAudioSession.interruptionNotification, object: nil)
     NotificationCenter.default.addObserver(
       self, selector: #selector(onMediaServicesLost(_:)),
-      name: AVAudioSession.mediaServicesWereLostNotification, object: nil) // Telegram ManagedAudioSession.swift:429
-    prepareHeadsetSession()
+      name: AVAudioSession.mediaServicesWereLostNotification, object: nil)
+    NotificationCenter.default.addObserver(
+      self, selector: #selector(onMediaServicesReset(_:)),
+      name: AVAudioSession.mediaServicesWereResetNotification, object: nil)
+    // Linphone cut: no prepareHeadsetSession at launch — owner configures only for calls.
+    OLCallAudioHost.shared.armAtLaunch()
     OLCallDiskLog.shared.mark("app-launch", "call manager ready")
     NativeCallMedia.shared.onIsCaller = { [weak self] id in self?.call(id).map { !$0.incoming } ?? false }
     NativeCallMedia.shared.onVideo = { [weak self] id, local, remote in
@@ -402,7 +399,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     stopTimers(c)
     calls[c.uuid] = nil
     provider?.reportCall(with: c.uuid, endedAt: nil, reason: reason)
-    restoreAudioIfIdle()
+    endCallAudioSession()
   }
 
   private func poll(_ c: OLCall) {
@@ -476,7 +473,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     }
     calls.removeAll()
     NativeCallMedia.shared.closeAll()
-    restoreAudioIfIdle()
+    endCallAudioSession()
   }
 
   public func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
@@ -485,7 +482,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     c.answered = true
     stopTimers(c)
     callVideo = c.video
-    configureAudio()
+    speaker = c.video // earpiece audio / speaker video
+    beginCallAudioSession()
     action.fulfill() // CallKitIntegration.swift:372-373: answerCall(uuid) then fulfill
     emit(["type": "answer", "callId": c.callId, "video": c.video]) // JS: unlock + drop the lock-screen card only
     emitState(c, "connecting")
@@ -542,7 +540,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     pageMuted = nil; pendingPageMutes = []
     stopRingback()
     emitState(c, "terminated")
-    restoreAudioIfIdle(force: true)
+    endCallAudioSession()
   }
 
   private func emitState(_ c: OLCall, _ state: String) {
@@ -606,14 +604,13 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     clearStaleCalls()
     if hasLiveCall { done(["ok": false, "error": "You're already in a call", "reason": "self_busy"]); return }
     callVideo = video
-    speaker = true
-    webOwnsRingback = false
-    configureAudio() // pre-call prep before the CallKit transaction (as call:outgoing did)
+    speaker = video // Linphone default: earpiece audio, speaker video
+    beginCallAudioSession()
     signal.start(peerId: peerId, video: video) { [weak self] r in
       guard let self else { return }
       guard r["ok"] as? Bool == true, let info = r["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else {
         done(r) // busy / not allowed / unavailable: the page shows its own message, as before
-        self.restoreAudioIfIdle(force: true)
+        self.endCallAudioSession()
         return
       }
       done(["ok": false, "error": "", "reason": "native"]) // page stays out of the call (empty error = no toast)
@@ -712,7 +709,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     NativeCallMedia.shared.closeAll() // PresentationCall.swift:1541 ongoingContext.stop
     emitState(c, "terminated")
     action.fulfill(withDateEnded: Date()) // CallKitIntegration.swift:392
-    restoreAudioIfIdle()
+    endCallAudioSession()
   }
 
   public func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
@@ -730,7 +727,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "start")
     guard let c = calls[action.callUUID] else { action.fail(); return }
     callVideo = c.video
-    configureAudio()
+    beginCallAudioSession()
     provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
     action.fulfill()
   }
@@ -747,10 +744,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
     OLCallDiskLog.shared.mark("callkit", "didActivate")
-    // Telegram ManagedAudioSession.swift:1260-1270 callKitActivatedAudioSession: set the flag, notify the holders.
-    // Category/mode were set before activation (CXStart/CXAnswer actions → configureAudio, Telegram setup() :940-984).
+    // Linphone: flag → owner.applyRoute → open sound. Category already set pre-activation.
     callKitAudioActive = true
-    PJSIPEngine.shared.audioSessionDidActivate(audioSession) // holder: PJSIP audio starts only here
+    OLAudioSessionOwner.shared.applyRoute(speakerWanted: speaker, headsetAttached: Self.headsetAttached())
+    PJSIPEngine.shared.audioSessionDidActivate(audioSession)
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
   }
 
@@ -758,7 +755,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "didDeactivate")
     callKitAudioActive = false
     PJSIPEngine.shared.audioSessionDidDeactivate()
-    PJSIPEngine.shared.teardown()
+    // Linphone cut: NO teardown here — teardown only on call end. Pop call holder.
+    endCallAudioSession(popOnly: true)
+    _ = audioSession
   }
 
   // MARK: - page → native (src/calls.ts forwards {type:"call:*"} bridge messages)
@@ -808,21 +807,17 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       }
 
     case "call:ringtonePrepare":
-      // page is about to play the incoming ringtone (tones.ts): ring/speaker session, not a left-over call session
-      prepareRingtoneSession()
+      // Linphone cut: CallKit owns ringtone. prepareRingtoneSession deleted — no-op.
+      break
 
     case "call:outgoing":
       let video = (m["video"] as? Bool) ?? false
       // This value comes from the server-issued call media grant and is never inferred merely from video=true.
       let nativeMedia = video && ((m["nativeMedia"] as? Bool) ?? false)
       callVideo = video
-      speaker = true
-      webOwnsRingback = false
-      guard Self.valid(callId), call(callId) == nil, !hasLiveCall else { configureAudio(); return }
-      // pre-call prep (Android's audio-focus step): category/mode/options for the call are set BEFORE the CallKit
-      // transaction, so activation only flips the already-configured session live instead of reconfiguring it under
-      // WebKit's running capture. Not activated here — CallKit owns activation.
-      configureAudio()
+      speaker = video // earpiece audio / speaker video
+      guard Self.valid(callId), call(callId) == nil, !hasLiveCall else { return } // Linphone: never reconfigure a live call
+      beginCallAudioSession()
       var name = String(((m["name"] as? String) ?? "").prefix(80)).trimmingCharacters(in: .whitespacesAndNewlines)
       if name.isEmpty { name = "Open Lounge" }
       let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video, nativeMedia: nativeMedia)
@@ -836,9 +831,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
           if let err = err {
             NSLog("[OLCalls] outgoing CallKit call refused: %@", err.localizedDescription)
             self.calls[c.uuid] = nil
-            self.configureAudio() // still route ringback to the speaker
-            // the page skips its ringback inside the app: without CallKit activation, ring back here directly
-            self.startRingback() // never setActive ourselves (Speakerbox)
+            self.endCallAudioSession()
             return
           }
           let u = CXCallUpdate()
@@ -896,7 +889,8 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       pageMuted = nil
       pendingPageMutes = []
       stopRingback()
-      restoreAudioIfIdle(force: true)
+      PJSIPEngine.shared.teardown()
+      endCallAudioSession()
 
     case "call:muted":
       guard let muted = m["muted"] as? Bool else { return }
@@ -911,7 +905,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       }
 
     case "call:ringbackStop":
-      webOwnsRingback = true
+      // Linphone cut: web no longer owns ringback
       stopRingback()
 
     case "call:audioRoute":
@@ -939,14 +933,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     return route.outputs.contains { ports.contains($0.portType) } || route.inputs.contains { ports.contains($0.portType) }
   }
 
-  /// Rooms (WebRTC in WKWebView) and calls: playAndRecord that lets a headset's mic and speaker route automatically,
-  /// and the loudspeaker only when nothing is attached.
-  private func prepareHeadsetSession() {
-    let s = AVAudioSession.sharedInstance()
-    var opts: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP]
-    if !Self.headsetAttached() { opts.insert(.defaultToSpeaker) }
-    try? s.setCategory(.playAndRecord, mode: .default, options: opts)
-  }
+  // prepareHeadsetSession REMOVED (Linphone cut) — rooms must request OLAudioSessionOwner when no call is held.
 
   /// Route changes we cause ourselves (setCategory → .categoryChange, overrideOutputAudioPort → .override) and
   /// WebKit's own re-configs must NOT reconfigure the session again: that fed back into itself during every ring and
@@ -1029,36 +1016,27 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     }
   }
 
-  private func configureAudio() {
+  /// Push call holder + configure playAndRecord/voiceChat BEFORE CallKit activation. Never setActive.
+  private func beginCallAudioSession() {
     OLCallDiskLog.shared.mark("callkit", "audio-session-configure")
-    let s = AVAudioSession.sharedInstance()
-    if savedAudio == nil { savedAudio = (s.category, s.mode, s.categoryOptions) }
-    // Telegram ManagedAudioSession.swift:957-963 (.voiceCall/.videoCall); speaker via overrideOutputAudioPort (:1062)
-    let opts: AVAudioSession.CategoryOptions = [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
-    let headset = Self.headsetAttached()
-    let mode: AVAudioSession.Mode = callVideo ? .videoChat : .voiceChat
-    // idempotent: every redundant setCategory / override is itself a route change + voice-processing reset
-    if s.category != .playAndRecord || s.mode != mode || s.categoryOptions != opts {
-      do {
-        try s.setCategory(.playAndRecord, mode: mode, options: opts)
-      } catch {
-        NSLog("[OLCalls] setCategory failed: %@", error.localizedDescription)
-      }
+    if callHolder == nil {
+      callHolder = OLAudioSessionOwner.shared.push(.call)
     }
-    // FaceTime-style low latency: 10 ms IO buffer and the 48 kHz Opus clock (no resample in the voice path).
-    // Preferences only — iOS clamps to what the route supports and never throws the call off the session.
-    if s.preferredSampleRate != 48_000 { try? s.setPreferredSampleRate(48_000) }
-    if abs(s.preferredIOBufferDuration - 0.01) > 0.0005 { try? s.setPreferredIOBufferDuration(0.01) }
-    if let pick = userRoute { applyUserRoute(pick); return }
-    let wantSpeaker = speaker && !headset
-    let onSpeaker = s.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
-    if wantSpeaker != onSpeaker {
-      do {
-        try s.overrideOutputAudioPort(wantSpeaker ? .speaker : .none)
-      } catch {
-        // fails while the session is inactive; defaultToSpeaker covers that case
-      }
+    PJSIPEngine.shared.resetForNewCall()
+    OLAudioSessionOwner.shared.configureForCall(speakerWanted: speaker)
+  }
+
+  /// Pop call holder after didDeactivate / call end. Teardown only when popOnly is false (call end).
+  private func endCallAudioSession(popOnly: Bool = false) {
+    stopRingback()
+    if !popOnly {
+      pageMuted = nil
+      pendingPageMutes = []
+      speaker = true
+      callVideo = false
     }
+    OLAudioSessionOwner.shared.pop(callHolder)
+    callHolder = nil
   }
 
   private func applySpeakerOverride() {
@@ -1067,13 +1045,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       reportActualRoute(reason: "override")
       return
     }
-    let s = AVAudioSession.sharedInstance()
-    let wantSpeaker = speaker && !Self.headsetAttached()
-    let onSpeaker = s.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
-    if wantSpeaker != onSpeaker {
-      do { try s.overrideOutputAudioPort(wantSpeaker ? .speaker : .none) }
-      catch { NSLog("[OLCalls] speaker override failed: %@", error.localizedDescription) }
-    }
+    OLAudioSessionOwner.shared.applyRoute(speakerWanted: speaker, headsetAttached: Self.headsetAttached())
     reportActualRoute(reason: "override")
   }
 
@@ -1110,108 +1082,71 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     return d
   }
 
-  /// an outgoing call is still waiting for the callee and the web has not taken the ring over
+  /// Interim ringback (Claude R3): AVAudioPlayer with NO session calls and NO watchdog. PJSIP shim is the target.
   private var wantRingback: Bool {
-    !webOwnsRingback && calls.values.contains { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }
+    calls.values.contains { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }
   }
 
   private func startRingback() {
     guard wantRingback else { return }
-    if ringbackTimer == nil {
-      let t = Timer(timeInterval: 1.0, repeats: true) { [weak self] _ in self?.ringbackTick() }
-      RunLoop.main.add(t, forMode: .common)
-      ringbackTimer = t
-    }
     playRingback()
   }
 
   private func playRingback() {
-    if ringback?.isPlaying == true { return reportRingback(true) }
-    if let p = ringback, p.play() { NSLog("[OLCalls] native ringback resumed"); return reportRingback(true) }
+    if ringback?.isPlaying == true { return }
+    if let p = ringback, p.play() { return }
     do {
       let p = try AVAudioPlayer(data: Self.ringbackWav(), fileTypeHint: AVFileType.wav.rawValue)
       p.numberOfLoops = -1
       p.volume = 1
       p.prepareToPlay()
-      let ok = p.play()
-      ringback = p // retained for the whole ring
-      NSLog("[OLCalls] native ringback started ok=%d", ok ? 1 : 0)
-      reportRingback(ok && p.isPlaying)
+      _ = p.play()
+      ringback = p
+      NSLog("[OLCalls] interim native ringback started")
     } catch {
-      NSLog("[OLCalls] native ringback failed: %@", error.localizedDescription)
-      reportRingback(false)
+      NSLog("[OLCalls] interim ringback failed: %@", error.localizedDescription)
     }
-  }
-
-  private func ringbackTick() {
-    guard wantRingback else { return stopRingback() }
-    if ringback?.isPlaying != true {
-      NSLog("[OLCalls] ringback watchdog: not playing, restarting")
-      reportRingback(false)
-      playRingback()
-    } else {
-      reportRingback(true)
-    }
-  }
-
-  private func reportRingback(_ playing: Bool) {
-    if ringbackReported == playing && playing == false { return }
-    ringbackReported = playing
-    emit(["type": "ringback", "playing": playing])
   }
 
   @objc private func onInterruption(_ n: Notification) {
     OLCallDiskLog.shared.mark("callkit", "audio-interruption")
-    // Telegram ManagedAudioSession.swift:409-426: act on .began only (updateHolders(interruption: true)); nothing on .ended
     DispatchQueue.main.async {
       guard let raw = n.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
-            AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
-      if self.hasLiveCall { PJSIPEngine.shared.audioSessionDidDeactivate() }
+            let typ = AVAudioSession.InterruptionType(rawValue: raw) else { return }
+      if typ == .began {
+        // Linphone/Telegram: call holder survives; log only. CallKit sends didDeactivate if it takes the session.
+        if self.hasLiveCall { NSLog("[OLCalls] interruption began (holder kept)") }
+        return
+      }
+      // .ended: reopen sound if call live and not running
+      if self.hasLiveCall && self.callKitAudioActive && !PJSIPEngine.shared.audioRunning {
+        PJSIPEngine.shared.reopenSound()
+      }
     }
   }
 
   @objc private func onMediaServicesLost(_ n: Notification) {
     OLCallDiskLog.shared.mark("callkit", "audio-media-services-lost")
-    // Telegram ManagedAudioSession.swift:429-437: mediaServicesWereLost → after 1.0 s setup(type, activateNow: true)
     DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
       guard let self, self.hasLiveCall else { return }
-      self.configureAudio()
+      OLAudioSessionOwner.shared.configureForCall(speakerWanted: self.speaker)
+      PJSIPEngine.shared.reopenSound()
+    }
+  }
+
+  @objc private func onMediaServicesReset(_ n: Notification) {
+    OLCallDiskLog.shared.mark("callkit", "audio-media-services-reset")
+    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) { [weak self] in
+      guard let self, self.hasLiveCall else { return }
+      OLAudioSessionOwner.shared.configureForCall(speakerWanted: self.speaker)
+      OLAudioSessionOwner.shared.forceReactivateIfInactive()
       PJSIPEngine.shared.reopenSound()
     }
   }
 
   private func stopRingback() {
-    ringbackTimer?.invalidate()
-    ringbackTimer = nil
     ringback?.stop()
     ringback = nil
-    if ringbackReported == true { emit(["type": "ringback", "playing": false]) }
-    ringbackReported = nil
   }
 
-  /// before the incoming ringtone: native audio engine stopped, playAndRecord/.default/.defaultToSpeaker re-applied
-  /// and the loudspeaker forced (no headset) — ringtone only, never while a call is live
-  private func prepareRingtoneSession() {
-    guard !hasLiveCall else { return }
-    PJSIPEngine.shared.teardown()
-    prepareHeadsetSession()
-    let s = AVAudioSession.sharedInstance()
-    try? s.overrideOutputAudioPort(Self.headsetAttached() ? .none : .speaker)
-  }
-
-  private func restoreAudioIfIdle(force: Bool = false) {
-    guard !hasLiveCall, let saved = savedAudio else { return }
-    savedAudio = nil
-    speaker = true
-    callVideo = false
-    stopRingback()
-    pageMuted = nil
-    pendingPageMutes = []
-    let s = AVAudioSession.sharedInstance()
-    try? s.overrideOutputAudioPort(.none)
-    try? s.setCategory(saved.0, mode: saved.1, options: saved.2)
-    PJSIPEngine.shared.teardown()
-    prepareHeadsetSession()
-    _ = force
-  }
 }

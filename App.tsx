@@ -555,7 +555,7 @@ function Shell() {
         return;
       }
       if (a.type === 'audio') {
-        if (!coldStart && everLoaded.current) inject(audioResumeScript(a.reason));
+        // Linphone cut A7: CallKit audio events must NOT resume WebView audio (session reclaim hazard).
         return;
       }
       if (a.type === 'answer') {
@@ -635,7 +635,8 @@ function Shell() {
         // Only report visible when App Lock is not covering the WebView.
         inject(nativeEventScript('openlounge:native-visibility', { visible: shouldReportVisible(true, lockRef.current) }));
         flushForegroundPush();
-        inject(audioResumeScript(prev === 'background' ? 'foreground' : 'interruption'));
+        // Linphone cut A7: never kick WebView audio while a native 1:1 call is live.
+        if (!nativeCallRef.current) inject(audioResumeScript(prev === 'background' ? 'foreground' : 'interruption'));
         if (offlineRef.current) retryNow();
       }
     });

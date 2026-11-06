@@ -148,7 +148,7 @@ export function endNativeCall(callId: string, reason: string): void {
   } catch {}
 }
 
-/** URL the WebView opens when a call is answered from CallKit (NATIVE_SPEC §2: idempotent, safe to open twice). */
+/** @deprecated Linphone cut: CallKit Answer → OLCallManager.acceptNative (socket call:accept). WebView must not own accept. */
 export function acceptUrl(origin: string, callId: string): string {
   return `${origin.replace(/\/+$/, '')}/call/${encodeURIComponent(callId)}?accept=1`;
 }
