@@ -22,6 +22,8 @@ public final class OLRtcCall: NSObject {
   public static let signalCodes: Set<String> = ["bad_request", "too_large", "rate_limited", "unknown_call", "not_participant", "not_active", "stale_generation", "replayed"]
 
   private weak var sig: CallSignalClient?
+  /// RingRTC session model: all rtc:signal traffic is E2E-sealed (OLX3DH-v1) and relayed as rc:msg.
+  private var rc: OLRcSealedTransport?
   private var callId: String?
   private var isCaller = false
   private var gen = 0
@@ -56,6 +58,11 @@ public final class OLRtcCall: NSObject {
     self.sig = sig; self.callId = callId; self.isCaller = isCaller
     gen = 0; seq = 0; remoteGen = 0; everConnected = false; restartAttempt = 0; restartStarted = nil
     self.done = done
+    let t = OLRcSealedTransport(sig, callId: callId, isCaller: isCaller)
+    t.onSignal = { [weak self] d in self?.onSignal(d) }
+    rc = t
+    OLRcCallManager.shared.begin(callId, outgoing: isCaller)
+    OLRcCallManager.shared.connecting(callId)
     #if canImport(WebRTC)
     guard OLCallAudioEngine.shared.isRunning, let track = OLCallAudioEngine.shared.localAudioTrack else {
       return finish(.failure(.local("audio engine not running")))
@@ -80,11 +87,11 @@ public final class OLRtcCall: NSObject {
 
   // MARK: socket
   private func send(_ kind: String, extra: [String: Any] = [:]) {
-    guard let sig, let callId else { return }
+    guard let rc, let callId else { return }
     var d: [String: Any] = ["callId": callId, "gen": gen, "seq": seq, "kind": kind]
     seq += 1
     extra.forEach { d[$0] = $1 }
-    sig.request("rtc:signal", d) { [weak self] r in DispatchQueue.main.async {
+    rc.send(d) { [weak self] r in DispatchQueue.main.async {
       guard r["ok"] as? Bool != true else { return }
       let code = (r["error"] as? String) ?? "unknown"
       if code == "replayed" || code == "stale_generation" { return } // benign
@@ -95,7 +102,10 @@ public final class OLRtcCall: NSObject {
     } }
   }
 
-  /// OLCallManager forwards server evt "rtc:signal" here.
+  /// OLCallManager forwards server evt "rc:msg" here (sealed; opened by this call's OLX3DH-v1 session).
+  public func onRcMsg(_ m: [String: Any]) { precondition(Thread.isMainThread); rc?.onRcMsg(m) }
+
+  /// Opened rtc:signal payloads (from OLRcSealedTransport). Plain server "rtc:signal" is no longer accepted.
   public func onSignal(_ d: [String: Any]) {
     precondition(Thread.isMainThread)
     guard let id = d["callId"] as? String, id == callId, let kind = d["kind"] as? String else { return }
@@ -201,11 +211,23 @@ public final class OLRtcCall: NSObject {
   }
   #endif
 
-  private func finish(_ r: Result<Void, OLRtcFailure>) { let d = done; done = nil; d?(r) }
+  private func finish(_ r: Result<Void, OLRtcFailure>) {
+    if let id = callId {
+      switch r {
+      case .success: OLRcCallManager.shared.connected(id)
+      case .failure(let f): OLRcCallManager.shared.end(id, .failed, Self.rcEvent(f))
+      }
+    }
+    let d = done; done = nil; d?(r)
+  }
+  private static func rcEvent(_ f: OLRtcFailure) -> OLRcCallEvent {
+    let s = "\(f)"
+    return s.hasPrefix("network") ? .endedConnectionFailure : s.hasPrefix("signaling") ? .endedSignalingFailure : s.hasPrefix("ended") ? .remoteHangup : .endedDeviceFailure
+  }
 
   private func terminal(_ f: OLRtcFailure) {
     OLCallDiskLog.shared.mark("rtc", "terminal \(f)")
-    if done != nil { finish(.failure(f)) } else { onTerminal?(f) }
+    if done != nil { finish(.failure(f)) } else { if let id = callId { OLRcCallManager.shared.end(id, "\(f)".hasPrefix("ended") ? .normal : .failed, Self.rcEvent(f)) }; onTerminal?(f) }
     close(sendBye: false)
   }
 
@@ -217,6 +239,8 @@ public final class OLRtcCall: NSObject {
     #if canImport(WebRTC)
     pc?.close(); pc = nil; pendingRemote = []; currentOffer = nil
     #endif
+    if let id = callId { OLRcCallManager.shared.end(id, .normal, .localHangup) }
+    rc?.close(); rc = nil
     callId = nil; done = nil
   }
 }

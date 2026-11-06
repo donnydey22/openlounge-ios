@@ -4,7 +4,7 @@
 name: signal-identical-ios
 on:
   push:
-    branches: [signal-identical-calling]
+    branches: [signal-identical-calling, ringrtc-bindings]
   workflow_dispatch: {}
 permissions:
   contents: read

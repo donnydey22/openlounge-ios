@@ -113,7 +113,11 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     let c = CallSignalClient(baseURL: Self.base)
     c.tokenProvider = { OLCallAuth.fresh() }
     c.onEvent = { [weak self] ev, d in self?.onSignal(ev, d) }
-    c.onAuthed = { [weak self] up in if up { self?.rebindLiveCalls() } }
+    c.onAuthed = { [weak self, weak c] up in
+      guard up else { return }
+      if let c { OLRcSealedTransport.publish(c) } // OLX3DH-v1 bundle for this device
+      self?.rebindLiveCalls()
+    }
     return c
   }()
   private var registry: PKPushRegistry?
@@ -572,7 +576,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   /// Server push on our own socket (server/calls/service.ts: call:incoming :389, call:state broadcast).
   private func onSignal(_ ev: String, _ d: [String: Any]) {
-    if ev == "rtc:signal" { DispatchQueue.main.async { OLRtcCall.shared.onSignal(d) }; return } // rtc contract v1 (media only)
+    // RingRTC session model: call signaling arrives E2E-sealed as rc:msg; plain rtc:signal is ignored (no dual path).
+    if ev == "rc:msg" { DispatchQueue.main.async { OLRtcCall.shared.onRcMsg(d) }; return }
+    if ev == "rtc:signal" { return }
     if ev == "call:p2p" { return } // legacy PJSIP direct leg: retired
     guard let info = d["call"] as? [String: Any], let callId = info["id"] as? String, Self.valid(callId) else { return }
     let phase = (info["phase"] as? String) ?? ""
