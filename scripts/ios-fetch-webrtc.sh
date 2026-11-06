@@ -18,7 +18,11 @@ if [[ ! -f "$ZIP" ]]; then
   curl -L --fail --retry 3 --retry-delay 2 -o "$ZIP.partial" "$URL"
   mv "$ZIP.partial" "$ZIP"
 fi
-ACTUAL="$(sha256sum "$ZIP" | awk '{print $1}')"
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL="$(sha256sum "$ZIP" | awk '{print $1}')"
+else
+  ACTUAL="$(shasum -a 256 "$ZIP" | awk '{print $1}')"
+fi
 if [[ "$ACTUAL" != "$EXPECT_SHA" ]]; then
   echo "SHA256 mismatch for $ZIP" >&2
   echo "  expected: $EXPECT_SHA" >&2

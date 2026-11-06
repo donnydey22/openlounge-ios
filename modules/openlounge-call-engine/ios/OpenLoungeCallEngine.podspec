@@ -20,6 +20,10 @@ Pod::Spec.new do |s|
   # /workspace/builds/signal-webrtc/build-signal-webrtc-ios.sh (Mac). Fetch: scripts/ios-fetch-webrtc.sh →
   # ios/WebRTC.xcframework. OLCallAudioEngine + OLRtcCall use `canImport(WebRTC)`; without the framework they
   # report webrtc_not_linked / failed("WebRTC framework not linked") — never silent audio or TURN fallback.
+  # pjproject.xcframework remains REQUIRED on this branch: leftover video helpers (ol_sfu_video.c,
+  # NativeCallMedia.swift, OLVideoEncoder.swift, PJSIPEngine) still compile/link against it. Call audio +
+  # P2P media use WebRTC only (OLCallAudioEngine / OLRtcCall). Do not remove pjproject until video moves
+  # onto the PeerConnection. CI: .github/workflows/signal-identical-ios.yml fetches/builds it.
   s.vendored_frameworks = ['pjproject.xcframework'] + (File.exist?(File.join(__dir__, 'WebRTC.xcframework')) ? ['WebRTC.xcframework'] : [])
   s.public_header_files = ['OLPjsip.h', 'ol_sfu.h', 'ol_sfu_video.h', 'ol_p2p.h']
   s.preserve_paths = ['pjproject.xcframework', 'pjinclude/**/*']

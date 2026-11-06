@@ -9,7 +9,7 @@ OWNER='modules/openlounge-calls/ios/OLAudioSessionOwner.swift'
 PAT='AVAudioSession\.sharedInstance|\[AVAudioSession[[:space:]]+sharedInstance\]|\.setActive\(|setActive:|\.setCategory\(|setCategory:|\.setMode\(|setMode:|overrideOutputAudioPort|setPreferredInput|setPreferredSampleRate|setPreferredIOBufferDuration|setPreferredInputNumberOfChannels|setPreferredOutputNumberOfChannels|setAggregatedIOPreference|setAllowHapticsAndSystemSoundsDuringRecording|setPrefersNoInterruptionsFromSystemAlerts|setInputGain|setInputDataSource|setOutputDataSource|setPreferredDataSource|requestRecordPermission|automaticallyConfiguresApplicationAudioSession[[:space:]]*=[[:space:]]*true|usesApplicationAudioSession[[:space:]]*=[[:space:]]*false'
 hits=$(grep -rnE "$PAT" . \
   --include='*.swift' --include='*.m' --include='*.mm' --include='*.h' --include='*.c' --include='*.cpp' \
-  --exclude-dir=node_modules --exclude-dir=Pods --exclude-dir=.git --exclude-dir=build --exclude-dir=DerivedData --exclude-dir=pjinclude --exclude-dir=pjproject.xcframework \
+  --exclude-dir=node_modules --exclude-dir=Pods --exclude-dir=.git --exclude-dir=build --exclude-dir=DerivedData --exclude-dir=pjinclude --exclude-dir=pjproject.xcframework --exclude-dir=WebRTC.xcframework \
   | grep -v "^\./${OWNER}:" | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' || true)
 if [ -n "$hits" ]; then
   echo "FAIL: direct AVAudioSession use outside $OWNER (route it through OLAudioSessionOwner.shared):"; echo "$hits"; exit 1
