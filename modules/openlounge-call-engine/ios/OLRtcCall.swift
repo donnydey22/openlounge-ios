@@ -34,6 +34,7 @@ public final class OLRtcCall: NSObject {
   private var restartStarted: Date?
   private var restartAttempt = 0
   private var discoTimer: Timer?
+  private var turnLeaseTimer: Timer?
   /// Called once per call when media is connected (first ICE connected) and on later terminal failure.
   public var onTerminal: ((OLRtcFailure) -> Void)?
 
@@ -193,28 +194,38 @@ public final class OLRtcCall: NSObject {
       send("answer", extra: ["sdp": answer.sdp]); return
     }
     answerInFlight = true
-    pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] e in
-      DispatchQueue.main.async {
-        guard let self, self.pc === pc else { return }
-        if let e { return self.terminal(.local("setRemote offer \(e.localizedDescription)")) }
-        if let tx = pc.transceivers.first(where: { $0.mediaType == .video }) {
-          var directionError: NSError?
-          tx.setDirection(.sendRecv, error: &directionError)
-          if let directionError { return self.terminal(.local("video direction \(directionError.domain):\(directionError.code) \(directionError.localizedDescription)")) }
-          tx.sender.track = OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory)
-        }
-        self.flushCandidates()
-        pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { a, e in
-          DispatchQueue.main.async {
-            guard self.pc === pc else { return }
-            guard let a else { return self.terminal(.local("answer \(e?.localizedDescription ?? "?")")) }
-            pc.setLocalDescription(a) { e in
-              DispatchQueue.main.async { guard self.pc === pc else { return }; if let e { self.terminal(.local("setLocal answer \(e.localizedDescription)")) } else { self.answerInFlight = false; self.send("answer", extra: ["sdp": a.sdp]) } }
+    let apply = { [weak self] in
+      guard let self, self.pc === pc else { return }
+      pc.setRemoteDescription(RTCSessionDescription(type: .offer, sdp: sdp)) { [weak self] e in
+        DispatchQueue.main.async {
+          guard let self, self.pc === pc else { return }
+          if let e { return self.terminal(.local("setRemote offer \(e.localizedDescription)")) }
+          if let tx = pc.transceivers.first(where: { $0.mediaType == .video }) {
+            var directionError: NSError?
+            tx.setDirection(.sendRecv, error: &directionError)
+            if let directionError { return self.terminal(.local("video direction \(directionError.domain):\(directionError.code) \(directionError.localizedDescription)")) }
+            tx.sender.track = OLRtcVideo.shared.makeTrack(OLCallAudioEngine.shared.factory)
+          }
+          self.flushCandidates()
+          pc.answer(for: RTCMediaConstraints(mandatoryConstraints: nil, optionalConstraints: nil)) { a, e in
+            DispatchQueue.main.async {
+              guard self.pc === pc else { return }
+              guard let a else { return self.terminal(.local("answer \(e?.localizedDescription ?? "?")")) }
+              pc.setLocalDescription(a) { e in
+                DispatchQueue.main.async { guard self.pc === pc else { return }; if let e { self.terminal(.local("setLocal answer \(e.localizedDescription)")) } else { self.answerInFlight = false; self.send("answer", extra: ["sdp": a.sdp]) } }
+              }
             }
           }
         }
       }
     }
+    if gen > 0 {
+      fetchIce { [weak self] cfg in
+        guard let self, self.pc === pc else { return }
+        if let cfg { _ = pc.setConfiguration(cfg) }
+        apply()
+      }
+    } else { apply() }
   }
 
   private func flushCandidates() { let p = pendingRemote; pendingRemote = []; p.forEach { pc?.add($0) { _ in } } }
@@ -264,6 +275,7 @@ public final class OLRtcCall: NSObject {
   public func close(sendBye: Bool) {
     if sendBye, callId != nil { send("bye") }
     discoTimer?.invalidate(); discoTimer = nil
+    turnLeaseTimer?.invalidate(); turnLeaseTimer = nil
     #if canImport(WebRTC)
     pc?.close(); pc = nil; pendingRemote = []; currentOffer = nil; offerInFlight = false; answerInFlight = false; pendingSignals = []
     #endif
@@ -277,7 +289,7 @@ public final class OLRtcCall: NSObject {
 #if canImport(WebRTC)
 extension OLRtcCall: RTCPeerConnectionDelegate {
   public func peerConnection(_ pc: RTCPeerConnection, didGenerate c: RTCIceCandidate) {
-    DispatchQueue.main.async { self.send("candidate", extra: ["candidate": ["candidate": c.sdp, "sdpMid": c.sdpMid as Any, "sdpMLineIndex": c.sdpMLineIndex]]) }
+    DispatchQueue.main.async { guard pc === self.pc else { return }; self.send("candidate", extra: ["candidate": ["candidate": c.sdp, "sdpMid": c.sdpMid as Any, "sdpMLineIndex": c.sdpMLineIndex]]) }
   }
   public func peerConnection(_ pc: RTCPeerConnection, didChange s: RTCIceConnectionState) {
     DispatchQueue.main.async {
@@ -286,7 +298,13 @@ extension OLRtcCall: RTCPeerConnectionDelegate {
       switch s {
       case .connected, .completed:
         self.discoTimer?.invalidate(); self.restartStarted = nil; self.restartAttempt = 0
-        if !self.everConnected { self.everConnected = true; self.finish(.success(())) }
+        if !self.everConnected { self.everConnected = true
+          if self.isCaller {
+            self.turnLeaseTimer = Timer.scheduledTimer(withTimeInterval: 480, repeats: true) { [weak self] _ in
+              guard let self, self.pc != nil else { return }; self.iceRestart()
+            }
+          }
+          self.finish(.success(())) }
       case .disconnected:
         self.discoTimer?.invalidate()
         self.discoTimer = Timer.scheduledTimer(withTimeInterval: 2.5, repeats: false) { [weak self] _ in self?.iceRestart() }
