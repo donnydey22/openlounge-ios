@@ -64,9 +64,27 @@ public final class OLSimulcastEncoder {
   }
 
   public var layerCount: Int { sessions.count }
-  /// SFU PLI/FIR: every layer emits an IDR on its next frame (per-layer flag; layers are paced independently).
-  public func forceKeyframe() { lock.lock(); forceKey = Array(repeating: true, count: sessions.count); lock.unlock() }
-  private var forceKey: [Bool] = []
+  /// Local IDR on every layer (capture interruption ended, encoder rebuild). Not throttled.
+  public func forceKeyframe() { forceKeyframe(mask: UInt32.max, throttle: false) }
+  /// SFU PLI/FIR per SSRC: bit i of `mask` = layer i = SSRC index i (ol_sfu_video.c on_rtcp). Only the requested
+  /// layers emit an IDR; each layer honors at most one SFU request per `keyReqMinMs` (mediasoup repeats PLIs on loss
+  /// and per consumer; an unthrottled 1080p IDR storm starves the uplink).
+  public static let keyReqMinMs: UInt64 = 500
+  public func forceKeyframe(mask: UInt32, throttle: Bool = true) {
+    let now = DispatchTime.now().uptimeNanoseconds
+    lock.lock(); defer { lock.unlock() }
+    if forceKey.count != sessions.count { forceKey = Array(repeating: false, count: sessions.count); lastKeyReq = Array(repeating: 0, count: sessions.count) }
+    for i in 0..<sessions.count where mask & (1 << UInt32(i)) != 0 {
+      if throttle, lastKeyReq[i] != 0, now &- lastKeyReq[i] < Self.keyReqMinMs * 1_000_000 { continue }
+      lastKeyReq[i] = now; forceKey[i] = true
+    }
+  }
+  private var forceKey: [Bool] = [], lastKeyReq: [UInt64] = []
+  /// VideoToolbox invalidated a session (kVTInvalidSessionErr -12903, e.g. after background/foreground). Fired once;
+  /// OLVideoCapture rebuilds all three layers (all or fail) and forces an IDR.
+  public var onInvalidated: (() -> Void)?
+  private var invalidatedFired = false
+  private func invalidated() { lock.lock(); let fire = !invalidatedFired; invalidatedFired = true; lock.unlock(); if fire { onInvalidated?() } }
   private let lock = NSLock()
   /// One layer's pre-scaled frame (fan-out target i). Called on the fan-out queue.
   public func encode(layer i: Int, _ pixels: CVPixelBuffer, pts: CMTime) {
@@ -74,17 +92,19 @@ public final class OLSimulcastEncoder {
     lock.lock(); let key = i < forceKey.count && forceKey[i]; if key { forceKey[i] = false }; lock.unlock()
     let props: CFDictionary? = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as CFDictionary : nil
     do { let s = sessions[i]
-      VTCompressionSessionEncodeFrame(s, imageBuffer: pixels, presentationTimeStamp: pts, duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] st, _, sb in
+      let est = VTCompressionSessionEncodeFrame(s, imageBuffer: pixels, presentationTimeStamp: pts, duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] st, _, sb in
+        if st == kVTInvalidSessionErr { self?.invalidated(); return }
         guard st == noErr, let sb, let self else { return }
         self.onEncoded?(i, sb)
         if let cb = self.onAnnexB, let (au, key) = OLAnnexB.from(sb) {
           let pts = CMSampleBufferGetPresentationTimeStamp(sb); cb(i, au, key, UInt32(truncatingIfNeeded: Int64(pts.seconds * 90_000)))
         }
       }
+      if est == kVTInvalidSessionErr { invalidated() } else if est != noErr, key { lock.lock(); if i < forceKey.count { forceKey[i] = true }; lock.unlock() } // retry IDR next frame
     }
   }
 
-  public func teardown() { onAnnexB = nil; onEncoded = nil; for s in sessions { VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid); VTCompressionSessionInvalidate(s) }; sessions = [] }
+  public func teardown() { onAnnexB = nil; onEncoded = nil; onInvalidated = nil; for s in sessions { VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid); VTCompressionSessionInvalidate(s) }; sessions = [] }
   deinit { teardown() }
 }
 
@@ -127,9 +147,9 @@ public final class OLVideoDecoder {
     return out }
   public func decode(annexB: Data) {
     var units: [Data] = []
-    for n in Self.nals(annexB) { switch n[n.startIndex] & 0x1f { case 7: sps = n; case 8: pps = n; default: units.append(n) } }
+    for n in Self.nals(annexB) where !n.isEmpty { switch n[n.startIndex] & 0x1f { case 7: sps = n; case 8: pps = n; default: units.append(n) } }
     if let sps, let pps, session == nil || needsReset(sps, pps) { makeSession(sps, pps) }
-    guard let session, let fd, !units.isEmpty else { return }
+    guard let session, let fd, !units.isEmpty, !annexB.isEmpty else { return }
     var avcc = Data(); for u in units { var l = UInt32(u.count).bigEndian; avcc.append(Data(bytes: &l, count: 4)); avcc.append(u) }
     var bb: CMBlockBuffer?; let len = avcc.count
     guard CMBlockBufferCreateWithMemoryBlock(allocator: nil, memoryBlock: nil, blockLength: len, blockAllocator: nil, customBlockSource: nil, offsetToData: 0, dataLength: len, flags: 0, blockBufferOut: &bb) == noErr, let bb else { errors += 1; return }

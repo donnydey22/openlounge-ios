@@ -40,7 +40,7 @@ final class SfuLegTests: XCTestCase {
     ol_sfu_video_set_sink(sink, Unmanaged.passUnretained(dec).toOpaque())
     let vr = ssrcs.withUnsafeBufferPointer { ol_sfu_video_start(vip, Int32(e["OL_VPORT"]!)!, e["OL_VTX"]!, e["OL_VRX"]!, $0.baseAddress, Int32($0.count), Int32(e["OL_VPT"]!)!) }
     var videoError = "null", codec = "none"; var enc: OLSimulcastEncoder?
-    do { let sim: [OLVideoLayer]? = e["OL_SIMLAYERS"] == "2" ? [.init(width: 320, height: 180, bps: 150_000, ultrafast: true), .init(width: 640, height: 360, bps: 600_000, ultrafast: true)] : nil; let x = try OLSimulcastEncoder(layers: sim); enc = x; codec = x.codec == kCMVideoCodecType_AV1 ? "AV1" : "H264" } catch { videoError = "\"\(error)\"" }
+    do { let sim: [OLVideoLayer]? = e["OL_SIMLAYERS"] == "2" ? [.init(width: 320, height: 180, bps: 150_000, ultrafast: true), .init(width: 640, height: 360, bps: 600_000, ultrafast: true)] : nil; let x = try OLSimulcastEncoder(layers: sim); enc = x; codec = "H264" } catch { videoError = "\"\(error)\"" }
     enc?.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
     var json = "{\"error\":\(r),\"videoError\":\(vr != 0 ? "\(vr)" : videoError)}"
     if r == 0 && vr == 0 {

@@ -2,13 +2,17 @@
 // scaling + preview fan-out: OLCameraFanout.swift. Independent of the AVAudioSession path: the capture session never
 // touches the app audio session and has no audio input.
 import AVFoundation
+import UIKit
 import VideoToolbox
 
 /// ONE AVCaptureSession, ONE AVCaptureVideoDataOutput (the only capture consumer). Opened only after CallKit didActivate.
 public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBufferDelegate {
   public private(set) var session: AVCaptureSession?
   private let q = DispatchQueue(label: "ol.video.capture", qos: .userInteractive)
-  public private(set) var encoder: OLSimulcastEncoder?
+  private let encLock = NSLock(); private var _encoder: OLSimulcastEncoder?
+  /// Current 3-layer encoder (swapped on a -12903 rebuild; read from the fan-out queue).
+  public var encoder: OLSimulcastEncoder? { encLock.lock(); defer { encLock.unlock() }; return _encoder }
+  private func setEncoder(_ e: OLSimulcastEncoder?) { encLock.lock(); _encoder = e; encLock.unlock() }
   public private(set) var fanout: OLCameraFanout?
   private var observers: [NSObjectProtocol] = []
 
@@ -21,12 +25,9 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
   public func start(engine: PJSIPEngine = .shared, position: AVCaptureDevice.Position = .front) throws {
     guard engine.audioRunning else { throw OLVideoError.notActivated } // didActivate gate
     // all 3 hardware layers or nothing
-    let enc = try OLSimulcastEncoder(layers: Self.portraitLayers)
-    guard enc.layerCount == 3 else { enc.teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: enc.layerCount, status: -3) }
-    // Video spec v2 send path: each layer's Annex-B AU -> engine RTP/SRTP on the "video" PlainTransport (own SSRC per layer)
-    enc.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
+    let enc = try makeEncoder()
     let fan: OLCameraFanout
-    do { fan = try OLCameraFanout(targets: Self.fanoutTargets()) { [weak enc] i, px, pts in enc?.encode(layer: i, px, pts: pts) } }
+    do { fan = try OLCameraFanout(targets: Self.fanoutTargets()) { [weak self] i, px, pts in self?.encoder?.encode(layer: i, px, pts: pts) } }
     catch { enc.teardown(); throw error }
 
     let s = AVCaptureSession()
@@ -47,17 +48,20 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
     }
     if s.isMultitaskingCameraAccessSupported { s.isMultitaskingCameraAccessEnabled = true }
     s.commitConfiguration()
-    encoder = enc; fanout = fan; session = s
+    setEncoder(enc); fanout = fan; session = s
     let nc = NotificationCenter.default
     observers = [
       nc.addObserver(forName: .AVCaptureSessionRuntimeError, object: s, queue: nil) { [weak self, weak s] _ in self?.q.async { s?.startRunning() } },
       nc.addObserver(forName: .AVCaptureSessionInterruptionEnded, object: s, queue: nil) { [weak self] _ in self?.encoder?.forceKeyframe() },
+      // VideoToolbox drops HW sessions while backgrounded; the next encode returns -12903 -> rebuild (also probe on foreground).
+      nc.addObserver(forName: UIApplication.willEnterForegroundNotification, object: nil, queue: nil) { [weak self] _ in self?.encoder?.forceKeyframe() },
     ]
     q.async { [weak self] in guard self?.session === s else { return }; s.startRunning() } // never starts after stop()
   }
 
   public func captureOutput(_ output: AVCaptureOutput, didOutput sb: CMSampleBuffer, from connection: AVCaptureConnection) {
-    if ol_sfu_video_take_keyreq() != 0 { encoder?.forceKeyframe() } // SFU PLI/FIR -> IDR now
+    // SFU PLI/FIR per SSRC: bitmask of layers (SSRC index == layer index == SFU LADDERS index), throttled per layer.
+    let req = ol_sfu_video_take_keyreq(); if req != 0 { encoder?.forceKeyframe(mask: req) }
     fanout?.push(sb)
   }
 
@@ -66,6 +70,24 @@ public final class OLVideoCapture: NSObject, AVCaptureVideoDataOutputSampleBuffe
     observers.forEach(NotificationCenter.default.removeObserver); observers = []
     if let s = session { q.sync { s.stopRunning() } }; session = nil
     fanout?.release(); fanout = nil
-    encoder?.teardown(); encoder = nil
+    let e = encoder; setEncoder(nil); e?.teardown()
+  }
+
+  /// All three hardware layers or nothing; Annex-B -> ol_sfu_video_send on the layer's own SSRC.
+  private func makeEncoder() throws -> OLSimulcastEncoder {
+    let enc = try OLSimulcastEncoder(layers: Self.portraitLayers)
+    guard enc.layerCount == 3 else { enc.teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: enc.layerCount, status: -3) }
+    // Video spec v2 send path: each layer's Annex-B AU -> engine RTP/SRTP on the "video" PlainTransport (own SSRC per layer)
+    enc.onAnnexB = { layer, au, key, ts in au.withUnsafeBytes { _ = ol_sfu_video_send(Int32(layer), $0.bindMemory(to: UInt8.self).baseAddress, Int32(au.count), ts, key ? 1 : 0) } }
+    enc.onInvalidated = { [weak self] in self?.q.async { self?.rebuildEncoder() } }
+    return enc
+  }
+
+  /// -12903 (kVTInvalidSessionErr): replace all three sessions (all or fail), then IDR on every layer.
+  private func rebuildEncoder() {
+    guard session != nil else { return } // call ended
+    let old = encoder
+    do { let n = try makeEncoder(); n.forceKeyframe(); setEncoder(n); old?.teardown(); NSLog("[OLVideo] encoder rebuilt after -12903") }
+    catch { setEncoder(nil); old?.teardown(); NSLog("[OLVideo] encoder rebuild failed: %@ (send video off)", "\(error)") }
   }
 }

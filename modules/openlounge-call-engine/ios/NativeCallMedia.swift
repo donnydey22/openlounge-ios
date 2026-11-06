@@ -33,6 +33,8 @@ public final class NativeCallMedia {
     return Data(b).base64EncodedString()
   }
   private static func rnd(_ base: UInt32) -> UInt32 { base + UInt32.random(in: 0..<1_000_000) }
+  /// 3 video SSRCs in layer order (180p, 720p, 1080p): base + i*2, same scheme as Android NativeCallMedia.kt requestVideo.
+  static func videoSsrcs() -> [UInt32] { let b = rnd(5_000_000); return (0..<OLVideoSpecV2.layers.count).map { b + UInt32($0) * 2 } }
 
   /// pjsipMedia.ts op "connect" (:65-99). Idempotent for the same live call. Main queue.
   /// direct = the peer is a phone: ONE path, the direct ICE link (our coturn is only an ICE candidate); no SFU leg and no
@@ -135,7 +137,10 @@ public final class NativeCallMedia {
     videoCallId = callId
     let d: [String: Any] = ["callId": callId, "purpose": "video"]
     let tx = Self.newSrtpKey()
-    let ssrcs = [Self.rnd(5_000_000), Self.rnd(6_000_000), Self.rnd(7_000_000)]
+    // SSRC allocation matches Android (NativeCallMedia.kt requestVideo: base + i*2) and the SFU ladder order
+    // (media-sfu plain.mjs simulcastProducerParams: encodings[i] <- ssrcs[i], LADDERS.ios[i] = 180p/720p/1080p) ==
+    // OLVideoSpecV2.layers[i] == ol_sfu_video_send layer i. Base kept clear of the audio SSRC range (100_000..1_099_999).
+    let ssrcs = Self.videoSsrcs()
     sig.request("ms:plain:create", d) { [weak self] c in
       guard let self, self.videoCallId == callId else { return }
       guard c["ok"] as? Bool == true, let ip = c["ip"] as? String, let port = (c["port"] as? NSNumber)?.intValue else { NSLog("[OLMedia] video plain:create failed"); return }
@@ -342,7 +347,7 @@ public final class NativeCallMedia {
   private func startDirectVideo(callId: String, cameraOn: Bool) {
     if !videoStarted {
       videoCallId = callId
-      let r = OLCallVideo.shared.start(ip: "", port: 0, txKey: "", rxKey: "", ssrcs: [Self.rnd(5_000_000), Self.rnd(6_000_000), Self.rnd(7_000_000)], pt: 102)
+      let r = OLCallVideo.shared.start(ip: "", port: 0, txKey: "", rxKey: "", ssrcs: Self.videoSsrcs(), pt: 102)
       if r != 0 { NSLog("[OLMedia] direct video start failed: %d", r); return }
       videoStarted = true
       OLCallVideo.shared.onRemoteFirstFrame = { [weak self] in DispatchQueue.main.async { self?.remoteOn = true; self?.report() } }
