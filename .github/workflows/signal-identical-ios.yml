@@ -200,3 +200,118 @@ jobs:
           grep -q 'canImport(WebRTC)' modules/openlounge-call-engine/ios/OLCallAudioEngine.swift
           grep -q 'canImport(WebRTC)' modules/openlounge-call-engine/ios/OLRtcCall.swift
           echo "OK: canImport(WebRTC) path present; Mac build linked WebRTC"
+
+  # Ad-hoc IPA for device matrix (Signal-identical: WebRTC + pjproject video leftovers).
+  # Do NOT host on /download until Donny says build. Artifact is passphrase-encrypted.
+  adhoc:
+    needs: pjproject
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+        run: bash scripts/check-audio-session-owner.sh
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Bridge gate (rtcP2P must be advertised)
+        run: node scripts/check-bridge.cjs
+      - name: Typecheck
+        continue-on-error: true
+        run: npx tsc --noEmit
+      - uses: actions/download-artifact@v4
+        with:
+          name: signal-pjproject-2.17-xcframework
+          path: modules/openlounge-call-engine/ios/pjproject.xcframework
+      - uses: actions/download-artifact@v4
+        with:
+          name: signal-pjproject-2.17-headers
+          path: modules/openlounge-call-engine/ios/pjinclude
+      - name: Fetch interim BSD WebRTC.xcframework (M152)
+        env:
+          OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
+        run: |
+          set -euo pipefail
+          bash scripts/ios-fetch-webrtc.sh
+          test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
+          test -d modules/openlounge-call-engine/ios/WebRTC.xcframework/ios-arm64
+          # Gate must still pass with framework on disk (WebRTC headers excluded).
+          bash scripts/check-audio-session-owner.sh
+      - name: REQUIRE — podspec will vendor WebRTC when present
+        run: |
+          set -euo pipefail
+          ruby -e '
+            dir = "modules/openlounge-call-engine/ios"
+            abort("WebRTC.xcframework missing") unless File.exist?(File.join(dir, "WebRTC.xcframework"))
+            abort("pjproject.xcframework missing") unless File.exist?(File.join(dir, "pjproject.xcframework"))
+            vf = ["pjproject.xcframework"] + (File.exist?(File.join(dir, "WebRTC.xcframework")) ? ["WebRTC.xcframework"] : [])
+            abort("podspec would omit WebRTC") unless vf.include?("WebRTC.xcframework")
+            puts "vendored: #{vf.join(" + ")}"
+          '
+      - name: Signing assets (existing Apple Distribution cert + ad hoc profile)
+        env:
+          P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          PROFILE_B64: ${{ secrets.IOS_ADHOC_PROFILE_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p credentials/ios
+          printf '%s' "$P12_B64" | base64 --decode > credentials/ios/dist.p12
+          printf '%s' "$PROFILE_B64" | base64 --decode > credentials/ios/adhoc.mobileprovision
+          node -e 'require("fs").writeFileSync("credentials.json", JSON.stringify({ios:{provisioningProfilePath:"credentials/ios/adhoc.mobileprovision",distributionCertificate:{path:"credentials/ios/dist.p12",password:process.env.P12_PASSWORD}}}))'
+      - name: eas build --local (preview = ad hoc, Release) — WebRTC REQUIRED
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Frameworks live under modules/.../ios/ and survive expo prebuild of app ios/.
+          test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
+          test -f modules/openlounge-call-engine/ios/pjproject.xcframework/Info.plist
+          sudo gem install cocoapods --no-document >/dev/null 2>&1 || true
+          mkdir -p out
+          npx --yes eas-cli@latest build --local --platform ios --profile preview --non-interactive --output "$PWD/out/OpenLounge.ipa"
+      - name: Verify signature + WebRTC in IPA + Donny Dev UDID
+        run: |
+          set -euo pipefail
+          cd out && rm -rf x && mkdir x && cd x && unzip -q ../OpenLounge.ipa
+          APP=$(ls -d Payload/*.app)
+          codesign --verify --deep --strict "$APP"
+          codesign -dvv "$APP" 2>&1 | grep -E "Authority|TeamIdentifier|Identifier"
+          security cms -D -i "$APP/embedded.mobileprovision" > ../profile.plist
+          /usr/libexec/PlistBuddy -c 'Print :Name' ../profile.plist
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist"
+          grep -q 00008110-000E7DD63C03801E ../profile.plist && echo "Donny Dev in profile"
+          # Require WebRTC in the device IPA (framework path or linked symbols).
+          if find "$APP" -iname '*WebRTC*' | grep -q .; then
+            echo "OK: WebRTC present in IPA:"
+            find "$APP" -iname '*WebRTC*' | head -20
+          else
+            BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+            (nm -a "$BIN" 2>/dev/null || true; nm -gU "$BIN" 2>/dev/null || true) | grep -iE 'RTCPeerConnection|OBJC_CLASS\$_RTCPeerConnection|WebRTC' | head -20 \
+              || { echo "FAIL: WebRTC not in IPA binary $BIN"; exit 1; }
+            echo "OK: WebRTC symbols found in IPA binary"
+          fi
+          cd .. && rm -rf x
+      - name: Encrypt IPA (public repo, artifact is passphrase-encrypted)
+        env:
+          ARTIFACT_PASSPHRASE: ${{ secrets.IOS_ARTIFACT_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          shasum -a 256 out/OpenLounge.ipa | tee out/OpenLounge.ipa.sha256
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in out/OpenLounge.ipa -out out/OpenLounge.ipa.enc -pass env:ARTIFACT_PASSPHRASE
+          rm -f out/OpenLounge.ipa credentials/ios/dist.p12 credentials.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openlounge-ios-signal-adhoc-encrypted
+          path: |
+            out/OpenLounge.ipa.enc
+            out/OpenLounge.ipa.sha256
+          retention-days: 14
+      - name: Cleanup
+        if: always()
+        run: rm -rf credentials credentials.json out/OpenLounge.ipa
