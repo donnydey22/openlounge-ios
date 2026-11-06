@@ -32,15 +32,17 @@ public final class OLCallVideo {
 
   public func camera(on: Bool, facing: String) throws {
     capture.stop()
-    guard on else { DispatchQueue.main.async { self.localView?.attach(nil) }; return }
-    try capture.start(position: facing == "environment" ? .back : .front, forceH264: true)
-    let s = capture.session
-    DispatchQueue.main.async { self.localView?.attach(s) }
+    guard on else { DispatchQueue.main.async { self.localView?.detach() }; return }
+    let front = facing != "environment"
+    try capture.start(position: front ? .front : .back)
+    // local preview = the SAME captured buffers the fan-out encodes (no preview layer on the capture session)
+    capture.fanout?.onPreview = { [weak self] sb in self?.localView?.enqueue(sb) }
+    DispatchQueue.main.async { self.localView?.attach(mirrored: front) }
   }
 
   public func stop() {
     capture.stop(); ol_sfu_video_set_sink(nil, nil); ol_sfu_video_stop(); decoder?.close(); decoder = nil
-    DispatchQueue.main.async { self.remoteView?.layer.contents = nil; self.localView?.attach(nil) }
+    DispatchQueue.main.async { self.remoteView?.layer.contents = nil; self.localView?.detach() }
   }
 
   public func stats() -> [Int] {
@@ -58,19 +60,22 @@ public final class OLRemoteVideoView: ExpoView {
   }
 }
 
+/// Local self-view drawn from the fan-out's captured sample buffers (same feed as the encoders, not a capture output).
 public final class OLLocalVideoView: ExpoView {
-  private var preview: AVCaptureVideoPreviewLayer?
+  private let display = AVSampleBufferDisplayLayer()
   required init(appContext: AppContext? = nil) {
     super.init(appContext: appContext)
     backgroundColor = .black; clipsToBounds = true
+    display.videoGravity = .resizeAspectFill; layer.addSublayer(display)
     OLCallVideo.shared.localView = self
-    attach(OLCallVideo.shared.capture.session)
+    if OLCallVideo.shared.capture.session != nil { attach(mirrored: true) }
   }
-  func attach(_ s: AVCaptureSession?) {
-    preview?.removeFromSuperlayer(); preview = nil
-    guard let s else { return }
-    let p = AVCaptureVideoPreviewLayer(session: s); p.videoGravity = .resizeAspectFill; p.frame = bounds
-    layer.addSublayer(p); preview = p
+  /// Capture queue -> display layer (thread-safe enqueue; drops while the layer is not ready).
+  func enqueue(_ sb: CMSampleBuffer) {
+    if display.status == .failed { display.flush() }
+    if display.isReadyForMoreMediaData { display.enqueue(sb) }
   }
-  public override func layoutSubviews() { super.layoutSubviews(); preview?.frame = bounds }
+  func attach(mirrored: Bool) { display.isHidden = false; display.setAffineTransform(mirrored ? CGAffineTransform(scaleX: -1, y: 1) : .identity) }
+  func detach() { display.flushAndRemoveImage(); display.isHidden = true }
+  public override func layoutSubviews() { super.layoutSubviews(); display.frame = bounds }
 }

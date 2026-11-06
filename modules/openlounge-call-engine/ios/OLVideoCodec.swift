@@ -1,5 +1,5 @@
-// Video spec v2 (Donny Nov 3 6:51 AM, PLAN §14). iOS: VideoToolbox HARDWARE encoder only (no software fallback),
-// AV1 when the device has a hardware AV1 encoder (A17+), else H.264. 3 simulcast layers 180p/720p/1080p at
+// Video spec v2 (Donny Nov 3 6:51 AM, PLAN §14) + iOS fan-out (Nov 5): VideoToolbox HARDWARE H.264 only (no software fallback, no AV1).
+// 3 simulcast layers 180p/720p/1080p at
 // 150/800/2400 kbps; lowest layer "ultrafast" (speed over quality), others "fast"; keyframe every 2 s.
 // The capture session is opened only after CallKit didActivate (OLVideoEncoder.swift: OLVideoCapture).
 // This file has no engine/pjproject dependency so the simulator matrix harness compiles the SAME encoder/decoder.
@@ -18,20 +18,15 @@ public enum OLVideoSpecV2 {
   public static let keyframeSeconds = 2
   // kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder (symbol is iOS 17.4+; string key honored earlier)
   static let requireHW = ["RequireHardwareAcceleratedVideoEncoder" as CFString: kCFBooleanTrue!] as CFDictionary
-  /// AV1 only if VideoToolbox can open a hardware AV1 encoder on this device; never a software encoder.
-  public static func hardwareAV1Available() -> Bool {
-    var s: VTCompressionSession?
-    let spec = OLVideoSpecV2.requireHW
-    let ok = VTCompressionSessionCreate(allocator: nil, width: 1280, height: 720, codecType: kCMVideoCodecType_AV1, encoderSpecification: spec,
-                                        imageBufferAttributes: nil, compressedDataAllocator: nil, outputCallback: nil, refcon: nil, compressionSessionOut: &s) == noErr
-    if let s { VTCompressionSessionInvalidate(s) }
-    return ok
-  }
+  /// Max frame rate per layer (fan-out pacing; mirrors Android OLCameraFanout per-layer cadence).
+  public static func fps(_ l: OLVideoLayer) -> Int { l.ultrafast ? 15 : 30 }
+
 }
+public enum OLVideoError: Error { case hardwareEncoderUnavailable(layer: Int, status: OSStatus), notActivated, cameraUnavailable, captureConfig(String) }
 
-public enum OLVideoError: Error { case hardwareEncoderUnavailable(layer: Int, status: OSStatus), notActivated }
-
-/// Three hardware VTCompressionSessions, one per simulcast layer. Throws (call fails video) if any cannot be hardware.
+/// Three hardware H.264 VTCompressionSessions, one per simulcast layer / SSRC. All three or none: throws (call ends video
+/// cleanly) if any layer cannot open, or opens but is not hardware. Each layer is fed its OWN pre-scaled buffer by
+/// OLCameraFanout (no 1080p->180p scaling inside the encoder). H.264 only: the AV1 path is removed.
 public final class OLSimulcastEncoder {
   public let codec: CMVideoCodecType
   private var sessions: [VTCompressionSession] = []
@@ -40,9 +35,8 @@ public final class OLSimulcastEncoder {
   public var onAnnexB: ((_ layer: Int, _ au: Data, _ key: Bool, _ ts90k: UInt32) -> Void)?
 
   /// `layers` override is for CI only (the simulator encodes in software; 3 layers up to 1080p starve the runner).
-  public init(layers override: [OLVideoLayer]? = nil, forceH264: Bool = false) throws {
-    // forceH264: calls with a browser peer (WASM leg decodes H.264 only)
-    codec = !forceH264 && OLVideoSpecV2.hardwareAV1Available() ? kCMVideoCodecType_AV1 : kCMVideoCodecType_H264
+  public init(layers override: [OLVideoLayer]? = nil) throws {
+    codec = kCMVideoCodecType_H264
     let spec = OLVideoSpecV2.requireHW
     for (i, l) in (override ?? OLVideoSpecV2.layers).enumerated() {
       var s: VTCompressionSession?
@@ -59,16 +53,25 @@ public final class OLSimulcastEncoder {
       // ultrafast = prioritize speed over quality; fast = realtime without the speed override
       set(kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, (l.ultrafast ? kCFBooleanTrue : kCFBooleanFalse)!)
       if codec == kCMVideoCodecType_H264 { set(kVTCompressionPropertyKey_ProfileLevel, kVTProfileLevel_H264_ConstrainedBaseline_AutoLevel) }
-      VTCompressionSessionPrepareToEncodeFrames(s)
+      var hw: CFBoolean?
+      let hq = VTSessionCopyProperty(s, key: kVTCompressionPropertyKey_UsingHardwareAcceleratedVideoEncoder, allocator: nil, valueOut: &hw)
+      guard hq == noErr, hw == kCFBooleanTrue else { VTCompressionSessionInvalidate(s); teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: i, status: hq == noErr ? -1 : hq) }
+      guard VTCompressionSessionPrepareToEncodeFrames(s) == noErr else { VTCompressionSessionInvalidate(s); teardown(); throw OLVideoError.hardwareEncoderUnavailable(layer: i, status: -2) }
       sessions.append(s)
     }
   }
 
-  public func forceKeyframe() { forceKey = true }
-  private var forceKey = false
-  public func encode(_ pixels: CVPixelBuffer, pts: CMTime) {
-    let props: CFDictionary? = forceKey ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as CFDictionary : nil; forceKey = false
-    for (i, s) in sessions.enumerated() {
+  public var layerCount: Int { sessions.count }
+  /// SFU PLI/FIR: every layer emits an IDR on its next frame (per-layer flag; layers are paced independently).
+  public func forceKeyframe() { lock.lock(); forceKey = Array(repeating: true, count: sessions.count); lock.unlock() }
+  private var forceKey: [Bool] = []
+  private let lock = NSLock()
+  /// One layer's pre-scaled frame (fan-out target i). Called on the fan-out queue.
+  public func encode(layer i: Int, _ pixels: CVPixelBuffer, pts: CMTime) {
+    guard i < sessions.count else { return }
+    lock.lock(); let key = i < forceKey.count && forceKey[i]; if key { forceKey[i] = false }; lock.unlock()
+    let props: CFDictionary? = key ? [kVTEncodeFrameOptionKey_ForceKeyFrame: kCFBooleanTrue!] as CFDictionary : nil
+    do { let s = sessions[i]
       VTCompressionSessionEncodeFrame(s, imageBuffer: pixels, presentationTimeStamp: pts, duration: .invalid, frameProperties: props, infoFlagsOut: nil) { [weak self] st, _, sb in
         guard st == noErr, let sb, let self else { return }
         self.onEncoded?(i, sb)
@@ -79,7 +82,7 @@ public final class OLSimulcastEncoder {
     }
   }
 
-  public func teardown() { for s in sessions { VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid); VTCompressionSessionInvalidate(s) }; sessions = [] }
+  public func teardown() { onAnnexB = nil; onEncoded = nil; for s in sessions { VTCompressionSessionCompleteFrames(s, untilPresentationTimeStamp: .invalid); VTCompressionSessionInvalidate(s) }; sessions = [] }
   deinit { teardown() }
 }
 
