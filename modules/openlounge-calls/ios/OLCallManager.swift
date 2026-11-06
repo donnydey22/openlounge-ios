@@ -487,6 +487,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     action.fulfill() // CallKitIntegration.swift:372-373: answerCall(uuid) then fulfill
     emit(["type": "answer", "callId": c.callId, "video": c.video]) // JS: unlock + drop the lock-screen card only
     emitState(c, "connecting")
+    presentNativeUI(c, phase: .active)
     acceptNative(c)
   }
 
@@ -633,6 +634,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
             NSLog("[OLCalls] outgoing CallKit call refused: %@", err.localizedDescription)
             self.startRingback()
           } else {
+            self.presentNativeUI(c, phase: .outgoing)
             let u = CXCallUpdate()
             u.remoteHandle = CXHandle(type: .generic, value: c.name)
             u.localizedCallerName = c.name
@@ -740,6 +742,18 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, timedOutPerforming action: CXAction) {
     OLCallDiskLog.shared.mark("callkit", "timedOut")
     action.fulfill()
+  }
+
+  /// Native-UI first cut (Claude step 5): present Swift call host; never leave 1:1 paint to RN/WebView.
+  private func presentNativeUI(_ c: OLCall, phase: OLNativeCallHost.Phase) {
+    if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+      let win = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first
+      if var top = win?.rootViewController {
+        while let presented = top.presentedViewController { top = presented }
+        OLNativeCallHost.shared.attach(to: top)
+      }
+    }
+    OLNativeCallHost.shared.present(callId: c.callId, name: c.name, photoURL: c.photo, video: c.video, phase: phase)
   }
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
@@ -864,6 +878,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         c.connected = true
         stopTimers(c)
         callVideo = c.video
+        presentNativeUI(c, phase: .active)
         if c.incoming && !c.answered {
           // answered on the page's own ring screen: move CallKit to the answered state without navigating again
           c.answeredInPage = true
@@ -883,6 +898,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       for c in targets {
         c.ended = true
         stopTimers(c)
+        presentNativeUI(c, phase: .ended)
         calls[c.uuid] = nil
         provider?.reportCall(with: c.uuid, endedAt: Date(), reason: .remoteEnded)
       }
