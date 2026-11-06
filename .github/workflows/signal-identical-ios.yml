@@ -63,6 +63,7 @@ jobs:
         if: steps.prior.outputs.hit != '1'
         run: |
           set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/pj-art"
           brew install cmake >/dev/null 2>&1 || true
           git clone -q --depth 1 -b 2.17 https://github.com/pjsip/pjproject.git
           git clone -q --depth 1 -b v1.5.2 https://github.com/xiph/opus.git
