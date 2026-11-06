@@ -746,14 +746,17 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
 
   /// Native-UI first cut (Claude step 5): present Swift call host; never leave 1:1 paint to RN/WebView.
   private func presentNativeUI(_ c: OLCall, phase: OLNativeCallHost.Phase) {
-    if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
-      let win = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first
-      if var top = win?.rootViewController {
-        while let presented = top.presentedViewController { top = presented }
-        OLNativeCallHost.shared.attach(to: top)
+    let callId = c.callId, name = c.name, photo = c.photo, video = c.video
+    Task { @MainActor in
+      if let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first {
+        let win = scene.windows.first(where: { $0.isKeyWindow }) ?? scene.windows.first
+        if var top = win?.rootViewController {
+          while let presented = top.presentedViewController { top = presented }
+          OLNativeCallHost.shared.attach(to: top)
+        }
       }
+      OLNativeCallHost.shared.present(callId: callId, name: name, photoURL: photo, video: video, phase: phase)
     }
-    OLNativeCallHost.shared.present(callId: c.callId, name: c.name, photoURL: c.photo, video: c.video, phase: phase)
   }
 
   public func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
