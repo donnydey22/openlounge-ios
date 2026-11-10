@@ -1,0 +1,20 @@
+# TgVoipWebrtc.xcframework: the native half of the Open Lounge call engine (tgcalls with its own
+# WebRTC, the iOS audio device module, the camera capturer and the
+# OngoingCallThreadLocalContextWebrtc API), packaged as a static xcframework.
+# Installed at <Telegram-iOS>/OLTgVoipXCFramework by ci/xcframework/install.sh.
+load("@build_bazel_rules_apple//apple:apple.bzl", "apple_static_xcframework")
+
+apple_static_xcframework(
+    name = "TgVoipWebrtc",
+    bundle_name = "TgVoipWebrtc",
+    ios = {
+        "device": ["arm64"],
+        "simulator": ["arm64"],
+    },
+    minimum_os_versions = {"ios": "15.0"},
+    public_hdrs = [
+        "//submodules/TgVoipWebrtc:PublicHeaders/TgVoipWebrtc/OngoingCallThreadLocalContext.h",
+        "//submodules/TgVoipWebrtc:PublicHeaders/TgVoipWebrtc/MediaStreaming.h",
+    ],
+    deps = ["//submodules/TgVoipWebrtc:TgVoipWebrtc"],
+)

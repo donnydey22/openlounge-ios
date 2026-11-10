@@ -1,0 +1,109 @@
+# Mac CI for the Open Lounge iOS app (branch ol-ios-fresh). Unsigned builds only: no signing, no upload.
+name: ol-ios-fresh
+
+on:
+  push:
+    branches: [ol-ios-fresh]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read   # read seed artifacts from earlier runs in this repository
+
+concurrency:
+  group: ol-ios-fresh
+  cancel-in-progress: true
+
+jobs:
+  clean-slate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: bash ci/clean-slate.sh
+
+  ios:
+    needs: clean-slate
+    runs-on: ${{ vars.OL_MAC_RUNNER || 'macos-latest' }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select pinned Xcode if present
+        run: |
+          want="$(sed -n 's/.*"xcode": *"\([^"]*\)".*/\1/p' ci/telegram-ios-versions.pin)"
+          [ -d "/Applications/Xcode_${want}.app" ] && sudo xcode-select -s "/Applications/Xcode_${want}.app" || true
+          xcodebuild -version; sw_vers
+      - name: Engine xcframework key and seeds
+        id: key
+        run: |
+          pin="$(sed -n 's/.*"telegram_ios": *"\([^"]*\)".*/\1/p' ci/telegram-ios-versions.pin)"
+          h="$(cat ci/xcframework/BUILD.bazel ci/xcframework/install.sh | shasum -a 256 | cut -c1-16)"
+          echo "key=ol-tgvoipwebrtc-xcf-${pin}-${h}" >> "$GITHUB_OUTPUT"
+          echo "pin=${pin}" >> "$GITHUB_OUTPUT"
+          grep -v '^#' ci/xcf-seed-runs.txt | awk 'NR==1{print "run1="$1; print "name1="$2} NR==2{print "run2="$1; print "name2="$2}' >> "$GITHUB_OUTPUT"
+      - name: Restore engine xcframework cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: xcf
+          key: ${{ steps.key.outputs.key }}
+      - name: Seed 1
+        if: steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.key.outputs.name1 }}
+          path: seed1
+          run-id: ${{ steps.key.outputs.run1 }}
+          github-token: ${{ github.token }}
+      - name: Seed 2
+        if: steps.cache.outputs.cache-hit != 'true' && hashFiles('seed1/**/TgVoipWebrtc.xcframework.zip') == ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ steps.key.outputs.name2 }}
+          path: seed2
+          run-id: ${{ steps.key.outputs.run2 }}
+          github-token: ${{ github.token }}
+      - name: Use seed
+        id: seeded
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          z="$(find seed1 seed2 -name TgVoipWebrtc.xcframework.zip 2>/dev/null | head -n1 || true)"
+          if [ -n "$z" ]; then mkdir -p xcf && mv "$z" xcf/TgVoipWebrtc.xcframework.zip; echo "ok=true" >> "$GITHUB_OUTPUT"; du -h xcf/TgVoipWebrtc.xcframework.zip
+          else echo "ok=false" >> "$GITHUB_OUTPUT"; echo "no seed: building from Telegram-iOS source"; fi
+          rm -rf seed1 seed2
+      - name: Build engine xcframework from source (Telegram-iOS at the pin)
+        id: xcfbuild
+        if: steps.cache.outputs.cache-hit != 'true' && steps.seeded.outputs.ok != 'true'
+        run: |
+          git init -q tg && cd tg
+          git remote add origin https://github.com/TelegramMessenger/Telegram-iOS.git
+          git fetch -q --depth 1 origin "${{ steps.key.outputs.pin }}" && git checkout -q FETCH_HEAD
+          git submodule update --init --recursive --depth 1 --jobs 8
+          cd .. && bash ci/xcframework/install.sh "$PWD/tg" "$PWD/xcf"
+      - name: Save engine xcframework cache
+        if: always() && steps.cache.outputs.cache-hit != 'true' && hashFiles('xcf/TgVoipWebrtc.xcframework.zip') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: xcf
+          key: ${{ steps.key.outputs.key }}
+      - name: Build + test
+        run: bash ci/build.sh "$PWD/xcf/TgVoipWebrtc.xcframework.zip"
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ol-ios-fresh-results
+          path: |
+            build/RESULT.json
+            build/ci-*.log
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Keep the engine xcframework (seed for later runs)
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tgvoipwebrtc-xcframework
+          path: xcf/TgVoipWebrtc.xcframework.zip
+          compression-level: 0
+          retention-days: 90

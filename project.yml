@@ -1,0 +1,44 @@
+# XcodeGen spec for the Open Lounge iOS app. ci/build.sh runs `xcodegen generate`.
+name: OpenLounge
+options:
+  bundleIdPrefix: org.openlounge
+  deploymentTarget:
+    iOS: "16.4"
+  createIntermediateGroups: true
+packages:
+  OLCall:
+    path: OLCall
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "1.0.0"
+    CURRENT_PROJECT_VERSION: "1"
+    ARCHS: arm64
+    EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
+    ENABLE_BITCODE: NO
+targets:
+  OpenLounge:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+        excludes:
+          - Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.openlounge.ios
+        INFOPLIST_FILE: App/Info.plist
+        TARGETED_DEVICE_FAMILY: "1"
+        OTHER_LDFLAGS: ["$(inherited)", "-ObjC"]
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGN_IDENTITY: ""
+    dependencies:
+      - package: OLCall
+        product: OLCall
+      - package: OLCall
+        product: OLCallCore
+schemes:
+  OpenLounge:
+    build:
+      targets:
+        OpenLounge: all

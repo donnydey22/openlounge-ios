@@ -1,0 +1,8 @@
+build/
+OLCall/Frameworks/
+OLCall/.build/
+OLCall/.swiftpm/
+OpenLounge.xcodeproj/
+*.xcresult
+DerivedData/
+.DS_Store
