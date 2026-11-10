@@ -69,9 +69,10 @@ struct CallScreen: View {
                             .multilineTextAlignment(.center)
                             .padding(.horizontal, 12)
                             .padding(.vertical, 6)
+                            .frame(maxWidth: .infinity)
                             .background(Color.black.opacity(0.60))
                             .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .frame(maxWidth: OLMetric.failBannerWidth)
+                            .padding(.horizontal, 16)
                             .padding(.top, OLMetric.failBannerTop)
                         Spacer()
                     }
@@ -181,16 +182,19 @@ struct CallScreen: View {
     private var fullRow: some View {
         HStack(alignment: .top, spacing: 0) {
             // Same lucide glyphs as Android (Assets.xcassets ol_call_* = res/drawable ol_call_*).
-            RoundButton(label: call.speakerOn ? "Speaker" : "Phone",
+            // Audio in-call: Speaker / Mute / End call. Video / Flip only on the video stage.
+            RoundButton(label: "Speaker",
                         glyph: call.speakerOn ? "ol_call_speaker" : "ol_call_speaker_off",
                         on: call.speakerOn) { call.toggleSpeaker() }
             if call.cameraOn {
                 RoundButton(label: "Flip", glyph: "ol_call_flip") { call.flip() }
             }
-            RoundButton(label: call.cameraOn ? "Camera" : "Video",
-                        glyph: call.cameraOn ? "ol_call_video" : "ol_call_video_off",
-                        on: call.cameraOn, enabled: call.canToggleVideo || call.phase == .calling || call.phase == .connecting || call.phase == .active) {
-                call.toggleVideo()
+            if call.cameraOn || call.remoteVideoOn || videoStage {
+                RoundButton(label: call.cameraOn ? "Camera" : "Video",
+                            glyph: call.cameraOn ? "ol_call_video" : "ol_call_video_off",
+                            on: call.cameraOn, enabled: call.canToggleVideo || call.phase == .active) {
+                    call.toggleVideo()
+                }
             }
             RoundButton(label: call.muted ? "Unmute" : "Mute",
                         glyph: call.muted ? "ol_call_mic_off" : "ol_call_mic",

@@ -2,7 +2,7 @@
 // (web repo donnydey22/openlounge, commit 101e00a, 2026-10-07 10:51 PM MST):
 // src/components/calls/CallOverlay.tsx + calls.module.css
 // Stage #0b1220, even RoundBtn 56pt (24pt icon, 12pt label) white/15 (active = white, zinc-900
-// icon), End/Decline red-500, Accept emerald-500 pulse, squircle avatar 112 / corner 47,
+// icon), End/Decline red-500, Accept emerald-500 pulse, circle avatar 112,
 // presence dot 16pt + 3pt stage ring (emerald-400 / amber-400) at the bottom-right.
 import SwiftUI
 
@@ -38,7 +38,7 @@ enum OLMetric {
     static let nameSize: CGFloat = 28
     static let nameSizeVideo: CGFloat = 20
     static let statusSize: CGFloat = 15
-    static let statusGap: CGFloat = 4
+    static let statusGap: CGFloat = 16
     static let buttonSize: CGFloat = 56
     static let buttonIconSize: CGFloat = 24
     // Even incoming + in-call rows: every disc is buttonSize (aliases keep leftover refs in step).
@@ -56,7 +56,7 @@ enum OLMetric {
     static let rowPad: CGFloat = 16
     static let topBar: CGFloat = 56
     static let failBannerTop: CGFloat = 64
-    static let failBannerWidth: CGFloat = 260
+    static let failBannerWidth: CGFloat = 396
     static let nameTracking: CGFloat = -0.28   // -0.01em, same as Android letterSpacing
     static let disabledOpacity: Double = 0.4
     static let avatarSize: CGFloat = 112

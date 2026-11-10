@@ -109,7 +109,7 @@ struct Avatar: View {
             }
         }
         .frame(width: size, height: size)
-        .squircle(side: size)
+        .clipShape(Circle())
         .overlay(alignment: .bottomTrailing) {
             if let p = CallPresence.of(presence) {
                 ZStack {
