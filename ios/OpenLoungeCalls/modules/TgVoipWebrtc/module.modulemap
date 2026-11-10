@@ -1,0 +1,9 @@
+// Fallback module map for the static TgVoipWebrtc.xcframework when the
+// xcframework slice does not carry its own Modules/module.modulemap.
+// install-into-ol-app.sh copies the public headers next to this file.
+// MediaStreaming.h is left out: it imports <TgVoipWebrtc/...> (framework-style)
+// and is only needed for group-call streaming, not 1:1 calls.
+module TgVoipWebrtc {
+    header "TgVoipWebrtc/OngoingCallThreadLocalContext.h"
+    export *
+}

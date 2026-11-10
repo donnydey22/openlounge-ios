@@ -1,0 +1,57 @@
+# macOS CI for ios/OLTgcallsSwift (thin Swift wrapper over raw tgcalls, Open Lounge calls).
+# Source: pion-tgcalls-reference ci/github/workflows/oltgcalls-swift-ios.yml (Donny approved
+# push + Mac build 2026-11-09 6:21 PM MST). Lives ONLY on branch ol-tgcalls-swift-ios.
+# Builds TgVoipWebrtc.xcframework from the pinned Telegram-iOS tree, then
+# ios/OLTgcallsSwift/build.sh: device arm64 build + simulator arm64 build + XCTest on a simulator.
+# The Go golden-frame proof (olcall/integration) runs on the dev host, not here.
+# Not a device result: iPhone<->Pion still needs a physical iPhone call. No signing, no upload.
+name: oltgcalls-swift-ios
+
+on:
+  push:
+    branches: [ol-tgcalls-swift-ios]
+  workflow_dispatch:
+    inputs:
+      telegram_ios_ref:
+        description: Telegram-iOS commit (pinned; change only with a re-verified pin)
+        default: 24638bc69bd083981b178dd1e7f921eebbf7fc46
+
+permissions:
+  contents: read
+
+concurrency:
+  group: oltgcalls-swift-ios
+  cancel-in-progress: true
+
+jobs:
+  ios:
+    runs-on: ${{ vars.OL_MAC_RUNNER || 'macos-latest' }}
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+        with: { path: ol }
+      - name: Select pinned Xcode if present
+        run: |
+          want="$(sed -n 's/.*"xcode": *"\([^"]*\)".*/\1/p' ol/ci/telegram-ios-versions.pin)"
+          ls -d /Applications/Xcode*.app || true
+          [ -d "/Applications/Xcode_${want}.app" ] && sudo xcode-select -s "/Applications/Xcode_${want}.app" || true
+          xcodebuild -version
+          sw_vers
+      - name: Fetch Telegram-iOS at the pin
+        env: { REF: "${{ inputs.telegram_ios_ref || '24638bc69bd083981b178dd1e7f921eebbf7fc46' }}" }
+        run: |
+          git init -q tg && cd tg
+          git remote add origin https://github.com/TelegramMessenger/Telegram-iOS.git
+          git fetch -q --depth 1 origin "$REF" && git checkout -q FETCH_HEAD
+          git submodule update --init --recursive --depth 1 --jobs 8
+          git rev-parse HEAD
+      - name: Build xcframework + OLTgcalls (device + simulator) + XCTest
+        run: bash ol/ios/OLTgcallsSwift/build.sh "$PWD/tg"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: oltgcalls-swift-ios
+          path: |
+            ol/ios/OLTgcallsSwift/build/RESULT.json
+            ol/ios/OLTgcallsSwift/build/OLTgcalls-*.log
+          if-no-files-found: warn

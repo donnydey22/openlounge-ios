@@ -1,0 +1,34 @@
+# TgVoipWebrtc.xcframework: Telegram-iOS's production call engine
+# (//submodules/TgVoipWebrtc:TgVoipWebrtc = tgcalls + vendored WebRTC + iOS ADM +
+# camera capturer + OngoingCallThreadLocalContextWebrtc ObjC API) packaged as a
+# STATIC xcframework so the Expo/CocoaPods OL iOS app can link it
+# (ios/OpenLoungeCalls/OpenLoungeOlcall.podspec vendors it).
+#
+# Installed at <Telegram-iOS>/OLTgVoipXCFramework by ios/install-into-telegram-ios.sh.
+# Build (Telegram-iOS root, macOS + Xcode per versions.json):
+#   python3 build-system/Make/Make.py --overrideXcodeVersion build \
+#     --configurationPath=build-system/template_minimal_development_configuration.json \
+#     --codesigningInformationPath=build-system/fake-codesigning \
+#     --disableProvisioningProfiles --configuration=release_arm64 --buildNumber=1 \
+#     --target=//OLTgVoipXCFramework:TgVoipWebrtc
+#   -> bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework
+# (--configuration only selects -c opt; the ios / minimum_os_versions below
+# decide the slices: device arm64 + simulator arm64.)
+# Attributes verified against the pinned rules_apple
+# (build-system/bazel-rules/rules_apple/apple/internal/xcframework_rules.bzl:1325).
+load("@build_bazel_rules_apple//apple:apple.bzl", "apple_static_xcframework")
+
+apple_static_xcframework(
+    name = "TgVoipWebrtc",
+    bundle_name = "TgVoipWebrtc",
+    ios = {
+        "device": ["arm64"],
+        "simulator": ["arm64"],
+    },
+    minimum_os_versions = {"ios": "15.0"},  # Telegram/BUILD:169 at the pin
+    public_hdrs = [
+        "//submodules/TgVoipWebrtc:PublicHeaders/TgVoipWebrtc/OngoingCallThreadLocalContext.h",
+        "//submodules/TgVoipWebrtc:PublicHeaders/TgVoipWebrtc/MediaStreaming.h",
+    ],
+    deps = ["//submodules/TgVoipWebrtc:TgVoipWebrtc"],
+)

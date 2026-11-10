@@ -1,0 +1,70 @@
+# OLTgPeerTest: minimal iOS app linking the SAME tgcalls/WebRTC build that
+# Telegram-iOS ships (//submodules/TgVoipWebrtc:TgVoipWebrtc), including the
+# tgcalls iOS AudioDeviceModule and camera capturer.
+#
+# Installed at <Telegram-iOS>/OLTgPeerTest by ios/install-into-telegram-ios.sh.
+# Values below are copied from the pinned tree (Telegram-iOS 24638bc, verified
+# 2026-11-09 from /workspace/builds/ol-native-engine-20261108/tg):
+#   - copts == objc_library TgVoipWebrtc copts (submodules/TgVoipWebrtc/BUILD:268)
+#     minus -w; the .mm includes tgcalls-internal headers that need these roots.
+#   - minimum_os_version == Telegram/BUILD:169 ("15.0"). This is the build floor
+#     only; the real minimum iOS is whatever the oldest physical test device runs.
+#
+# Build (from the Telegram-iOS root, macOS + Xcode per versions.json):
+#   simulator, no signing (CI compile proof):
+#     python3 build-system/Make/Make.py --overrideXcodeVersion build \
+#       --configurationPath=build-system/template_minimal_development_configuration.json \
+#       --codesigningInformationPath=build-system/fake-codesigning \
+#       --disableProvisioningProfiles --configuration=debug_sim_arm64 \
+#       --buildNumber=1 --target=//OLTgPeerTest:OLTgPeerTest
+#   device (needs YOUR provisioning profile, see install-into-telegram-ios.sh):
+#     same with --configuration=debug_arm64, without --disableProvisioningProfiles,
+#     and --codesigningInformationPath=<dir with OLTgPeerTest.mobileprovision>.
+load("@rules_cc//cc:objc_library.bzl", "objc_library")
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
+
+TGVOIP_COPTS = [
+    "-Isubmodules/TgVoipWebrtc/tgcalls/tgcalls",
+    "-Ithird-party/webrtc/webrtc",
+    "-Ithird-party/webrtc/dependencies",
+    "-Ithird-party/webrtc/webrtc/sdk/objc",
+    "-Ithird-party/webrtc/webrtc/sdk/objc/base",
+    "-Ithird-party/libyuv",
+    "-Ithird-party/webrtc/absl",
+    "-DWEBRTC_IOS",
+    "-DWEBRTC_MAC",
+    "-DWEBRTC_POSIX",
+    "-DRTC_ENABLE_VP9",
+    "-DTGVOIP_NAMESPACE=tgvoip_webrtc",
+    "-std=c++17",
+]
+
+MINIMUM_OS = "15.0"
+
+# Reuses Telegram's public flag, so Make.py --disableProvisioningProfiles
+# (which passes --//Telegram:disableProvisioningProfiles) works for this target.
+config_setting(
+    name = "noProvisioning",
+    flag_values = {"//Telegram:disableProvisioningProfiles": "True"},
+)
+
+objc_library(
+    name = "OLTgPeerTestLib",
+    srcs = glob(["Sources/*.m", "Sources/*.mm", "Sources/*.h"]),
+    copts = TGVOIP_COPTS,
+    sdk_frameworks = ["AVFoundation", "UIKit", "Foundation"],
+    deps = ["//submodules/TgVoipWebrtc:TgVoipWebrtc"],
+)
+
+ios_application(
+    name = "OLTgPeerTest",
+    bundle_id = "{BUNDLE_ID}",
+    families = ["iphone"],
+    infoplists = ["Info.plist"],
+    minimum_os_version = MINIMUM_OS,
+    provisioning_profile = select({
+        ":noProvisioning": None,
+        "//conditions:default": "@build_configuration//provisioning:OLTgPeerTest.mobileprovision",
+    }),
+    deps = [":OLTgPeerTestLib"],
+)
