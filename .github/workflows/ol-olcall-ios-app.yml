@@ -1,7 +1,10 @@
 # Open Lounge iOS app + olcall (tgcalls <-> olcall Go/Pion, wss://<host>/v1/call): COMPILE ONLY.
 # Simulator Debug, unsigned. No signing, no IPA, no upload anywhere, no /download. Branch ol-olcall-ios-app only.
-# TgVoipWebrtc.xcframework comes from the oltgcalls-swift-ios workflow artifact (run id in
-# modules/openlounge-olcall/ios/xcf-seed-run.txt); it is never committed.
+# TgVoipWebrtc.xcframework (Telegram's engine, the ONLY WebRTC in the app) comes from the oltgcalls-swift-ios artifact
+# of the run id in modules/openlounge-olcall/ios/xcf-seed-run.txt; it is never committed. Every run RE-PUBLISHES it as
+# this run's artifact `oltgcalls-swift-ios` with the repo maximum retention (90 days), so pointing xcf-seed-run.txt at
+# the latest green run of this workflow keeps it alive indefinitely (no Nov 24 expiry, no 1.3 GB commit).
+# Required: JS tests + bridge check + typecheck, audio-session owner gate, build, tgcalls linked, 0 duplicate ObjC classes.
 name: ol-olcall-ios-app
 
 on:
@@ -11,7 +14,7 @@ on:
 
 permissions:
   contents: read
-  actions: read   # download the TgVoipWebrtc.xcframework artifact from the oltgcalls-swift-ios run
+  actions: read   # download the TgVoipWebrtc.xcframework artifact from the seed run (uploads use the runtime token)
 
 concurrency:
   group: ol-olcall-ios-app-${{ github.ref }}
@@ -25,6 +28,8 @@ jobs:
       EXPO_NO_TELEMETRY: '1'
     steps:
       - uses: actions/checkout@v4
+      - name: REQUIRE — audio-session owner gate (two scoped owners — OLCallAudioDevice in olcall calls, OLAudioSessionOwner outside)
+        run: bash scripts/check-audio-session-owner.sh
       - name: xcframework seed run id
         id: seed
         run: echo "run=$(tr -dc '0-9' < modules/openlounge-olcall/ios/xcf-seed-run.txt)" >> "$GITHUB_OUTPUT"
@@ -42,6 +47,8 @@ jobs:
           dst=modules/openlounge-olcall/ios/Frameworks
           rm -rf "$dst" && mkdir -p "$dst"
           ditto -x -k "$z" "$dst"
+          mkdir -p xcf-cache && mv "$z" xcf-cache/TgVoipWebrtc.xcframework.zip
+          shasum -a 256 xcf-cache/TgVoipWebrtc.xcframework.zip
           rm -rf seed
           test -f "$dst/TgVoipWebrtc.xcframework/Info.plist"
           ls "$dst/TgVoipWebrtc.xcframework"
@@ -50,28 +57,20 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - name: Fetch interim BSD WebRTC.xcframework (M152) (existing path, unchanged)
-        env:
-          OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
+      - name: REQUIRE — JS tests (node:test), bridge contract, typecheck
         run: |
           set -euo pipefail
-          bash scripts/ios-fetch-webrtc.sh
-          test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
-      - name: REPORT — audio-session owner gate (informational on this branch; see report)
-        continue-on-error: true
-        run: bash scripts/check-audio-session-owner.sh
-      - name: REPORT — ObjC classes defined by BOTH TgVoipWebrtc and WebRTC.xcframework
-        continue-on-error: true
+          node --test tests/*.test.mjs
+          node --experimental-strip-types --test tests/nativeCallFlow.test.ts
+          npx --yes tsx@4 --test tests/pushPayload.test.ts
+          node scripts/check-bridge.cjs
+          npx tsc --noEmit
+      - name: REQUIRE — no second WebRTC in the source tree
         run: |
-          set -uo pipefail
-          tg=modules/openlounge-olcall/ios/Frameworks/TgVoipWebrtc.xcframework/ios-arm64-simulator/TgVoipWebrtc.framework/TgVoipWebrtc
-          wr="$(find modules/openlounge-call-engine/ios/WebRTC.xcframework -path '*simulator*' -type f -name WebRTC | head -n1)"
-          echo "WebRTC binary: $wr"; file "$wr" || true
-          nm -gU "$tg" 2>/dev/null | grep -oE '_OBJC_CLASS_\$_[A-Za-z0-9_]+' | sort -u > tg.txt
-          nm -gU "$wr" 2>/dev/null | grep -oE '_OBJC_CLASS_\$_[A-Za-z0-9_]+' | sort -u > wr.txt
-          comm -12 tg.txt wr.txt > dup.txt
-          echo "TgVoipWebrtc ObjC classes: $(wc -l < tg.txt)  WebRTC.xcframework ObjC classes: $(wc -l < wr.txt)  defined in BOTH: $(wc -l < dup.txt)"
-          head -n 80 dup.txt
+          set -euo pipefail
+          if find . -path ./node_modules -prune -o -name 'WebRTC.xcframework' -print | grep -q .; then echo "FAIL: WebRTC.xcframework present"; exit 1; fi
+          if grep -rn "WebRTC.xcframework" modules --include='*.podspec'; then echo "FAIL: a podspec still vendors WebRTC.xcframework"; exit 1; fi
+          echo "OK: only TgVoipWebrtc.xcframework is vendored"
       - name: prebuild + pod install + simulator Debug build (unsigned)
         run: |
           set -euo pipefail
@@ -79,6 +78,8 @@ jobs:
           cd ios && pod install
           grep -q 'OpenLoungeOlcall' Podfile.lock || { echo "FAIL: OpenLoungeOlcall missing from Podfile.lock"; exit 1; }
           grep -q 'TgVoipWebrtc.xcframework' Pods/Pods.xcodeproj/project.pbxproj || { echo "FAIL: TgVoipWebrtc.xcframework not vendored"; exit 1; }
+          if grep -E '(^|[^A-Za-z])WebRTC\.xcframework|WebRTC-SDK|GoogleWebRTC|JitsiWebRTC|livekit-webrtc|react-native-webrtc' Podfile.lock Pods/Pods.xcodeproj/project.pbxproj | grep -v TgVoipWebrtc | head; then
+            echo "FAIL: a second WebRTC is linked by a pod"; exit 1; fi
           WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
           echo "WS=$WS SCHEME=$SCHEME"
           set +e
@@ -101,6 +102,52 @@ jobs:
           grep -m3 -F 'OBJC_CLASS_$_OngoingCallThreadLocalContextWebrtc' syms.txt || { echo "FAIL: TgVoipWebrtc not linked"; exit 1; }
           grep -m3 -E 'OLSignalingRelay|OLRtcServers|OLCallRoute|OLCallStates' syms.txt || { echo "FAIL: olcall Swift not linked"; exit 1; }
           echo "OK: tgcalls (TgVoipWebrtc) + OLSignalingRelay/OLRtcServers/OLCallRoute linked"
+      - name: REQUIRE — zero duplicate ObjC classes in the built app (static, every Mach-O image)
+        run: |
+          set -euo pipefail
+          APP=$(find ios/dd/Build/Products -name "*.app" -maxdepth 3 | head -1)
+          : > imgs.txt
+          while IFS= read -r -d '' f; do file -b "$f" | grep -q 'Mach-O' && echo "$f" >> imgs.txt || true; done < <(find "$APP" -type f -print0)
+          echo "Mach-O images: $(wc -l < imgs.txt)"; sed "s|$APP/||" imgs.txt
+          : > defs.txt
+          while read -r b; do nm -U "$b" 2>/dev/null | grep -oE '_OBJC_CLASS_\$_[A-Za-z0-9_.]+' | sort -u | awk -v img="${b#$APP/}" '{print $0 "\t" img}' >> defs.txt || true; done < imgs.txt
+          # (a) a class defined in more than one image = the runtime "Class X is implemented in both" duplicate
+          cut -f1 defs.txt | sort | uniq -d > dup.txt
+          # (b) the old 52: Telegram engine classes also defined by any other image (TgVoipWebrtc is static -> app image)
+          tg=modules/openlounge-olcall/ios/Frameworks/TgVoipWebrtc.xcframework/ios-arm64-simulator/TgVoipWebrtc.framework/TgVoipWebrtc
+          nm -gU "$tg" 2>/dev/null | grep -oE '_OBJC_CLASS_\$_[A-Za-z0-9_.]+' | sort -u > tg.txt
+          echo "TgVoipWebrtc ObjC classes: $(wc -l < tg.txt); ObjC class definitions in app: $(wc -l < defs.txt); defined in >1 image: $(wc -l < dup.txt)"
+          if find "$APP" -iname 'WebRTC.framework' | grep -q .; then echo "FAIL: WebRTC.framework embedded"; exit 1; fi
+          test "$(wc -l < tg.txt)" -gt 0 || { echo "FAIL: could not read TgVoipWebrtc classes"; exit 1; }
+          if [ -s dup.txt ]; then echo "FAIL: duplicate ObjC classes:"; head -n 80 dup.txt; exit 1; fi
+          echo "DUPLICATE_OBJC_CLASSES=0"
+      - name: REQUIRE — zero duplicate ObjC classes at runtime (simulator launch, objc 'implemented in both')
+        run: |
+          set -uo pipefail
+          APP=$(find ios/dd/Build/Products -name "*.app" -maxdepth 3 | head -1)
+          BID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          UDID=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k,v in d.items() if "iOS" in k for x in v if x["name"].startswith("iPhone")))')
+          echo "sim=$UDID bundle=$BID"
+          xcrun simctl boot "$UDID" || true
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$APP"
+          ( xcrun simctl launch --console-pty --terminate-running-process "$UDID" "$BID" > launch.log 2>&1 & echo $! > lp )
+          sleep 25
+          kill "$(cat lp)" 2>/dev/null || true
+          xcrun simctl terminate "$UDID" "$BID" 2>/dev/null || true
+          echo "launch log lines: $(wc -l < launch.log)"; head -n 20 launch.log
+          n=$(grep -c 'is implemented in both' launch.log || true)
+          echo "RUNTIME_DUPLICATE_OBJC_CLASSES=$n"
+          grep 'is implemented in both' launch.log | head -n 60 || true
+          test "$n" -eq 0
+      - name: Re-publish TgVoipWebrtc.xcframework (max retention) — durable seed for xcf-seed-run.txt
+        uses: actions/upload-artifact@v4
+        with:
+          name: oltgcalls-swift-ios
+          path: xcf-cache/TgVoipWebrtc.xcframework.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 90
       - if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -108,5 +155,8 @@ jobs:
           path: |
             xb.log
             dup.txt
+            defs.txt
+            tg.txt
+            launch.log
           if-no-files-found: warn
           retention-days: 14

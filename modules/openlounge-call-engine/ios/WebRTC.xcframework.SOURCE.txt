@@ -1,7 +1,0 @@
-source=stasel/WebRTC 152.0.0 (M152 / branch-heads/7977 / commit 6f37672d358475cd17544121a12494da454d85fb)
-url=https://github.com/stasel/WebRTC/releases/download/152.0.0/WebRTC-M152.xcframework.zip
-zip_sha256=115cb9944248a3302c0c8af17462e2576a28ccc7adef9f6a1fe66ee75d9e1cc8
-license=BSD-3-Clause (Google WebRTC; not RingRTC/AGPL)
-slices=ios-arm64, ios-x86_64_arm64-simulator, macos-x86_64_arm64, ios-x86_64_arm64-maccatalyst
-parity_note=Same Chromium M152 / 7977 era as Android /workspace/webrtc-bsd/m152 (crow-misia 152.7977.0.0). Not signalapp/webrtc 8037b.
-fetch=bash scripts/ios-fetch-webrtc.sh

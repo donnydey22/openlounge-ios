@@ -1,21 +1,16 @@
-// Sole AVAudioSession owner for Open Lounge calling. Signal-iOS behavior oracle
-// (Signal/Calls/AudioSession+WebRTC.swift): WebRTC manual audio, CallKit didActivate/didDeactivate forwarded to
-// RTCAudioSession, audio enabled only after activation. No RingRTC/Signal code copied (AGPL) — behavior only.
+// AVAudioSession owner for Open Lounge OUTSIDE olcall calls, and the holder stack (call > room > voice note > ambient).
 //
-// CI gate (scripts/check-audio-session-owner.sh): this is the ONLY file that may touch AVAudioSession.
-// Rules enforced here:
-//  * serialized: every entry point runs on the main queue (one owner, one order of events)
-//  * configure exactly once per call BEFORE CallKit activation; configuration errors propagate (no try? swallow)
-//  * the OS activation callback (CallKit didActivate) is authoritative; this owner never fakes it, never uses
-//    isOtherAudioPlaying as an "is active" test, and never copies/reapplies the category mid-call
-//  * a call-scoped readiness lease: media (OLCallAudioEngine) waits on `whenActive` and starts only after
-//    didActivate → RTCAudioSession.audioSessionDidActivate; bounded timeout = explicit failure, never silent
-//  * didDeactivate suspends (generation bump) WITHOUT discarding the call holder; resumes on the next didActivate
-//  * rooms / voice notes / ambient can never displace a live call holder
+// Two owners, scoped (CI gate scripts/check-audio-session-owner.sh allows exactly these two files):
+//  * DURING an olcall call (a call holder is pushed): tgcalls' custom ADM owns AVAudioSession from the first sample —
+//    modules/openlounge-olcall/ios/tgcalls-swift/OLCallAudioDevice.swift (Telegram SharedCallAudioDevice:
+//    setupAudioSession before the CallKit action is fulfilled, CallKit didActivate -> its policy -> ADM start, route,
+//    interruptions, media-services reset). Every session MUTATOR in this file starts with
+//    `guard !olcallOwnsSession` (the gate checks that per function), so this file never also touches the session.
+//  * OUTSIDE calls: this file, unchanged behaviour for rooms / voice notes / ambient (holder stack below).
+// Every call is an olcall call (one engine, no fallbacks), so "a call holder exists" == "olcall owns the session".
+// Rules kept: serialized on main; CallKit didActivate is authoritative (state only here); rooms / voice notes /
+// ambient can never displace a live call holder.
 import AVFoundation
-#if canImport(WebRTC)
-import WebRTC
-#endif
 
 public enum OLAudioHolderKind: Equatable { case call, room, voiceNote, ambient }
 
@@ -48,18 +43,14 @@ public final class OLAudioSessionOwner {
   private var generation: UInt64 = 0
   private var waiters: [(id: UInt64, cb: (Result<UInt64, OLAudioSessionError>) -> Void)] = []
   private var nextWaiter: UInt64 = 1
-  /// Observers (OLCallAudioEngine) told on activate/deactivate in the same serialized order.
+  /// Observers told on activate/deactivate in the same serialized order.
   public var onActivated: ((UInt64) -> Void)?
   public var onDeactivated: ((UInt64) -> Void)?
 
-  private init() {
-    #if canImport(WebRTC)
-    // Signal: manual audio — WebRTC must NOT start the AudioUnit until CallKit activation is forwarded.
-    let rtc = RTCAudioSession.sharedInstance()
-    rtc.useManualAudio = true
-    rtc.isAudioEnabled = false
-    #endif
-  }
+  private init() {}
+
+  /// True while a call holder is pushed: the olcall engine's OLCallAudioDevice owns AVAudioSession; mutators here no-op.
+  public var olcallOwnsSession: Bool { callToken != nil }
 
   // MARK: holders
   @discardableResult
@@ -86,12 +77,14 @@ public final class OLAudioSessionOwner {
 
   // MARK: call lifecycle (configure → [CallKit fulfills action] → didActivate → lease resolves → engine enables audio)
 
-  /// Configure playAndRecord/voiceChat BEFORE the CallKit action is fulfilled. Never setActive (CallKit activates).
-  /// Idempotent within a call: a second call while configured/active is a no-op (no mid-call category copy).
+  /// Call holder bookkeeping before the CallKit action is fulfilled. The session itself is configured by the olcall
+  /// engine (OLCallAudioDevice.prepareSessionForCallKit); this only moves the state machine. Never touches the session
+  /// while an olcall call holds it.
   public func configureForCall() throws {
     precondition(Thread.isMainThread)
     guard callToken != nil else { throw OLAudioSessionError.noCallHolder }
     guard state == .idle else { return }
+    guard !olcallOwnsSession else { state = .configured; return }
     let s = AVAudioSession.sharedInstance()
     do {
       // Signal/Linphone call mode: playAndRecord + voiceChat, HFP allowed; no mixWithOthers / A2DP / defaultToSpeaker.
@@ -108,9 +101,6 @@ public final class OLAudioSessionOwner {
     precondition(Thread.isMainThread)
     generation &+= 1
     let g = generation
-    #if canImport(WebRTC)
-    RTCAudioSession.sharedInstance().audioSessionDidActivate(session)
-    #endif
     guard callToken != nil else { NSLog("[OLAudio] didActivate without call holder (gen %llu)", g); return }
     state = .active(generation: g)
     NSLog("[OLAudio] active gen=%llu rate=%.0f io=%.4f route=%@", g, session.sampleRate, session.ioBufferDuration,
@@ -123,9 +113,6 @@ public final class OLAudioSessionOwner {
   /// CallKit provider(_:didDeactivate:). Suspends media; the call holder is kept (resume on next didActivate).
   public func callKitDidDeactivate(_ session: AVAudioSession) {
     precondition(Thread.isMainThread)
-    #if canImport(WebRTC)
-    RTCAudioSession.sharedInstance().audioSessionDidDeactivate(session)
-    #endif
     let g = generation
     if callToken != nil { state = .suspended(generation: g) } else { state = .idle }
     onDeactivated?(g)
@@ -153,9 +140,6 @@ public final class OLAudioSessionOwner {
     let w = waiters; waiters = []
     w.forEach { $0.cb(.failure(.ended)) }
     state = .idle
-    #if canImport(WebRTC)
-    RTCAudioSession.sharedInstance().isAudioEnabled = false
-    #endif
   }
 
   /// Media services reset: OS discarded session config. Re-configure once (same call), then the engine reopens once
@@ -163,6 +147,7 @@ public final class OLAudioSessionOwner {
   public func mediaServicesReset() throws {
     precondition(Thread.isMainThread)
     guard callToken != nil else { return }
+    guard !olcallOwnsSession else { return } // OLCallAudioDevice re-runs its own setup + policy on reset
     state = .idle
     try configureForCall()
   }
@@ -170,6 +155,7 @@ public final class OLAudioSessionOwner {
   // MARK: routes (post-activation only)
   public func applyRoute(speakerWanted: Bool, headsetAttached: Bool) {
     precondition(Thread.isMainThread)
+    guard !olcallOwnsSession else { return } // olcall: OLCall.setSpeaker -> OLCallAudioDevice
     guard isActive else { return } // pre-activation overrides fail; reapplied on didActivate by OLCallManager
     let s = AVAudioSession.sharedInstance()
     let wantSpeaker = speakerWanted && !headsetAttached
@@ -186,6 +172,7 @@ public final class OLAudioSessionOwner {
   /// (output follows to receiver); a headset pick selects that headset's input.
   public func applyUserRoute(kind: String, id: String, idOf: (AVAudioSessionPortDescription) -> String, kindOf: (AVAudioSessionPortDescription) -> String) {
     precondition(Thread.isMainThread)
+    guard !olcallOwnsSession else { return } // olcall: OLCallManager maps the pick to OLCall.setSpeaker
     let s = AVAudioSession.sharedInstance()
     let builtIn = s.availableInputs?.first { $0.portType == .builtInMic }
     do {

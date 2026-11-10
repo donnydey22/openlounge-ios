@@ -1,6 +1,6 @@
 # EAS project archive ignore (replaces .gitignore when present).
-# Same as .gitignore EXCEPT WebRTC.xcframework is INCLUDED so eas build --local
-# packs the pre-fetched M152 framework (gitignored in the repo to avoid ~96MB commits).
+# Same as .gitignore (the old WebRTC.xcframework un-ignore is gone with the WebRTC path; olcall Frameworks/ stay
+# ignored here too: an EAS build must unpack TgVoipWebrtc.xcframework the way CI does).
 
 # dependencies
 node_modules/
@@ -46,7 +46,5 @@ yarn-error.*
 credentials.json
 credentials/
 
-# WebRTC: intentionally NOT ignored here — CI fetches before eas --local.
+# (old WebRTC.xcframework entry removed 2026-11-10)
 # Negation patterns (belt-and-suspenders if a parent rule ever matches):
-!modules/openlounge-call-engine/ios/WebRTC.xcframework/
-!modules/openlounge-call-engine/ios/WebRTC.xcframework/**

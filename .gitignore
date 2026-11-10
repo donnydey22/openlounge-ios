@@ -44,5 +44,5 @@ yarn-error.*
 credentials.json
 credentials/
 
-# Interim/vendored WebRTC (fetch via scripts/ios-fetch-webrtc.sh; do not commit ~96MB binary)
-modules/openlounge-call-engine/ios/WebRTC.xcframework/
+# Telegram TgVoipWebrtc.xcframework for the olcall engine (CI unpacks it; never commit ~1.3 GB)
+modules/openlounge-olcall/ios/Frameworks/

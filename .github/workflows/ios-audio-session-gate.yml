@@ -10,5 +10,5 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: HARD GATE — AVAudioSession only in OLAudioSessionOwner (no bypass)
+      - name: HARD GATE — AVAudioSession only in OLCallAudioDevice (olcall calls) + OLAudioSessionOwner (outside calls, olcall-guarded); no bypass
         run: bash scripts/check-audio-session-owner.sh

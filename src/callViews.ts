@@ -1,8 +1,9 @@
-// Call video views (modules/openlounge-call-engine OLRtcVideo: WebRTC tracks on the one OLRtcCall PeerConnection).
-// Signaling + media are native (CallSignalClient / OLRtcCall, RingRTC session model); this file only exposes the views.
-import { requireOptionalNativeModule, requireNativeViewManager } from 'expo-modules-core';
+// Call video is native: tgcalls (olcall engine, modules/openlounge-olcall) video views are placed by the native call
+// screen (OLNativeCallHost). The old WebRTC Expo views (OLRtcVideo) are removed with the WebRTC.xcframework path, so
+// the RN layer renders no call video. callEngineAvailable = the olcall engine module is linked.
+import { requireOptionalNativeModule } from 'expo-modules-core';
 
-const engine = requireOptionalNativeModule('OpenLoungeCallEngine');
-export const callEngineAvailable = () => !!engine;
-export const RemoteVideoView: any = engine ? requireNativeViewManager('OpenLoungeCallEngine', 'OLRemoteVideoView') : null;
-export const LocalVideoView: any = engine ? requireNativeViewManager('OpenLoungeCallEngine', 'OLLocalVideoView') : null;
+const olcall = requireOptionalNativeModule('OpenLoungeOlcall');
+export const callEngineAvailable = () => !!olcall;
+export const RemoteVideoView: any = null;
+export const LocalVideoView: any = null;

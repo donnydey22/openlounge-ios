@@ -64,7 +64,7 @@ import {
   nativeAnswer,
   nativeDecline,
 } from './src/calls';
-// Calls are native end to end (CallSignalClient + OLRtcCall RingRTC session model + CallKit); the page has no part in a call.
+// Calls are native end to end (CallSignalClient call control + olcall tgcalls engine + CallKit); the page has no part in a call.
 type NativeVideoState = { callId: string; local?: boolean; remote?: boolean } | null;
 import { type Theme, loadTheme, saveTheme } from './src/themeStore';
 import { schemeOf } from './src/url';
