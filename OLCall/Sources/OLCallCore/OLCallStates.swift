@@ -32,6 +32,9 @@ public final class OLCallStates {
     /// Every emitted line, in order (tests / diagnostics).
     public private(set) var lines: [String] = []
 
+    /// Call log (OLCallLog): every transition with from / to / reason / t. Set by the engine.
+    public var onTransition: ((State, State, String, Int64) -> Void)?
+
     private let nowMs: () -> Int64
     private let sink: (String) -> Void
     private let started: Int64
@@ -54,10 +57,13 @@ public final class OLCallStates {
     @discardableResult
     public func setState(_ to: State, reason: String) -> String? {
         if to == state || state == .failed { return nil }
-        let l = Self.line(from: state, to: to, reason: reason, ms: nowMs() - started, callId: callId)
+        let ms = nowMs() - started
+        let l = Self.line(from: state, to: to, reason: reason, ms: ms, callId: callId)
+        let from = state
         state = to
         lines.append(l)
         sink(l)
+        onTransition?(from, to, reason, ms)
         return l
     }
 

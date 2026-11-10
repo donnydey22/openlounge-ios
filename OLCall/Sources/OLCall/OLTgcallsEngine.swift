@@ -51,6 +51,8 @@ public final class OLTgcallsEngine {
     private var connected = false
     private var remoteMuted = false
     private let inboundSilence = OLSilenceWatchdog(window: 8, maxRecoveries: 0)
+    /// Durable call log for this leg (OLCallLog: on-disk queue, uploaded to /api/call-log).
+    public let callLog: OLCallLog
 
     /// - Parameters:
     ///   - media: the CallMedia the backend issued for THIS participant (url + join token).
@@ -69,6 +71,9 @@ public final class OLTgcallsEngine {
             NSLog("%@", line)
             c.event("state", line, level: line.contains(" -> failed ") ? "error" : "info")
         })
+        callLog = OLCallLog.forLeg(token: media.token, appCallId: media.callId, video: video, device: OLDevice.model,
+                                   os: "iOS \(UIDevice.current.systemVersion)", engine: OLCallFrames.engine)
+        callLog.attach(states)
     }
 
     public func start() {
@@ -76,7 +81,10 @@ public final class OLTgcallsEngine {
         audio.onActiveChanged = { [weak self] on in self?.emit(.audio(active: on)) }
         audio.onRouteChanged = { [weak self] r in self?.emit(.route(r)) }
         audio.begin(speakerOn: video) { [weak self] outcome in
-            if case let .failed(domain, code, first) = outcome { self?.emit(.audioFailed("\(domain):\(code):\(first)")) }
+            if case let .failed(domain, code, first) = outcome {
+                self?.callLog.event("audio_session", reason: "audio_session_handoff_failure", detail: "\(domain):\(code):\(first)")
+                self?.emit(.audioFailed("\(domain):\(code):\(first)"))
+            }
         }
         let join = OLCallFrames.Join(token: media.token, traceId: traceId, version: version, device: OLDevice.model,
                                      os: "iOS \(UIDevice.current.systemVersion)")
@@ -172,6 +180,8 @@ public final class OLTgcallsEngine {
             }
             let rtc = OLRtcServers.fromIceServers(j.iceServers)
             crumbs.event("tg", "rtc-servers:" + OLRtcServers.summary(rtc))
+            callLog.turnServers = rtc.filter { $0.isTurn }.count
+            callLog.event("rtc_servers", extra: ["turnServers": rtc.filter { $0.isTurn }.count, "stunServers": rtc.filter { !$0.isTurn }.count])
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             do {
                 var key = j.key
@@ -226,6 +236,7 @@ public final class OLTgcallsEngine {
             end("bye:\(reason)")
         case let .error(e):
             crumbs.event("ws", "server-error:\(e)", level: "error")
+            callLog.event("server_error", reason: OLCallLogTags.tag("server-error:\(e)"), detail: String("\(e)".prefix(60)))
             end("server-error")
         case .stats, .pong, .ignored:
             break
@@ -247,6 +258,9 @@ public final class OLTgcallsEngine {
         socket = nil
         audio.end()
         crumbs.event("call", "ended:\(reason)")
+        let wasConnected = states.state == .connected
+        callLog.event("ended", reason: normal ? "normal" : wasConnected ? OLCallLogTags.tag("after-connect:\(reason)") : nil, detail: reason,
+                      extra: ["connected": wasConnected, "blobsSent": states.blobsSent, "blobsReceived": states.blobsReceived])
         crumbs.flush()
         emit(.ended(reason))
     }
