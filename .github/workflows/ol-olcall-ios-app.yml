@@ -69,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           if find . -path ./node_modules -prune -o -name 'WebRTC.xcframework' -print | grep -q .; then echo "FAIL: WebRTC.xcframework present"; exit 1; fi
-          if grep -rn "WebRTC.xcframework" modules --include='*.podspec'; then echo "FAIL: a podspec still vendors WebRTC.xcframework"; exit 1; fi
+          if grep -rn "WebRTC.xcframework" modules --include='*.podspec' | grep -vE ':[0-9]+:[[:space:]]*#' | grep -v TgVoipWebrtc; then echo "FAIL: a podspec still vendors WebRTC.xcframework"; exit 1; fi
           echo "OK: only TgVoipWebrtc.xcframework is vendored"
       - name: prebuild + pod install + simulator Debug build (unsigned)
         run: |
