@@ -30,6 +30,11 @@ final class CallController: ObservableObject {
     /// leg is up while the other phone still rings. The timer and "active" follow the page's call:connected,
     /// which the page sends only once the server says the call was accepted (engine.ts:565 / :690).
     @Published private(set) var engineUp = false
+    /// t5456: first inbound media (remote audio above the noise floor, or a remote video frame) arrived after the
+    /// answer. The UI shows Calling/Ringing until this; `phase` becomes .active (and the timer starts) only when
+    /// the call was answered (page call:connected) AND media is flowing.
+    @Published private(set) var mediaFlowing = false
+    private var answered = false
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -54,7 +59,7 @@ final class CallController: ObservableObject {
             let n = names[id]
             begin(id, name: n?.0 ?? peerName, photo: n?.1, video: video || (n?.2 ?? false), phase: .connecting)
         case let .connected(id):
-            if id.isEmpty || id == callId { setPhase(.active) }
+            if id.isEmpty || id == callId { answered = true; activateIfFlowing() }
         case let .ended(id):
             if id.isEmpty || id == callId { finish() }
             if id.isEmpty || id == callId { incomingVisible = false }
@@ -87,9 +92,20 @@ final class CallController: ObservableObject {
     /// page's call:connected (server-confirmed answer); the engine only records that media is up.
     func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
 
+    func mediaFlowing(callId id: String, source: String) {
+        guard id == callId else { return }
+        mediaFlowing = true
+        activateIfFlowing()
+    }
+
+    private func activateIfFlowing() {
+        if answered, mediaFlowing, phase != .active, phase != .ended { setPhase(.active) }
+    }
+
     func engineEnded(callId id: String) {
         guard id == callId else { return }
         engineUp = false
+        mediaFlowing = false
         remoteVideoView = nil
         localVideoView = nil
         remoteVideoOn = false
@@ -151,6 +167,8 @@ final class CallController: ObservableObject {
         if callId != id {
             activeAt = nil
             engineUp = false
+            mediaFlowing = false
+            answered = false
             muted = false
             remoteVideoOn = false
             remoteVideoView = nil

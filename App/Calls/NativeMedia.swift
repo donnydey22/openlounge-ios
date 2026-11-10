@@ -121,6 +121,8 @@ final class NativeMedia {
             connected = false
             muted = false
             CallController.shared.engineEnded(callId: id)
+        case let .mediaFlowing(source):
+            CallController.shared.mediaFlowing(callId: id, source: source)
         case .joined, .audio, .audioFailed, .route:
             break
         }

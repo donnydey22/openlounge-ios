@@ -22,6 +22,9 @@ public final class OLTgcallsEngine {
         case audioFailed(String)
         case remoteVideoView(UIView)
         case localVideoView(UIView)
+        /// t5456: first inbound media after tgcalls connected (audible remote level, or a rendered remote
+        /// frame). Once per call. The call timer starts on this, not on the answer or the Pion join.
+        case mediaFlowing(source: String)
         case route(String)
         case ended(String)
     }
@@ -60,6 +63,8 @@ public final class OLTgcallsEngine {
     private var videoTimer: Timer?
     private var watchdog = OLVideoWatchdog()
     private var statsWindow = (remote: 0, local: 0, ticks: 0)
+    /// Engine queue: `.mediaFlowing` was emitted.
+    private var flowing = false
     /// Durable call log for this leg (OLCallLog: on-disk queue, uploaded to /api/call-log).
     public let callLog: OLCallLog
 
@@ -231,6 +236,8 @@ public final class OLTgcallsEngine {
                     self.crumbs.event("tg.state", st.rawValue, level: st == .failed ? "error" : "info")
                     self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
                     if st == .failed { self.end("tg-failed") }
+                    // far side's mute state arrived over the media transport: media is flowing even though muted audio has no level
+                    if st == .connected, rm { self.markFlowing("remote-muted") }
                 }
                 instance = i
                 i.makeIncomingVideoView { [weak self] v in if let v { self?.showRemote(v) } }
@@ -287,9 +294,19 @@ public final class OLTgcallsEngine {
     /// Diagnostics: the far side's audio has been silent while they are not muted.
     private func onRemoteLevel(_ level: Float) {
         guard !ended else { return }
+        if connected, level > inboundSilence.floor { markFlowing("audio") }
         if inboundSilence.sample(level: level, active: connected && !remoteMuted, now: Date().timeIntervalSince1970) == .reportSilent {
             crumbs.event("audio", "inbound-silent:\(Int(inboundSilence.window))s", level: "warning")
         }
+    }
+
+    /// Engine queue.
+    private func markFlowing(_ source: String) {
+        guard !flowing, !ended, connected else { return }
+        flowing = true
+        crumbs.event("call", "media-flowing:\(source)")
+        callLog.event("media_flowing", reason: source, detail: nil)
+        emit(.mediaFlowing(source: source))
     }
 
     private func armConnectWatchdog() {
@@ -339,6 +356,7 @@ public final class OLTgcallsEngine {
         let r = remoteView?.takeFrames() ?? 0
         let l = localView?.takeFrames() ?? 0
         statsWindow.remote += r; statsWindow.local += l; statsWindow.ticks += 1
+        if r > 0 { queue.dispatch { self.markFlowing("video") } }
         if statsWindow.ticks >= 5 {
             let w = statsWindow
             statsWindow = (0, 0, 0)
