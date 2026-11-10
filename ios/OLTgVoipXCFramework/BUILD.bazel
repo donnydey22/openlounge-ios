@@ -8,7 +8,7 @@
 # Build (Telegram-iOS root, macOS + Xcode per versions.json):
 #   python3 build-system/Make/Make.py --overrideXcodeVersion build \
 #     --configurationPath=build-system/template_minimal_development_configuration.json \
-#     --codesigningInformationPath=build-system/fake-codesigning \
+#     --xcodeManagedCodesigning \
 #     --configuration=release_arm64 --buildNumber=1 \
 #     --target=//OLTgVoipXCFramework:TgVoipWebrtc
 #   -> bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework

@@ -44,9 +44,11 @@ if [ -d "$src" ] && [ "${src%.xcframework}" != "$src" ]; then
   xcf="$src"
 elif [ -d "$src/submodules/TgVoipWebrtc" ]; then
   bash "$root/ios/install-into-telegram-ios.sh" "$src" org.openlounge.oltgpeertest
+  # Static xcframework: nothing is signed. --xcodeManagedCodesigning skips provisioning-profile /
+  # aps-environment resolution (fake-codesigning profiles do not match the template bundle/team, so Make.py exits).
   (cd "$src" && python3 build-system/Make/Make.py --overrideXcodeVersion build \
       --configurationPath=build-system/template_minimal_development_configuration.json \
-      --codesigningInformationPath=build-system/fake-codesigning \
+      --xcodeManagedCodesigning \
       --configuration=release_arm64 --buildNumber=1 --target=//OLTgVoipXCFramework:TgVoipWebrtc)
   xcf="$src/bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework"
 fi
