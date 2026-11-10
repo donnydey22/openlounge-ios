@@ -48,6 +48,34 @@ final class OLAppURLTests: XCTestCase {
         XCTAssertFalse(OLAppURL.isCallAcceptPath("/calls/abc"))
         XCTAssertEqual(OLAppURL.callAcceptURL(origin: "https://openlounge.app", callId: "c_1"), "https://openlounge.app/call/c_1?accept=1")
     }
+
+    func testResolveScriptMessageURLNilFrameFallsBack() {
+        let page = "https://openlounge.app/call/c1"
+        let origin = "https://openlounge.app"
+        // The b130 bug: WKFrameInfo.request.url is nil, but the shell is still on the app.
+        let fromWeb = OLAppURL.resolveScriptMessageURL(frameURL: nil, webViewURL: page, currentURL: origin + "/", origin: origin)
+        XCTAssertEqual(fromWeb, page)
+        XCTAssertTrue(OLAppURL.isAppURL(fromWeb))
+        let fromEmpty = OLAppURL.resolveScriptMessageURL(frameURL: "", webViewURL: nil, currentURL: page, origin: origin)
+        XCTAssertEqual(fromEmpty, page)
+        XCTAssertTrue(OLAppURL.isAppURL(fromEmpty))
+        let fromCurrent = OLAppURL.resolveScriptMessageURL(frameURL: nil, webViewURL: nil, currentURL: page, origin: origin)
+        XCTAssertEqual(fromCurrent, page)
+        let fromOrigin = OLAppURL.resolveScriptMessageURL(frameURL: nil, webViewURL: nil, currentURL: "", origin: origin)
+        XCTAssertEqual(fromOrigin, origin)
+        XCTAssertTrue(OLAppURL.isAppURL(fromOrigin))
+        // A present non-app frame URL must win the coalescing so isAppURL can reject it.
+        let evil = OLAppURL.resolveScriptMessageURL(frameURL: "https://evil.com/", webViewURL: page, currentURL: page, origin: origin)
+        XCTAssertEqual(evil, "https://evil.com/")
+        XCTAssertFalse(OLAppURL.isAppURL(evil))
+    }
+
+    func testBridgeRequestId() {
+        XCTAssertEqual(OLAppURL.bridgeRequestId(from: #"{"__ol":1,"method":"nativeMedia","id":"r-connect","value":{"op":"connect"}}"#), "r-connect")
+        XCTAssertNil(OLAppURL.bridgeRequestId(from: #"{"__ol":1,"method":"ready"}"#))
+        XCTAssertNil(OLAppURL.bridgeRequestId(from: "not json"))
+        XCTAssertNil(OLAppURL.bridgeRequestId(from: nil))
+    }
 }
 
 final class OLBridgeMessageTests: XCTestCase {

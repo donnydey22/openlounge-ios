@@ -209,8 +209,20 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
     // MARK: bridge
 
     func userContentController(_ ucc: WKUserContentController, didReceive message: WKScriptMessage) {
-        guard message.frameInfo.isMainFrame, let u = message.frameInfo.request.url?.absoluteString, OLAppURL.isAppURL(u),
-              let body = message.body as? String, let req = OLBridgeMessage.parse(body) else { return }
+        let body = message.body as? String
+        let u = OLAppURL.resolveScriptMessageURL(
+            frameURL: message.frameInfo.request.url?.absoluteString,
+            webViewURL: webView.url?.absoluteString,
+            currentURL: currentURL,
+            origin: origin
+        )
+        let req = body.flatMap(OLBridgeMessage.parse)
+        guard message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let req else {
+            if let id = OLAppURL.bridgeRequestId(from: body) {
+                reply(id, false, nil, "bridge-rejected")
+            }
+            return
+        }
         switch req {
         case let .theme(t): setTheme(light: t == "light", fromPage: true)
         case .ready: hideLaunch()

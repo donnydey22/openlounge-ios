@@ -148,6 +148,25 @@ public enum OLAppURL {
         "\(origin.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/call/\(encode(callId))?accept=1"
     }
 
+    /// WKFrameInfo.request.url is often nil for script-message deliveries. Prefer that URL when
+    /// present, otherwise the web view's current URL, then the shell's tracked current/origin URL.
+    /// The caller still has to require isMainFrame and isAppURL on the result.
+    public static func resolveScriptMessageURL(frameURL: String?, webViewURL: String?, currentURL: String, origin: String) -> String {
+        func nonempty(_ s: String?) -> String? {
+            guard let s, !s.isEmpty else { return nil }
+            return s
+        }
+        return nonempty(frameURL) ?? nonempty(webViewURL) ?? nonempty(currentURL) ?? origin
+    }
+
+    /// Request id from a bridge JSON body, used to reply "bridge-rejected" when a message is dropped.
+    public static func bridgeRequestId(from body: String?) -> String? {
+        guard let body, let data = body.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let id = obj["id"] as? String, !id.isEmpty, id.count <= 64 else { return nil }
+        return id
+    }
+
     static func matches(_ s: String, _ pattern: String) -> Bool {
         s.range(of: pattern, options: .regularExpression) != nil
     }
