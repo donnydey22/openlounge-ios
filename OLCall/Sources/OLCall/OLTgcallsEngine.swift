@@ -47,6 +47,10 @@ public final class OLTgcallsEngine {
     private var ended = false
     private var pingTimer: DispatchSourceTimer?
     private var connectWatchdog: DispatchWorkItem?
+    private var peerSeen = false
+    private var connected = false
+    private var remoteMuted = false
+    private let inboundSilence = OLSilenceWatchdog(window: 8, maxRecoveries: 0)
 
     /// - Parameters:
     ///   - media: the CallMedia the backend issued for THIS participant (url + join token).
@@ -160,7 +164,6 @@ public final class OLTgcallsEngine {
             crumbs.leg = j.leg
             states.callId = j.callId
             states.setState(j.isOutgoing ? .offering : .answering, reason: "joined")
-            armConnectWatchdog()
             crumbs.event("tg", "joined:outgoing=\(j.isOutgoing):version=\(version)")
             if !j.serverVersions.isEmpty && !j.serverVersions.contains(version) {
                 crumbs.event("tg", "server-lacks-version:\(version)", level: "error")
@@ -186,8 +189,13 @@ public final class OLTgcallsEngine {
                         }
                     })
                 key.resetBytes(in: 0..<key.count) // the engine holds its own copy
+                i.onRemoteAudioLevel = { [weak self] level in
+                    self?.queue.dispatch { self?.onRemoteLevel(level) }
+                }
                 i.onState = { [weak self] st, rv, rm in
                     guard let self else { return }
+                    self.remoteMuted = rm
+                    self.connected = st == .connected
                     if st == .connected {
                         self.connectWatchdog?.cancel()
                         self.states.setState(.connected, reason: "tg-established")
@@ -208,6 +216,9 @@ public final class OLTgcallsEngine {
                 end("native-create-failed")
             }
         case let .blob(b):
+            // The far side is here (a caller joins while the other phone still rings): only now
+            // does the connect deadline start.
+            if !peerSeen { peerSeen = true; armConnectWatchdog() }
             states.blobReceived()
             crumbs.blob("recv", b)
             instance?.receiveSignalingData(b)
@@ -238,6 +249,14 @@ public final class OLTgcallsEngine {
         crumbs.event("call", "ended:\(reason)")
         crumbs.flush()
         emit(.ended(reason))
+    }
+
+    /// Diagnostics: the far side's audio has been silent while they are not muted.
+    private func onRemoteLevel(_ level: Float) {
+        guard !ended else { return }
+        if inboundSilence.sample(level: level, active: connected && !remoteMuted, now: Date().timeIntervalSince1970) == .reportSilent {
+            crumbs.event("audio", "inbound-silent:\(Int(inboundSilence.window))s", level: "warning")
+        }
     }
 
     private func armConnectWatchdog() {

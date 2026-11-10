@@ -4,6 +4,8 @@
 //   OLAudioCore   C: AVAudioSession activation policy (used only by OLCallAudioDevice)
 //   OLCallCore    pure Swift: call states + log line, WebSocket frames, TURN list, versions,
 //                 CallMedia, call control contract, permission gate (unit-tested, no engine)
+//   OLShellCore   pure Swift: the app shell's rules (app URLs, page bridge messages and script,
+//                 App Lock timing, ring pushes, media commands; unit-tested, no UIKit)
 //   OLCall        the engine: OLTgcallsEngine (wss /v1/call) + OLTgcallsInstance (tgcalls via
 //                 TgVoipWebrtc.xcframework) + OLCallAudioDevice (sole AVAudioSession owner)
 //
@@ -17,11 +19,13 @@ let package = Package(
     products: [
         .library(name: "OLCall", targets: ["OLCall"]),
         .library(name: "OLCallCore", targets: ["OLCallCore"]),
+        .library(name: "OLShellCore", targets: ["OLShellCore"]),
     ],
     targets: [
         .binaryTarget(name: "TgVoipWebrtc", path: "Frameworks/TgVoipWebrtc.xcframework"),
         .target(name: "OLAudioCore", path: "Sources/OLAudioCore", publicHeadersPath: "include"),
         .target(name: "OLCallCore", path: "Sources/OLCallCore"),
+        .target(name: "OLShellCore", path: "Sources/OLShellCore"),
         .target(
             name: "OLCall",
             dependencies: ["TgVoipWebrtc", "OLAudioCore", "OLCallCore"],
@@ -44,6 +48,11 @@ let package = Package(
             dependencies: ["OLCallCore"],
             path: "Tests/OLCallCoreTests",
             resources: [.copy("Fixtures")]
+        ),
+        .testTarget(
+            name: "OLShellCoreTests",
+            dependencies: ["OLShellCore"],
+            path: "Tests/OLShellCoreTests"
         ),
         .testTarget(
             name: "OLCallTests",

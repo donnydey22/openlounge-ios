@@ -45,6 +45,8 @@ public final class OLTgcallsInstance {
 
     /// queue: engine state, far side's video on/off, far side muted.
     public var onState: ((State, _ remoteVideoActive: Bool, _ remoteMuted: Bool) -> Void)?
+    /// Far side's audio level (receive side), on the engine's thread.
+    public var onRemoteAudioLevel: ((Float) -> Void)?
 
     private let queue: OLCallQueue
     private let context: OngoingCallThreadLocalContextWebrtc
@@ -88,6 +90,7 @@ public final class OLTgcallsInstance {
             audioInputDeviceId: "",
             audioDevice: audioDevice.shared,
             directConnection: nil)
+        context.audioLevelUpdated = { [weak self] level in self?.onRemoteAudioLevel?(level) }
         context.stateChanged = { [weak self] state, _, remoteVideo, remoteAudio, _, _ in
             let s: State
             switch state {

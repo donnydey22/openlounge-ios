@@ -20,18 +20,51 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>openlounge</string>
+				<string>com.donnydey.openlounge</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>app-1-166652417209-ios-8c637d5cdac453bc9c3768</string>
+			</array>
+		</dict>
+	</array>
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>FirebaseAppDelegateProxyEnabled</key>
+	<false/>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Open Lounge uses the microphone for your voice in audio and video calls.</string>
+	<string>Open Lounge uses your microphone so you can speak in live rooms, drop-in chats and calls. Audio is only sent while you’re speaking on stage or in a call.</string>
 	<key>NSCameraUsageDescription</key>
-	<string>Open Lounge uses the camera for your video in video calls.</string>
+	<string>Open Lounge uses your camera when you turn on video in a call or take a photo, for example for your profile picture.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Open Lounge lets you pick a photo, for example for your profile picture.</string>
+	<key>NSContactsUsageDescription</key>
+	<string>Open Lounge uses the phone numbers in your contacts to show which friends are already here and, if you turn on “Tell me when contacts join”, to let you know when one joins. Numbers are sent only as one-way codes, never shared, and you can delete them anytime.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Open Lounge uses Face ID to unlock the app when you turn on App lock.</string>
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
+		<string>remote-notification</string>
+		<string>voip</string>
 	</array>
 	<key>UILaunchScreen</key>
-	<dict/>
+	<dict>
+		<key>UIColorName</key>
+		<string>LaunchBackground</string>
+	</dict>
+	<key>UIViewControllerBasedStatusBarAppearance</key>
+	<true/>
 	<key>UIRequiredDeviceCapabilities</key>
 	<array>
 		<string>arm64</string>

@@ -70,6 +70,8 @@ security cms -D -i "$app/embedded.mobileprovision" > "$tmp/embedded.plist"
   echo "get-task-allow: $(codesign -d --entitlements - --xml "$app" 2>/dev/null | plutil -extract get-task-allow raw - 2>/dev/null || echo absent)"
   echo "NSMicrophoneUsageDescription: $(/usr/libexec/PlistBuddy -c 'Print :NSMicrophoneUsageDescription' "$app/Info.plist")"
   echo "NSCameraUsageDescription: $(/usr/libexec/PlistBuddy -c 'Print :NSCameraUsageDescription' "$app/Info.plist")"
+  echo "aps-environment: $(codesign -d --entitlements - --xml "$app" 2>/dev/null | plutil -extract aps-environment raw - 2>/dev/null || echo absent)"
+  echo "UIBackgroundModes: $(/usr/libexec/PlistBuddy -c 'Print :UIBackgroundModes' "$app/Info.plist" | tr -d '\n' | tr -s ' ')"
   bash "$root/ci/dup-classes.sh" "$app" | head -n1
   echo "sha256: $(shasum -a 256 "$ipa" | cut -d' ' -f1)"
   echo "size: $(stat -f%z "$ipa")"

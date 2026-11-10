@@ -3,7 +3,7 @@
 #   ci/build.sh <TgVoipWebrtc.xcframework.zip>
 # 1. clean-slate check     ci/clean-slate.sh
 # 2. engine xcframework     -> OLCall/Frameworks/TgVoipWebrtc.xcframework
-# 3. OLCall package tests   (OLCallCoreTests + OLCallTests) on an iPhone simulator
+# 3. OLCall package tests   (OLCallCoreTests + OLShellCoreTests + OLCallTests) on an iPhone simulator
 # 4. app build              simulator arm64 (Debug) + device arm64 (Release), unsigned
 # 5. duplicate classes      ci/dup-classes.sh on both app builds
 # Writes build/RESULT.json; exit 0 only if every step passed.
