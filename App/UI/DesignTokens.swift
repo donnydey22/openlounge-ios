@@ -1,8 +1,9 @@
 // Open Lounge call design tokens from the first calling UI/UX
 // (web repo donnydey22/openlounge, commit 101e00a, 2026-10-07 10:51 PM MST):
 // src/components/calls/CallOverlay.tsx + calls.module.css
-// Stage #0b1220, RoundBtn 56pt white/15 (active = white, zinc-900 icon), End/Decline red-500,
-// Accept emerald-500 72pt pulse, Message 48pt, squircle avatar 112 / corner 47.
+// Stage #0b1220, even RoundBtn 56pt (24pt icon, 12pt label) white/15 (active = white, zinc-900
+// icon), End/Decline red-500, Accept emerald-500 pulse, squircle avatar 112 / corner 47,
+// presence dot 16pt + 3pt stage ring (emerald-400 / amber-400) at the bottom-right.
 import SwiftUI
 
 enum OLColor {
@@ -18,6 +19,8 @@ enum OLColor {
     static let avatar = Color(hex: 0x64748B)
     static let blobB = Color(hex: 0x6366F1)
     static let bar = Color(hex: 0x10B981)
+    static let presenceOnline = Color(hex: 0x34D399) // emerald-400
+    static let presenceAway = Color(hex: 0xFBBF24)   // amber-400
     static let shadeTop = Color.black.opacity(0.25)
     static let shadeMid = Color.black.opacity(0.05)
     static let shadeBottom = Color.black.opacity(0.55)
@@ -37,11 +40,16 @@ enum OLMetric {
     static let statusSize: CGFloat = 15
     static let statusGap: CGFloat = 4
     static let buttonSize: CGFloat = 56
-    static let buttonBig: CGFloat = 72
-    static let buttonMessage: CGFloat = 48
+    static let buttonIconSize: CGFloat = 24
+    // Even incoming + in-call rows: every disc is buttonSize (aliases keep leftover refs in step).
+    static let buttonBig: CGFloat = buttonSize
+    static let buttonMessage: CGFloat = buttonSize
     static let buttonGap: CGFloat = 8
     static let buttonLabelSize: CGFloat = 12
-    static let incomingLabelSize: CGFloat = 13
+    static let incomingLabelSize: CGFloat = buttonLabelSize
+    static let presenceDot: CGFloat = 16
+    static let presenceRing: CGFloat = 3
+    static let presenceInset: CGFloat = 4
     static let rowBottom: CGFloat = 24
     static let disabledOpacity: Double = 0.4
     static let avatarSize: CGFloat = 112

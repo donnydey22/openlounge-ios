@@ -17,6 +17,8 @@ final class CallController: ObservableObject {
     @Published private(set) var callId = ""
     @Published private(set) var peerName = ""
     @Published private(set) var peerPhoto: URL?
+    /// "online" / "away", or nil when offline or unknown (101e00a Avatar hides the dot).
+    @Published private(set) var peerPresence: String?
     @Published private(set) var video = false
     @Published private(set) var phase: OLCallPhase = .calling
     @Published private(set) var statusText = ""
@@ -37,6 +39,7 @@ final class CallController: ObservableObject {
 
     private var activeAt: Date?
     private var timer: Timer?
+    private var presenceTimer: Timer?
     private var names: [String: (String, URL?, Bool)] = [:]
 
     // MARK: inputs
@@ -151,6 +154,7 @@ final class CallController: ObservableObject {
         let n = names[id]
         if !visible { peerName = n?.0 ?? ""; peerPhoto = n?.1; video = n?.2 ?? false }
         incomingVisible = true
+        startPresencePeek()
     }
 
     private func begin(_ id: String, name: String, photo: URL?, video v: Bool, phase p: OLCallPhase) {
@@ -170,6 +174,7 @@ final class CallController: ObservableObject {
         visible = true
         incomingVisible = false
         setPhase(p)
+        startPresencePeek()
     }
 
     private func setPhase(_ p: OLCallPhase) {
@@ -190,11 +195,44 @@ final class CallController: ObservableObject {
     private func finish() {
         timer?.invalidate()
         timer = nil
+        presenceTimer?.invalidate()
+        presenceTimer = nil
         visible = false
         minimized = false
         activeAt = nil
+        peerPresence = nil
         phase = .ended
         engineEnded(callId: callId)
+    }
+
+    func applyPresence(_ raw: String?) {
+        if let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            peerPresence = CallPresence.of(raw)
+        }
+    }
+
+    func setPresenceFromMessage(_ raw: String?) {
+        peerPresence = CallPresence.of(raw)
+    }
+
+    func applyPeek(_ raw: String?) {
+        let t = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return } // page had no data-presence node; keep last known
+        peerPresence = CallPresence.of(t)
+    }
+
+    private func startPresencePeek() {
+        presenceTimer?.invalidate()
+        peekPresence()
+        presenceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.peekPresence()
+        }
+    }
+
+    private func peekPresence() {
+        host?.peekCallPresence { [weak self] raw in
+            DispatchQueue.main.async { self?.applyPeek(raw) }
+        }
     }
 
     static func photoURL(_ s: String) -> URL? {

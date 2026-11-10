@@ -1,7 +1,7 @@
 // First Open Lounge incoming UI (web 101e00a, 2026-10-07 10:51 PM MST): full-screen
-// stage with blurred avatar, 72pt red Decline, 48pt Message, 72pt pulsing emerald Accept
-// (swipe up), "Open Lounge audio/video call", quick-reply sheet. Accept / Decline still
-// go through CallController (existing Pion / CallKit path).
+// stage with blurred avatar + presence dot, even 56pt Decline / Message / Accept (swipe
+// up on the emerald Accept), "Open Lounge audio/video call", quick-reply sheet. Accept /
+// Decline still go through CallController (existing Pion / CallKit path).
 import SwiftUI
 
 struct IncomingCallScreen: View {
@@ -25,7 +25,7 @@ struct IncomingCallScreen: View {
                     Spacer()
                     ZStack {
                         RingPulse()
-                        Avatar(name: call.peerName, photoURL: call.peerPhoto)
+                        Avatar(name: call.peerName, photoURL: call.peerPhoto, presence: call.peerPresence)
                     }
                     .padding(.bottom, 12)
                     Text(call.peerName.isEmpty ? "Incoming call" : call.peerName)
@@ -40,10 +40,10 @@ struct IncomingCallScreen: View {
                         .padding(.top, 4)
                     Spacer()
                     HStack(alignment: .bottom, spacing: 0) {
-                        RoundButton(label: "Decline", systemImage: "phone.down.fill", fill: OLColor.decline, size: OLMetric.buttonBig, labelSize: OLMetric.incomingLabelSize) {
+                        RoundButton(label: "Decline", systemImage: "phone.down.fill", fill: OLColor.decline, size: OLMetric.buttonSize, labelSize: OLMetric.buttonLabelSize) {
                             call.decline()
                         }
-                        RoundButton(label: "Message", systemImage: "message", size: OLMetric.buttonMessage, labelSize: 12) {
+                        RoundButton(label: "Message", systemImage: "message", size: OLMetric.buttonSize, labelSize: OLMetric.buttonLabelSize) {
                             replies = true
                         }
                         acceptButton
@@ -60,37 +60,42 @@ struct IncomingCallScreen: View {
     }
 
     private var acceptButton: some View {
-        VStack(spacing: 8) {
+        // Hint is overlaid above the disc so the 56pt Accept circle stays on the same baseline as Decline / Message.
+        ZStack(alignment: .top) {
+            VStack(spacing: 6) {
+                ZStack {
+                    AcceptHalo()
+                    Button(action: { call.accept() }) {
+                        Image(systemName: call.video ? "video.fill" : "phone.fill")
+                            .font(.system(size: OLMetric.buttonIconSize, weight: .regular))
+                            .foregroundColor(.white)
+                            .frame(width: OLMetric.buttonSize, height: OLMetric.buttonSize)
+                            .background(OLColor.accept)
+                            .clipShape(Circle())
+                            .shadow(color: Color(hex: 0x064E3B).opacity(0.4), radius: 10, y: 6)
+                            .modifier(AcceptPulse())
+                    }
+                    .accessibilityLabel(call.video ? "Accept video call" : "Accept")
+                    .offset(y: dragY)
+                    .gesture(
+                        DragGesture()
+                            .onChanged { v in dragY = min(0, v.translation.height) }
+                            .onEnded { v in
+                                if v.translation.height < -60 { call.accept() }
+                                dragY = 0
+                            }
+                    )
+                }
+                Text("Accept")
+                    .font(.system(size: OLMetric.buttonLabelSize, weight: .medium))
+                    .foregroundColor(OLColor.label)
+            }
             Text("swipe up")
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.6))
                 .modifier(SwipeHint())
-            ZStack {
-                AcceptHalo()
-                Button(action: { call.accept() }) {
-                    Image(systemName: call.video ? "video.fill" : "phone.fill")
-                        .font(.system(size: 28, weight: .regular))
-                        .foregroundColor(.white)
-                        .frame(width: OLMetric.buttonBig, height: OLMetric.buttonBig)
-                        .background(OLColor.accept)
-                        .clipShape(Circle())
-                        .shadow(color: Color(hex: 0x064E3B).opacity(0.4), radius: 10, y: 6)
-                        .modifier(AcceptPulse())
-                }
-                .accessibilityLabel(call.video ? "Accept video call" : "Accept")
-                .offset(y: dragY)
-                .gesture(
-                    DragGesture()
-                        .onChanged { v in dragY = min(0, v.translation.height) }
-                        .onEnded { v in
-                            if v.translation.height < -60 { call.accept() }
-                            dragY = 0
-                        }
-                )
-            }
-            Text("Accept")
-                .font(.system(size: OLMetric.incomingLabelSize, weight: .medium))
-                .foregroundColor(OLColor.label)
+                .offset(y: -22)
+                .allowsHitTesting(false)
         }
         .frame(maxWidth: .infinity)
     }

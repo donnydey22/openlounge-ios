@@ -165,6 +165,14 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
 
     private func js(_ s: String) { webView?.evaluateJavaScript(s, completionHandler: nil) }
 
+    func peekCallPresence(_ done: @escaping (String?) -> Void) {
+        let script = "(function(){try{var el=document.querySelector('[data-testid=\'call-screen\'] [data-presence]')||document.querySelector('[data-testid=\'incoming-call\'] [data-presence]');if(!el)return '';return el.getAttribute('data-presence')||'offline';}catch(e){return '';}})()"
+        guard let webView else { done(nil); return }
+        webView.evaluateJavaScript(script) { r, _ in
+            done(r as? String)
+        }
+    }
+
     private func reply(_ id: String, _ ok: Bool, _ result: Any? = nil, _ error: String? = nil) {
         js(OLBridgeScript.resolve(id: id, ok: ok, result: result, error: error))
     }
@@ -247,6 +255,10 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
         case let .call(m):
             CallCenter.shared.onPage(m)
             CallController.shared.onPage(m)
+            if let raw = body, CallPresence.hasField(inJSON: raw) {
+                // Explicit field, including "offline" (hides the dot). Empty peek does not clear.
+                CallController.shared.setPresenceFromMessage(CallPresence.field(fromJSON: raw))
+            }
             if case .connected = m { unlockForCall() }
         case let .nativeMedia(id, cmd):
             NativeMedia.shared.handle(cmd) { [weak self] ok, r, e in self?.reply(id, ok, r, e) }

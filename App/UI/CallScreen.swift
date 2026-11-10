@@ -112,7 +112,7 @@ struct CallScreen: View {
                     if call.phase == .calling {
                         RingPulse()
                     }
-                    Avatar(name: call.peerName, photoURL: call.peerPhoto)
+                    Avatar(name: call.peerName, photoURL: call.peerPhoto, presence: call.peerPresence)
                 }
                 .padding(.bottom, OLMetric.avatarGap - 12)
             }
@@ -354,7 +354,7 @@ struct RoundButton: View {
                     Circle().fill(fill ?? (on ? OLColor.buttonOn : OLColor.button))
                     if let systemImage {
                         Image(systemName: systemImage)
-                            .font(.system(size: size >= 68 ? 28 : 20, weight: .regular))
+                            .font(.system(size: OLMetric.buttonIconSize, weight: .regular))
                             .foregroundColor(fill != nil ? .white : (on ? OLColor.buttonOnIcon : .white))
                     } else {
                         Text(label)
