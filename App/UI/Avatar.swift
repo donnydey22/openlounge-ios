@@ -94,7 +94,7 @@ struct Avatar: View {
                     .font(.system(size: OLMetric.initialsSize * size / OLMetric.avatarSize, weight: .medium))
                     .foregroundColor(.white)
             }
-            if let url = photoURL, url.scheme == "https" || url.scheme == "http" {
+            if let url = photoURL, url.scheme == "https" || url.scheme == "http" || url.scheme == "file" {
                 AsyncImage(url: url, transaction: Transaction(animation: .easeIn(duration: OLMetric.photoFade))) { phase in
                     if case let .success(image) = phase {
                         image.resizable().scaledToFill()

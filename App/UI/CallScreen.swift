@@ -32,6 +32,18 @@ struct CallScreen: View {
 
                 VStack(spacing: 0) {
                     topBar
+                    if call.failed {
+                        Text(call.failedText)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.60))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 8)
+                    }
                     centerBlock
                     Spacer(minLength: 0)
                     if call.failed {
@@ -106,18 +118,6 @@ struct CallScreen: View {
 
     private var centerBlock: some View {
         VStack(spacing: 12) {
-            if call.failed {
-                Text(call.failedText)
-                    .font(.system(size: 12, weight: .medium))
-                    .foregroundColor(.white)
-                    .multilineTextAlignment(.center)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 6)
-                    .background(Color.black.opacity(0.60))
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 8)
-            }
             if !videoStage {
                 ZStack {
                     if call.phase == .calling {
@@ -216,22 +216,27 @@ private struct Blink: ViewModifier {
 struct CallBackdrop: View {
     let name: String
     let photoURL: URL?
+    @State private var photoLoaded = false
     var body: some View {
         GeometryReader { geo in
             let side = max(geo.size.width, geo.size.height) * 0.7
             ZStack {
                 OLColor.stage
-                Circle().fill(OLColor.avatar.opacity(0.55))
-                    .frame(width: side, height: side)
-                    .blur(radius: 60)
-                    .offset(x: -side * 0.35, y: -side * 0.3)
-                    .modifier(Drift(dx: side * 0.25, dy: side * 0.2, duration: 14))
-                Circle().fill(OLColor.blobB.opacity(0.55))
-                    .frame(width: side, height: side)
-                    .blur(radius: 60)
-                    .offset(x: side * 0.4, y: side * 0.35)
-                    .modifier(Drift(dx: -side * 0.22, dy: -side * 0.17, duration: 17))
-                if let url = photoURL, url.scheme == "https" || url.scheme == "http" {
+                // Indigo/slate blobs only when there is no profile photo, so a present
+                // picture becomes the dark blurred backdrop (same as the first-design shots).
+                if !photoLoaded {
+                    Circle().fill(OLColor.avatar.opacity(0.55))
+                        .frame(width: side, height: side)
+                        .blur(radius: 60)
+                        .offset(x: -side * 0.35, y: -side * 0.3)
+                        .modifier(Drift(dx: side * 0.25, dy: side * 0.2, duration: 14))
+                    Circle().fill(OLColor.blobB.opacity(0.55))
+                        .frame(width: side, height: side)
+                        .blur(radius: 60)
+                        .offset(x: side * 0.4, y: side * 0.35)
+                        .modifier(Drift(dx: -side * 0.22, dy: -side * 0.17, duration: 17))
+                }
+                if let url = photoURL, url.scheme == "https" || url.scheme == "http" || url.scheme == "file" {
                     AsyncImage(url: url) { phase in
                         if case let .success(image) = phase {
                             image.resizable().scaledToFill()
@@ -239,6 +244,7 @@ struct CallBackdrop: View {
                                 .blur(radius: 36)
                                 .saturation(1.3)
                                 .brightness(-0.15)
+                                .onAppear { photoLoaded = true }
                         }
                     }
                 }
