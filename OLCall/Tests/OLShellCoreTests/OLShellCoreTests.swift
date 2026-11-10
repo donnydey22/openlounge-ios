@@ -129,6 +129,8 @@ final class OLBridgeMessageTests: XCTestCase {
                        .call(.outgoing(callId: "c1", name: "Ann", video: true, photo: nil)))
         XCTAssertEqual(OLBridgeMessage.parse(#"{"type":"call:incoming","callId":"c1","name":"Ann","photo":"https://x/p.jpg","expiresAt":5}"#),
                        .call(.incoming(callId: "c1", name: "Ann", video: false, photo: "https://x/p.jpg", expiresAt: 5)))
+        XCTAssertEqual(OLBridgeMessage.parse(#"{"type":"call:answering","callId":"c1","name":"Ann","photo":"https://x/p.jpg","video":true}"#),
+                       .call(.answering(callId: "c1", name: "Ann", video: true, photo: "https://x/p.jpg")))
         XCTAssertNil(OLBridgeMessage.parse(#"{"type":"call:outgoing","callId":"bad id!"}"#))
         XCTAssertEqual(OLBridgeMessage.parse(#"{"type":"call:ended"}"#), .call(.ended(callId: "")))
         XCTAssertNil(OLBridgeMessage.parse(#"{"type":"call:ended","callId":"../x"}"#))
@@ -208,7 +210,7 @@ final class OLShellPolicyTests: XCTestCase {
 
     func testCallPhase() {
         XCTAssertEqual(OLCallPhase.from(.outgoing(callId: "c", name: "", video: false, photo: nil)), .calling)
-        XCTAssertEqual(OLCallPhase.from(.answering(callId: "c", video: false)), .connecting)
+        XCTAssertEqual(OLCallPhase.from(.answering(callId: "c", name: "", video: false, photo: nil)), .connecting)
         XCTAssertEqual(OLCallPhase.from(.connected(callId: "c")), .active)
         XCTAssertEqual(OLCallPhase.active.status(seconds: 75), "1:15")
         XCTAssertEqual(OLCallPhase.calling.status(seconds: 0), "Calling…")

@@ -14,4 +14,13 @@ protocol ShellHost: AnyObject {
     func answerInPage(callId: String)
     /// A call needs the app in front of App Lock.
     func unlockForCall()
+    /// Read-only peek of the page's existing call-screen presence (`data-presence`), if any.
+    func peekCallPresence(_ done: @escaping (String?) -> Void)
+    /// Read-only peek of the page call-screen profile photo src, when the message had none.
+    func peekCallPhoto(_ done: @escaping (String?) -> Void)
+}
+
+extension ShellHost {
+    func peekCallPresence(_ done: @escaping (String?) -> Void) { done(nil) }
+    func peekCallPhoto(_ done: @escaping (String?) -> Void) { done(nil) }
 }

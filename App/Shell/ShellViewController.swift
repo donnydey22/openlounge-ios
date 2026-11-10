@@ -69,6 +69,9 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
         let ucc = WKUserContentController()
         ucc.addUserScript(WKUserScript(source: OLBridgeScript.injected(version: Self.version, build: Self.build, phoneAuth: PhoneAuth.available),
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // One call screen: the native first-design CallScreen. The page's CallOverlay always renders under it
+        // (and showed through after hang-up and under the minimized bar), so hide its non-incoming states.
+        ucc.addUserScript(WKUserScript(source: CallWebOverlay.hideJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         ucc.add(WeakMessageHandler(self), name: OLBridgeScript.handlerName)
         config.userContentController = ucc
 
@@ -165,6 +168,21 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
 
     private func js(_ s: String) { webView?.evaluateJavaScript(s, completionHandler: nil) }
 
+    func peekCallPresence(_ done: @escaping (String?) -> Void) {
+        let script = "(function(){try{var el=document.querySelector('[data-testid=\'call-screen\'] [data-presence]')||document.querySelector('[data-testid=\'incoming-call\'] [data-presence]');if(!el)return '';return el.getAttribute('data-presence')||'offline';}catch(e){return '';}})()"
+        guard let webView else { done(nil); return }
+        webView.evaluateJavaScript(script) { r, _ in
+            done(r as? String)
+        }
+    }
+
+    func peekCallPhoto(_ done: @escaping (String?) -> Void) {
+        guard let webView else { done(nil); return }
+        webView.evaluateJavaScript(CallPresence.peekPhotoJS) { r, _ in
+            done(r as? String)
+        }
+    }
+
     private func reply(_ id: String, _ ok: Bool, _ result: Any? = nil, _ error: String? = nil) {
         js(OLBridgeScript.resolve(id: id, ok: ok, result: result, error: error))
     }
@@ -216,6 +234,13 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             currentURL: currentURL,
             origin: origin
         )
+        // Engine-branch call states (ringing acknowledged / server answered) drive the pre-answer card.
+        // OLShellCore drops call types it does not know yet, so read them here (UI only, no engine change).
+        if message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let raw = body,
+           let o = CallPresence.object(fromJSON: raw), let t = o["type"] as? String,
+           CallController.pageStateTypes.contains(t) {
+            CallController.shared.onPageState(t, callId: (o["callId"] as? String) ?? "")
+        }
         let req = body.flatMap(OLBridgeMessage.parse)
         guard message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let req else {
             if let id = OLAppURL.bridgeRequestId(from: body) {
@@ -246,7 +271,15 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             PhoneAuth.confirm(id: id, code: code) { [weak self] r in DispatchQueue.main.async { self?.phoneAuthResult(r) } }
         case let .call(m):
             CallCenter.shared.onPage(m)
-            CallController.shared.onPage(m)
+            if case .ended = m, CallPresence.isFailure(fromJSON: body) {
+                CallController.shared.showNetworkFailure(CallPresence.failureText(fromJSON: body))
+            } else {
+                CallController.shared.onPage(m)
+            }
+            if let raw = body, CallPresence.hasField(inJSON: raw) {
+                // Explicit field, including "offline" (hides the dot). Empty peek does not clear.
+                CallController.shared.setPresenceFromMessage(CallPresence.field(fromJSON: raw))
+            }
             if case .connected = m { unlockForCall() }
         case let .nativeMedia(id, cmd):
             NativeMedia.shared.handle(cmd) { [weak self] ok, r, e in self?.reply(id, ok, r, e) }

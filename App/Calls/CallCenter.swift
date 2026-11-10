@@ -133,7 +133,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             controller.request(CXTransaction(action: a)) { [weak self] err in
                 if err != nil { self?.calls[id] = nil }
             }
-        case let .answering(id, _):
+        case let .answering(id, _, _, _):
             guard var e = calls[id], e.incoming, !e.answered else { return }
             e.answeredInPage = true
             calls[id] = e

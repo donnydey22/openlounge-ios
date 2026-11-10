@@ -11,7 +11,7 @@ public enum OLHaptic: String, CaseIterable {
 public enum OLPageCallMessage: Equatable {
     case incoming(callId: String, name: String, video: Bool, photo: String?, expiresAt: Double?)
     case outgoing(callId: String, name: String, video: Bool, photo: String?)
-    case answering(callId: String, video: Bool)
+    case answering(callId: String, name: String, video: Bool, photo: String?)
     case connected(callId: String)
     case ended(callId: String)
     case muted(Bool)
@@ -158,7 +158,7 @@ public enum OLBridgeMessage {
         case "call:outgoing":
             return id.isEmpty ? nil : .outgoing(callId: id, name: name, video: video, photo: photo)
         case "call:answering":
-            return id.isEmpty ? nil : .answering(callId: id, video: video)
+            return id.isEmpty ? nil : .answering(callId: id, name: name, video: video, photo: photo)
         case "call:connected":
             return rawId != nil && id.isEmpty ? nil : .connected(callId: id)
         case "call:ended":

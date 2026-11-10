@@ -17,6 +17,8 @@ final class CallController: ObservableObject {
     @Published private(set) var callId = ""
     @Published private(set) var peerName = ""
     @Published private(set) var peerPhoto: URL?
+    /// "online" / "away", or nil when offline or unknown (101e00a Avatar hides the dot).
+    @Published private(set) var peerPresence: String?
     @Published private(set) var video = false
     @Published private(set) var phase: OLCallPhase = .calling
     @Published private(set) var statusText = ""
@@ -26,15 +28,32 @@ final class CallController: ObservableObject {
     @Published var remoteVideoOn = false
     @Published var remoteVideoView: UIView?
     @Published var localVideoView: UIView?
-    /// t5450: this phone's media leg reached the Pion server (tgcalls Established). NOT "answered": the caller's
-    /// leg is up while the other phone still rings. The timer and "active" follow the page's call:connected,
-    /// which the page sends only once the server says the call was accepted (engine.ts:565 / :690).
+    @Published private(set) var facingFront = true
+    @Published private(set) var minimized = false
+    /// First-design network-failure chrome (ended overlay + the connect-on-this-network copy). Stays until Close.
+    @Published private(set) var failed = false
+    @Published private(set) var failedText = ""
+    /// This phone's media leg reached the Pion server (tgcalls Established). NOT "answered" and not first media.
     @Published private(set) var engineUp = false
-    /// t5456: first inbound media (remote audio above the noise floor, or a remote video frame) arrived after the
-    /// answer. The UI shows Calling/Ringing until this; `phase` becomes .active (and the timer starts) only when
-    /// the call was answered (page call:connected) AND media is flowing.
+    /// Server answered (call:answered, or call:connected on engines that do not post it yet).
+    /// Until then CallScreen is the pre-answer card: avatar, name, Calling… / Ringing… and one Cancel.
+    @Published private(set) var answered = false
+    /// Callee's device acknowledged the ring (call:ringing) -> "Ringing…".
+    @Published private(set) var ringingAck = false
+    /// First inbound media after the answer (page call:mediaFlowing, or NativeMedia.mediaFlowing).
+    /// The timer and full controls start only when answered AND this is true.
     @Published private(set) var mediaFlowing = false
-    private var answered = false
+    /// Full call UI (row, timer, video, minimize) only once media flows after the server answer.
+    var live: Bool { answered && mediaFlowing }
+
+    /// Engine-branch "ringing acknowledged" / "media flowing" page types (raw JSON; see ShellViewController).
+    static let ringingAckTypes: Set<String> = ["call:ringing"]
+    static let mediaFlowingTypes: Set<String> = ["call:mediaFlowing"]
+    static let pageStateTypes: Set<String> = ringingAckTypes.union(mediaFlowingTypes).union(["call:answered"])
+
+    private func goLiveIfReady() {
+        if live { setPhase(.active) } else { tick() } // the timer starts here, on media after the answer
+    }
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -44,6 +63,7 @@ final class CallController: ObservableObject {
 
     private var activeAt: Date?
     private var timer: Timer?
+    private var presenceTimer: Timer?
     private var names: [String: (String, URL?, Bool)] = [:]
 
     // MARK: inputs
@@ -55,13 +75,15 @@ final class CallController: ObservableObject {
             if lockCovering { show(incoming: id) }
         case let .outgoing(id, name, video, photo):
             begin(id, name: name, photo: photo.flatMap(Self.photoURL), video: video, phase: .calling)
-        case let .answering(id, video):
+        case let .answering(id, name, video, photo):
             let n = names[id]
-            begin(id, name: n?.0 ?? peerName, photo: n?.1, video: video || (n?.2 ?? false), phase: .connecting)
+            begin(id, name: name.isEmpty ? (n?.0 ?? peerName) : name,
+                  photo: photo.flatMap(Self.photoURL) ?? n?.1,
+                  video: video || (n?.2 ?? false), phase: .connecting)
         case let .connected(id):
-            if id.isEmpty || id == callId { answered = true; activateIfFlowing() }
+            if id.isEmpty || id == callId { answered = true; goLiveIfReady() }
         case let .ended(id):
-            if id.isEmpty || id == callId { finish() }
+            if id.isEmpty || id == callId { endOrCard() }
             if id.isEmpty || id == callId { incomingVisible = false }
         case let .muted(m):
             muted = m
@@ -76,9 +98,10 @@ final class CallController: ObservableObject {
         names[id] = (name, photo.flatMap(Self.photoURL), video)
     }
 
-    func answering(callId id: String, name: String, video: Bool) {
+    func answering(callId id: String, name: String, video: Bool, photo: String? = nil) {
         let n = names[id]
-        begin(id, name: n?.0 ?? name, photo: n?.1, video: video, phase: .connecting)
+        begin(id, name: name.isEmpty ? (n?.0 ?? peerName) : name,
+              photo: photo.flatMap(Self.photoURL) ?? n?.1, video: video, phase: .connecting)
     }
 
     func engineStarted(callId id: String, video: Bool) {
@@ -87,19 +110,30 @@ final class CallController: ObservableObject {
         speakerOn = video
     }
 
-    /// t5450: was `setPhase(.active)`, which started the timer on the caller's own server leg (calls A/C showed
-    /// "0:07" while Keiko's phone was still ringing or had declined). The phase now moves to .active only on the
-    /// page's call:connected (server-confirmed answer); the engine only records that media is up.
+    /// This phone's media leg reached the server (tgcalls Established). Not an answer and not first inbound media.
     func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
 
+    /// First inbound media after the answer (NativeMedia callback). Starts the timer only once also answered.
     func mediaFlowing(callId id: String, source: String) {
         guard id == callId else { return }
         mediaFlowing = true
-        activateIfFlowing()
+        goLiveIfReady()
     }
 
-    private func activateIfFlowing() {
-        if answered, mediaFlowing, phase != .active, phase != .ended { setPhase(.active) }
+    /// call:ringing / call:answered / call:mediaFlowing from the page (raw JSON; see ShellViewController).
+    func onPageState(_ type: String, callId id: String) {
+        guard visible, id.isEmpty || id == callId else { return }
+        if Self.ringingAckTypes.contains(type) {
+            if !live { ringingAck = true; tick() }
+        } else if type == "call:answered" {
+            answered = true
+            goLiveIfReady()
+        } else if Self.mediaFlowingTypes.contains(type) {
+            answered = true // the engine posts mediaFlowing only after the answer
+            mediaFlowing = true
+            goLiveIfReady()
+        }
+    }
     }
 
     func engineEnded(callId id: String) {
@@ -129,7 +163,19 @@ final class CallController: ObservableObject {
 
     func toggleVideo() {
         let on = !cameraOn
-        NativeMedia.shared.handle(["op": .string("camera"), "on": .bool(on), "facing": .string("user")]) { _, _, _ in }
+        NativeMedia.shared.handle(["op": .string("camera"), "on": .bool(on), "facing": .string(facingFront ? "user" : "environment")]) { _, _, _ in }
+    }
+
+    /// Flip the local camera. Uses the existing NativeMedia camera op; does not change the engine path.
+    func flip() {
+        guard cameraOn else { return }
+        facingFront.toggle()
+        NativeMedia.shared.handle(["op": .string("camera"), "on": .bool(true), "facing": .string(facingFront ? "user" : "environment")]) { _, _, _ in }
+    }
+
+    func setMinimized(_ on: Bool) {
+        // UI-only: the engine, media and logging stay running.
+        minimized = on
     }
 
     func end() {
@@ -137,8 +183,29 @@ final class CallController: ObservableObject {
         host?.dispatchNativeCall(["type": "call:hangup", "callId": id])
         NativeMedia.shared.close()
         CallCenter.shared.endFromApp(id)
-        finish()
+        endOrCard()
     }
+
+    /// Normal end of a live call: the end card (avatar, name, "Call ended · m:ss"), same structure as the calling
+    /// screen, for web engine.ts:93 ENDED_LINGER_MS (1.8 s); same as Android NativeCallScreen.showEndCard.
+    @Published private(set) var endedCard = false
+    private var endedWork: DispatchWorkItem?
+    private func endOrCard() {
+        guard visible, live, let at = activeAt, !failed else { finish(); return }
+        let secs = Int(Date().timeIntervalSince(at))
+        timer?.invalidate()
+        timer = nil
+        minimized = false
+        engineEnded(callId: callId)
+        endedCard = true
+        phase = .ended
+        statusText = "Call ended · " + OLCallPhase.active.status(seconds: secs)
+        let w = DispatchWorkItem { [weak self] in if self?.endedCard == true { self?.finish() } }
+        endedWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: w)
+    }
+
+    func dismissEndCard() { finish() }
 
     private(set) var incomingCallId = ""
 
@@ -161,6 +228,7 @@ final class CallController: ObservableObject {
         let n = names[id]
         if !visible { peerName = n?.0 ?? ""; peerPhoto = n?.1; video = n?.2 ?? false }
         incomingVisible = true
+        startPresencePeek()
     }
 
     private func begin(_ id: String, name: String, photo: URL?, video v: Bool, phase p: OLCallPhase) {
@@ -173,6 +241,15 @@ final class CallController: ObservableObject {
             remoteVideoOn = false
             remoteVideoView = nil
             localVideoView = nil
+            facingFront = true
+            minimized = false
+            failed = false
+            failedText = ""
+            answered = false
+            mediaFlowing = false
+            endedCard = false
+            endedWork?.cancel()
+            ringingAck = false
         }
         callId = id
         peerName = name.isEmpty ? "Open Lounge" : name
@@ -181,6 +258,7 @@ final class CallController: ObservableObject {
         visible = true
         incomingVisible = false
         setPhase(p)
+        startPresencePeek()
     }
 
     private func setPhase(_ p: OLCallPhase) {
@@ -195,16 +273,86 @@ final class CallController: ObservableObject {
 
     private func tick() {
         let secs = activeAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
-        statusText = phase.status(seconds: secs)
+        statusText = (!live && ringingAck && phase == .calling) ? "Ringing…" : phase.status(seconds: secs)
     }
 
     private func finish() {
+        endedWork?.cancel()
+        endedWork = nil
+        endedCard = false
         timer?.invalidate()
         timer = nil
+        presenceTimer?.invalidate()
+        presenceTimer = nil
         visible = false
+        minimized = false
+        failed = false
+        failedText = ""
         activeAt = nil
+        peerPresence = nil
+        answered = false
+        mediaFlowing = false
+        ringingAck = false
         phase = .ended
         engineEnded(callId: callId)
+    }
+
+    /// Show the first-design failure screen instead of immediately dismissing the overlay.
+    func showNetworkFailure(_ text: String) {
+        incomingVisible = false
+        failed = true
+        failedText = text
+        phase = .ended
+        statusText = text
+        visible = true
+        minimized = false
+        remoteVideoOn = false
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func dismissFailed() {
+        finish()
+    }
+
+    func applyPresence(_ raw: String?) {
+        if let raw, !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            peerPresence = CallPresence.of(raw)
+        }
+    }
+
+    func setPresenceFromMessage(_ raw: String?) {
+        peerPresence = CallPresence.of(raw)
+    }
+
+    func applyPeek(_ raw: String?) {
+        let t = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if t.isEmpty { return } // page had no data-presence node; keep last known
+        peerPresence = CallPresence.of(t)
+    }
+
+    private func startPresencePeek() {
+        presenceTimer?.invalidate()
+        peekPresence()
+        presenceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+            self?.peekPresence()
+        }
+    }
+
+    private func peekPresence() {
+        host?.peekCallPresence { [weak self] raw in
+            DispatchQueue.main.async { self?.applyPeek(raw) }
+        }
+        if peerPhoto == nil {
+            host?.peekCallPhoto { [weak self] raw in
+                DispatchQueue.main.async {
+                    guard let self, self.peerPhoto == nil else { return }
+                    let t = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if let u = Self.photoURL(t) { self.peerPhoto = u }
+                }
+            }
+        }
     }
 
     static func photoURL(_ s: String) -> URL? {
