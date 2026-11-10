@@ -15,7 +15,7 @@ enum Initials {
 enum CallPresence {
     static func of(_ raw: String?) -> String? {
         guard var s = raw?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty else { return nil }
-        if s.hasPrefix("""), s.hasSuffix("""), s.count >= 2 { s.removeFirst(); s.removeLast() }
+        if s.hasPrefix("\""), s.hasSuffix("\""), s.count >= 2 { s.removeFirst(); s.removeLast() }
         switch s.lowercased() {
         case "online", "true", "1": return "online"
         case "away": return "away"
