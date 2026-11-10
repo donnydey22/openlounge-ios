@@ -11,7 +11,7 @@ struct CallScreen: View {
     @State private var showCtl = true
     @State private var hideTask: Task<Void, Never>?
 
-    var videoStage: Bool { call.remoteVideoOn || call.cameraOn }
+    var videoStage: Bool { !call.failed && (call.remoteVideoOn || call.cameraOn) }
 
     var body: some View {
         GeometryReader { geo in
@@ -34,7 +34,9 @@ struct CallScreen: View {
                     topBar
                     centerBlock
                     Spacer(minLength: 0)
-                    if showCtl || !videoStage {
+                    if call.failed {
+                        Color.clear.frame(height: 56 + geo.safeAreaInsets.bottom)
+                    } else if showCtl || !videoStage {
                         controlRow
                             .padding(.bottom, OLMetric.rowBottom + geo.safeAreaInsets.bottom)
                     } else {
@@ -68,7 +70,19 @@ struct CallScreen: View {
 
     private var topBar: some View {
         HStack {
-            if call.phase != .ended {
+            if call.failed {
+                Spacer().frame(width: 40, height: 40)
+                Spacer()
+                Button(action: { call.dismissFailed() }) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                        .frame(width: 40, height: 40)
+                        .background(Color.white.opacity(0.10))
+                        .clipShape(Circle())
+                }
+                .accessibilityLabel("Close")
+            } else if call.phase != .ended {
                 Button(action: { call.setMinimized(true) }) {
                     Image(systemName: "chevron.down")
                         .font(.system(size: 20, weight: .semibold))
@@ -79,10 +93,11 @@ struct CallScreen: View {
                 }
                 .accessibilityLabel("Minimize call")
                 .opacity(showCtl || !videoStage ? 1 : 0)
+                Spacer()
             } else {
                 Spacer().frame(width: 40, height: 40)
+                Spacer()
             }
-            Spacer()
         }
         .padding(.horizontal, 12)
         .padding(.top, 8)
@@ -91,6 +106,18 @@ struct CallScreen: View {
 
     private var centerBlock: some View {
         VStack(spacing: 12) {
+            if call.failed {
+                Text(call.failedText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 6)
+                    .background(Color.black.opacity(0.60))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 8)
+            }
             if !videoStage {
                 ZStack {
                     if call.phase == .calling {
@@ -125,7 +152,7 @@ struct CallScreen: View {
             if call.cameraOn {
                 RoundButton(label: "Flip", systemImage: "arrow.triangle.2.circlepath") { call.flip() }
             }
-            RoundButton(label: call.cameraOn ? "Stop video" : "Video",
+            RoundButton(label: call.cameraOn ? "Camera" : "Video",
                         systemImage: call.cameraOn ? "video.fill" : "video.slash.fill",
                         on: call.cameraOn, enabled: call.canToggleVideo || call.phase == .calling || call.phase == .connecting || call.phase == .active) {
                 call.toggleVideo()

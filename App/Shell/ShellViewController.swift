@@ -173,6 +173,13 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
         }
     }
 
+    func peekCallPhoto(_ done: @escaping (String?) -> Void) {
+        guard let webView else { done(nil); return }
+        webView.evaluateJavaScript(CallPresence.peekPhotoJS) { r, _ in
+            done(r as? String)
+        }
+    }
+
     private func reply(_ id: String, _ ok: Bool, _ result: Any? = nil, _ error: String? = nil) {
         js(OLBridgeScript.resolve(id: id, ok: ok, result: result, error: error))
     }
@@ -254,7 +261,11 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             PhoneAuth.confirm(id: id, code: code) { [weak self] r in DispatchQueue.main.async { self?.phoneAuthResult(r) } }
         case let .call(m):
             CallCenter.shared.onPage(m)
-            CallController.shared.onPage(m)
+            if case .ended = m, CallPresence.isFailure(fromJSON: body) {
+                CallController.shared.showNetworkFailure(CallPresence.failureText(fromJSON: body))
+            } else {
+                CallController.shared.onPage(m)
+            }
             if let raw = body, CallPresence.hasField(inJSON: raw) {
                 // Explicit field, including "offline" (hides the dot). Empty peek does not clear.
                 CallController.shared.setPresenceFromMessage(CallPresence.field(fromJSON: raw))

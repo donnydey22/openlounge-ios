@@ -30,6 +30,9 @@ final class CallController: ObservableObject {
     @Published var localVideoView: UIView?
     @Published private(set) var facingFront = true
     @Published private(set) var minimized = false
+    /// First-design network-failure chrome (ended overlay + the connect-on-this-network copy). Stays until Close.
+    @Published private(set) var failed = false
+    @Published private(set) var failedText = ""
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -166,6 +169,8 @@ final class CallController: ObservableObject {
             localVideoView = nil
             facingFront = true
             minimized = false
+            failed = false
+            failedText = ""
         }
         callId = id
         peerName = name.isEmpty ? "Open Lounge" : name
@@ -199,10 +204,30 @@ final class CallController: ObservableObject {
         presenceTimer = nil
         visible = false
         minimized = false
+        failed = false
+        failedText = ""
         activeAt = nil
         peerPresence = nil
         phase = .ended
         engineEnded(callId: callId)
+    }
+
+    /// Show the first-design failure screen instead of immediately dismissing the overlay.
+    func showNetworkFailure(_ text: String) {
+        incomingVisible = false
+        failed = true
+        failedText = text
+        phase = .ended
+        statusText = text
+        visible = true
+        minimized = false
+        remoteVideoOn = false
+        timer?.invalidate()
+        timer = nil
+    }
+
+    func dismissFailed() {
+        finish()
     }
 
     func applyPresence(_ raw: String?) {
@@ -232,6 +257,16 @@ final class CallController: ObservableObject {
     private func peekPresence() {
         host?.peekCallPresence { [weak self] raw in
             DispatchQueue.main.async { self?.applyPeek(raw) }
+        }
+        if peerPhoto == nil {
+            host?.peekCallPhoto { [weak self] raw in
+                DispatchQueue.main.async {
+                    guard let self, self.peerPhoto == nil else { return }
+                    let t = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                    if let u = Self.photoURL(t) { self.peerPhoto = u }
+                }
+            }
         }
     }
 

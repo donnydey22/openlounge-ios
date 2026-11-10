@@ -42,6 +42,39 @@ enum CallPresence {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return false }
         return obj["presence"] != nil || obj["online"] != nil
     }
+
+    static let failMsg = "Can't connect the call on this network. Try another Wi-Fi or mobile data."
+
+    static let peekPhotoJS =
+        "(function(){try{var img=document.querySelector('[data-testid=\'call-screen\'] img')||document.querySelector('[data-testid=\'incoming-call\'] img');var s=img&&img.src||'';if(s.indexOf('http')===0)return s;return '';}catch(e){return '';}})()"
+
+    static func object(fromJSON raw: String) -> [String: Any]? {
+        guard let data = raw.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    static func isFailure(fromJSON raw: String?) -> Bool {
+        guard let raw, let obj = object(fromJSON: raw) else { return false }
+        if (obj["reason"] as? String)?.lowercased() == "failed" { return true }
+        let t = endText(obj)
+        return t.contains("Can't connect the call on this network") || t.contains("Try another Wi-Fi")
+    }
+
+    static func failureText(fromJSON raw: String?) -> String {
+        guard let raw, let obj = object(fromJSON: raw) else { return failMsg }
+        let t = endText(obj)
+        return t.isEmpty ? failMsg : t
+    }
+
+    private static func endText(_ obj: [String: Any]) -> String {
+        for k in ["endedText", "error", "message", "text"] {
+            if let s = obj[k] as? String {
+                let t = s.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !t.isEmpty { return t }
+            }
+        }
+        return ""
+    }
 }
 
 struct Avatar: View {
