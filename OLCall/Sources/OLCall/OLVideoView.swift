@@ -13,6 +13,8 @@ import UIKit
 
 public final class OLVideoView: UIView {
     public private(set) var orientation = 0
+    /// The engine draws this view mirrored (front camera preview; tgcalls sets it per frame). For the UI to read.
+    public private(set) var isMirrored = false
     /// main thread: frames rendered since the last `takeFrames()`
     private var frames = 0
     private var lastNs: Int64 = 0
@@ -44,6 +46,12 @@ public final class OLVideoView: UIView {
                 DispatchQueue.main.async {
                     guard let self, let v, v === self.content else { return }
                     self.apply(Int(o.rawValue))
+                }
+            }
+            vv.setOnIsMirroredUpdated { [weak self, weak v] m in
+                DispatchQueue.main.async {
+                    guard let self, let v, v === self.content else { return }
+                    self.isMirrored = m
                 }
             }
         }

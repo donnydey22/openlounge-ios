@@ -22,8 +22,8 @@ final class CallController: ObservableObject {
     @Published private(set) var statusText = ""
     @Published var muted = false
     @Published private(set) var speakerOn = false
-    @Published var cameraOn = false { didSet { keepAwake() } }
-    @Published var remoteVideoOn = false { didSet { keepAwake() } }
+    @Published var cameraOn = false
+    @Published var remoteVideoOn = false
     @Published var remoteVideoView: UIView?
     @Published var localVideoView: UIView?
     /// t5450: this phone's media leg reached the Pion server (tgcalls Established). NOT "answered": the caller's
@@ -183,16 +183,8 @@ final class CallController: ObservableObject {
         setPhase(p)
     }
 
-    /// t5450: the screen must not auto-lock during a video call. Auto-lock backgrounds the app, iOS then stops
-    /// the camera, and the far side sees a frozen frame while audio continues (CallKit keeps audio alive).
-    private func keepAwake() {
-        let want = visible && (video || cameraOn || remoteVideoOn) && phase != .ended
-        if UIApplication.shared.isIdleTimerDisabled != want { UIApplication.shared.isIdleTimerDisabled = want }
-    }
-
     private func setPhase(_ p: OLCallPhase) {
         phase = p
-        keepAwake()
         if p == .active, activeAt == nil {
             activeAt = Date()
             timer?.invalidate()
@@ -213,7 +205,6 @@ final class CallController: ObservableObject {
         activeAt = nil
         phase = .ended
         engineEnded(callId: callId)
-        keepAwake()
     }
 
     static func photoURL(_ s: String) -> URL? {

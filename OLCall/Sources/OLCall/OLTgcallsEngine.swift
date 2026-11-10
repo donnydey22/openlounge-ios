@@ -54,8 +54,6 @@ public final class OLTgcallsEngine {
     private var connected = false
     private var remoteMuted = false
     private let inboundSilence = OLSilenceWatchdog(window: 8, maxRecoveries: 0)
-    /// t5450: the /v1/call socket dropped after media connected; media is kept (the server keeps the leg 20 s).
-    private var wsLost = false
     private var remoteVideoActive = false
     /// Main thread: stable containers the UI shows (OLVideoView); the engine views go inside.
     private var remoteView: OLVideoView?
@@ -151,7 +149,7 @@ public final class OLTgcallsEngine {
     private func nextSeq() -> UInt64 { seq += 1; return seq }
 
     private func send(_ frame: [String: Any]) {
-        guard !ended, !wsLost, let socket, let text = OLCallFrames.encode(frame) else { return }
+        guard !ended, let socket, let text = OLCallFrames.encode(frame) else { return }
         socket.send(.string(text)) { [weak self] err in
             if err != nil { self?.crumbs.event("ws", "send-failed", level: "error") }
         }
@@ -165,19 +163,11 @@ public final class OLTgcallsEngine {
                 switch result {
                 case let .failure(err):
                     let code = self.socket?.closeCode ?? .invalid
-                    let reason = code != .invalid ? "ws-closed:\(code.rawValue)" : "ws-failure"
-                    if code == .invalid { self.crumbs.event("ws", "failure:\((err as NSError).code)", level: "error") }
-                    if self.states.state == .connected {
-                        // t5450: a signaling-socket blip is not a call end. Media (ICE/DTLS) is independent of this
-                        // socket and the server keeps the leg for 20 s after it closes (server.go); the call ends
-                        // through the page (call:ended), tgcalls Failed, or the user. Logged with its own reason.
-                        self.wsLost = true
-                        self.pingTimer?.cancel()
-                        self.pingTimer = nil
-                        self.crumbs.event("ws", "lost-after-connect:\(reason):media-kept", level: "warning")
-                        self.callLog.event("ws_lost", reason: "media_kept", detail: reason)
+                    if code != .invalid {
+                        self.end("ws-closed:\(code.rawValue)")
                     } else {
-                        self.end(reason)
+                        self.crumbs.event("ws", "failure:\((err as NSError).code)", level: "error")
+                        self.end("ws-failure")
                     }
                 case let .success(msg):
                     if case let .string(text) = msg { self.onFrame(OLCallFrames.decode(text)) }
@@ -236,8 +226,6 @@ public final class OLTgcallsEngine {
                     self.crumbs.event("tg.state", st.rawValue, level: st == .failed ? "error" : "info")
                     self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
                     if st == .failed { self.end("tg-failed") }
-                    // far side's mute state arrived over the media transport: media is flowing even though muted audio has no level
-                    if st == .connected, rm { self.markFlowing("remote-muted") }
                 }
                 instance = i
                 i.makeIncomingVideoView { [weak self] v in if let v { self?.showRemote(v) } }
@@ -362,10 +350,13 @@ public final class OLTgcallsEngine {
             statsWindow = (0, 0, 0)
             crumbs.event("video", "stats:remoteFps=\(w.remote / w.ticks):localFps=\(w.local / w.ticks):remoteActive=\(remoteVideoActive):remoteRot=\((remoteView?.orientation ?? 0) * 90):localRot=\((localView?.orientation ?? 0) * 90):stalls=\(watchdog.stalls):reattaches=\(watchdog.reattaches)")
         }
-        switch watchdog.tick(now: Date().timeIntervalSince1970, frames: r, watching: connected && remoteVideoActive && remoteView != nil) {
+        let stallsBefore = watchdog.stalls
+        // t5457: watched only while the far side's video is on and media (audio) is flowing
+        switch watchdog.tick(now: Date().timeIntervalSince1970, frames: r, watching: connected && flowing && remoteVideoActive && remoteView != nil) {
         case .none:
             break
         case let .requestKeyframe(ms):
+            if watchdog.stalls != stallsBefore { queue.dispatch { self.logFreeze(ms) } }
             crumbs.event("video", "stall:remote:\(ms)ms:keyframe-request", level: "warning")
             queue.dispatch { guard !self.ended else { return }; self.send(OLCallFrames.keyframe(seq: self.nextSeq(), reason: "stall-\(ms)ms")) }
         case let .reattach(ms):
@@ -374,6 +365,18 @@ public final class OLTgcallsEngine {
         case let .recovered(ms):
             crumbs.event("video", "recovered:remote:after=\(ms)ms")
         }
+    }
+
+    /// t5457: freeze start: when, the last rendered remote frame, and the media path state (tgcalls connection
+    /// state; the path is TURN relay -> Pion, tgcalls exposes no candidate pair to the app).
+    private func logFreeze(_ ms: Int) {
+        let now = Date()
+        let last = now.addingTimeInterval(-Double(ms) / 1000)
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let detail = "at=\(f.string(from: now)):lastFrame=\(f.string(from: last)):tg=\(states.state.rawValue):path=relay-pion:ws=\(socket != nil ? "open" : "closed")"
+        crumbs.event("video", "freeze:\(detail)", level: "warning")
+        callLog.event("video_freeze", reason: "remote", detail: detail)
     }
 
     private func emit(_ e: Event) { DispatchQueue.main.async { self.onEvent?(e) } }
