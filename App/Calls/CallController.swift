@@ -22,10 +22,14 @@ final class CallController: ObservableObject {
     @Published private(set) var statusText = ""
     @Published var muted = false
     @Published private(set) var speakerOn = false
-    @Published var cameraOn = false
-    @Published var remoteVideoOn = false
+    @Published var cameraOn = false { didSet { keepAwake() } }
+    @Published var remoteVideoOn = false { didSet { keepAwake() } }
     @Published var remoteVideoView: UIView?
     @Published var localVideoView: UIView?
+    /// t5450: this phone's media leg reached the Pion server (tgcalls Established). NOT "answered": the caller's
+    /// leg is up while the other phone still rings. The timer and "active" follow the page's call:connected,
+    /// which the page sends only once the server says the call was accepted (engine.ts:565 / :690).
+    @Published private(set) var engineUp = false
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -78,10 +82,14 @@ final class CallController: ObservableObject {
         speakerOn = video
     }
 
-    func mediaConnected(callId id: String) { if id == callId { setPhase(.active) } }
+    /// t5450: was `setPhase(.active)`, which started the timer on the caller's own server leg (calls A/C showed
+    /// "0:07" while Keiko's phone was still ringing or had declined). The phase now moves to .active only on the
+    /// page's call:connected (server-confirmed answer); the engine only records that media is up.
+    func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
 
     func engineEnded(callId id: String) {
         guard id == callId else { return }
+        engineUp = false
         remoteVideoView = nil
         localVideoView = nil
         remoteVideoOn = false
@@ -142,6 +150,7 @@ final class CallController: ObservableObject {
     private func begin(_ id: String, name: String, photo: URL?, video v: Bool, phase p: OLCallPhase) {
         if callId != id {
             activeAt = nil
+            engineUp = false
             muted = false
             remoteVideoOn = false
             remoteVideoView = nil
@@ -156,8 +165,16 @@ final class CallController: ObservableObject {
         setPhase(p)
     }
 
+    /// t5450: the screen must not auto-lock during a video call. Auto-lock backgrounds the app, iOS then stops
+    /// the camera, and the far side sees a frozen frame while audio continues (CallKit keeps audio alive).
+    private func keepAwake() {
+        let want = visible && (video || cameraOn || remoteVideoOn) && phase != .ended
+        if UIApplication.shared.isIdleTimerDisabled != want { UIApplication.shared.isIdleTimerDisabled = want }
+    }
+
     private func setPhase(_ p: OLCallPhase) {
         phase = p
+        keepAwake()
         if p == .active, activeAt == nil {
             activeAt = Date()
             timer?.invalidate()
@@ -178,6 +195,7 @@ final class CallController: ObservableObject {
         activeAt = nil
         phase = .ended
         engineEnded(callId: callId)
+        keepAwake()
     }
 
     static func photoURL(_ s: String) -> URL? {

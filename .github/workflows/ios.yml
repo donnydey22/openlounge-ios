@@ -1,9 +1,9 @@
-# Mac CI for the Open Lounge iOS app (branch ol-ios-fresh). Unsigned builds only: no signing, no upload.
-name: ol-ios-fresh
+# Mac CI for the Open Lounge iOS app (branch ol-ios-call-fixes). Unsigned builds only: no signing, no upload.
+name: ol-ios-call-fixes
 
 on:
   push:
-    branches: [ol-ios-fresh]
+    branches: [ol-ios-call-fixes]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
   actions: read   # read seed artifacts from earlier runs in this repository
 
 concurrency:
-  group: ol-ios-fresh
+  group: ol-ios-call-fixes
   cancel-in-progress: true
 
 jobs:

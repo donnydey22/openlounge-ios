@@ -51,6 +51,15 @@ public final class OLTgcallsEngine {
     private var connected = false
     private var remoteMuted = false
     private let inboundSilence = OLSilenceWatchdog(window: 8, maxRecoveries: 0)
+    /// t5450: the /v1/call socket dropped after media connected; media is kept (the server keeps the leg 20 s).
+    private var wsLost = false
+    private var remoteVideoActive = false
+    /// Main thread: stable containers the UI shows (OLVideoView); the engine views go inside.
+    private var remoteView: OLVideoView?
+    private var localView: OLVideoView?
+    private var videoTimer: Timer?
+    private var watchdog = OLVideoWatchdog()
+    private var statsWindow = (remote: 0, local: 0, ticks: 0)
     /// Durable call log for this leg (OLCallLog: on-disk queue, uploaded to /api/call-log).
     public let callLog: OLCallLog
 
@@ -114,7 +123,7 @@ public final class OLTgcallsEngine {
         queue.dispatch {
             guard let i = self.instance else { return }
             i.setVideoEnabled(on)
-            if on { i.makeOutgoingVideoView { [weak self] v in if let v { self?.emit(.localVideoView(v)) } } }
+            if on { i.makeOutgoingVideoView { [weak self] v in if let v { self?.showLocal(v) } } }
         }
     }
 
@@ -137,7 +146,7 @@ public final class OLTgcallsEngine {
     private func nextSeq() -> UInt64 { seq += 1; return seq }
 
     private func send(_ frame: [String: Any]) {
-        guard !ended, let socket, let text = OLCallFrames.encode(frame) else { return }
+        guard !ended, !wsLost, let socket, let text = OLCallFrames.encode(frame) else { return }
         socket.send(.string(text)) { [weak self] err in
             if err != nil { self?.crumbs.event("ws", "send-failed", level: "error") }
         }
@@ -151,11 +160,19 @@ public final class OLTgcallsEngine {
                 switch result {
                 case let .failure(err):
                     let code = self.socket?.closeCode ?? .invalid
-                    if code != .invalid {
-                        self.end("ws-closed:\(code.rawValue)")
+                    let reason = code != .invalid ? "ws-closed:\(code.rawValue)" : "ws-failure"
+                    if code == .invalid { self.crumbs.event("ws", "failure:\((err as NSError).code)", level: "error") }
+                    if self.states.state == .connected {
+                        // t5450: a signaling-socket blip is not a call end. Media (ICE/DTLS) is independent of this
+                        // socket and the server keeps the leg for 20 s after it closes (server.go); the call ends
+                        // through the page (call:ended), tgcalls Failed, or the user. Logged with its own reason.
+                        self.wsLost = true
+                        self.pingTimer?.cancel()
+                        self.pingTimer = nil
+                        self.crumbs.event("ws", "lost-after-connect:\(reason):media-kept", level: "warning")
+                        self.callLog.event("ws_lost", reason: "media_kept", detail: reason)
                     } else {
-                        self.crumbs.event("ws", "failure:\((err as NSError).code)", level: "error")
-                        self.end("ws-failure")
+                        self.end(reason)
                     }
                 case let .success(msg):
                     if case let .string(text) = msg { self.onFrame(OLCallFrames.decode(text)) }
@@ -205,6 +222,7 @@ public final class OLTgcallsEngine {
                 i.onState = { [weak self] st, rv, rm in
                     guard let self else { return }
                     self.remoteMuted = rm
+                    self.remoteVideoActive = rv
                     self.connected = st == .connected
                     if st == .connected {
                         self.connectWatchdog?.cancel()
@@ -215,8 +233,8 @@ public final class OLTgcallsEngine {
                     if st == .failed { self.end("tg-failed") }
                 }
                 instance = i
-                i.makeIncomingVideoView { [weak self] v in if let v { self?.emit(.remoteVideoView(v)) } }
-                if video { i.makeOutgoingVideoView { [weak self] v in if let v { self?.emit(.localVideoView(v)) } } }
+                i.makeIncomingVideoView { [weak self] v in if let v { self?.showRemote(v) } }
+                if video { i.makeOutgoingVideoView { [weak self] v in if let v { self?.showLocal(v) } } }
                 emit(.joined(isOutgoing: j.isOutgoing, version: version))
             } catch OLTgcallsError.noTurn {
                 crumbs.event("tg", "no-turn", level: "error")
@@ -257,6 +275,7 @@ public final class OLTgcallsEngine {
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         audio.end()
+        DispatchQueue.main.async { self.videoTimer?.invalidate(); self.videoTimer = nil }
         crumbs.event("call", "ended:\(reason)")
         let wasConnected = states.state == .connected
         callLog.event("ended", reason: normal ? "normal" : wasConnected ? OLCallLogTags.tag("after-connect:\(reason)") : nil, detail: reason,
@@ -283,6 +302,60 @@ public final class OLTgcallsEngine {
         }
         connectWatchdog = w
         DispatchQueue.global().asyncAfter(deadline: .now() + Self.connectTimeout, execute: w)
+    }
+
+    // MARK: video (main thread) — upright containers, 5 s stats, frozen-frame watchdog (t5450)
+
+    private func showRemote(_ v: UIView) {
+        let c = remoteView ?? makeContainer(side: "remote")
+        remoteView = c
+        c.setContent(v)
+        emit(.remoteVideoView(c))
+        startVideoTimer()
+    }
+
+    private func showLocal(_ v: UIView) {
+        let c = localView ?? makeContainer(side: "local")
+        localView = c
+        c.setContent(v)
+        emit(.localVideoView(c))
+        startVideoTimer()
+    }
+
+    private func makeContainer(side: String) -> OLVideoView {
+        let c = OLVideoView(frame: .zero)
+        c.onOrientation = { [weak self] o in self?.crumbs.event("video.rotation", "\(side):\(o * 90)") }
+        return c
+    }
+
+    private func startVideoTimer() {
+        guard videoTimer == nil else { return }
+        let t = Timer(timeInterval: 1, repeats: true) { [weak self] _ in self?.videoTick() }
+        RunLoop.main.add(t, forMode: .common)
+        videoTimer = t
+    }
+
+    private func videoTick() {
+        let r = remoteView?.takeFrames() ?? 0
+        let l = localView?.takeFrames() ?? 0
+        statsWindow.remote += r; statsWindow.local += l; statsWindow.ticks += 1
+        if statsWindow.ticks >= 5 {
+            let w = statsWindow
+            statsWindow = (0, 0, 0)
+            crumbs.event("video", "stats:remoteFps=\(w.remote / w.ticks):localFps=\(w.local / w.ticks):remoteActive=\(remoteVideoActive):remoteRot=\((remoteView?.orientation ?? 0) * 90):localRot=\((localView?.orientation ?? 0) * 90):stalls=\(watchdog.stalls):reattaches=\(watchdog.reattaches)")
+        }
+        switch watchdog.tick(now: Date().timeIntervalSince1970, frames: r, watching: connected && remoteVideoActive && remoteView != nil) {
+        case .none:
+            break
+        case let .requestKeyframe(ms):
+            crumbs.event("video", "stall:remote:\(ms)ms:keyframe-request", level: "warning")
+            queue.dispatch { guard !self.ended else { return }; self.send(OLCallFrames.keyframe(seq: self.nextSeq(), reason: "stall-\(ms)ms")) }
+        case let .reattach(ms):
+            crumbs.event("video", "stall:remote:\(ms)ms:reattach-renderer", level: "warning")
+            queue.dispatch { self.instance?.makeIncomingVideoView { [weak self] v in if let v { self?.remoteView?.setContent(v) } } }
+        case let .recovered(ms):
+            crumbs.event("video", "recovered:remote:after=\(ms)ms")
+        }
     }
 
     private func emit(_ e: Event) { DispatchQueue.main.async { self.onEvent?(e) } }

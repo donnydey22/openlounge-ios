@@ -53,6 +53,8 @@ public enum OLCallFrames {
 
     public static func hangup(seq: UInt64) -> [String: Any] { ["t": "hangup", "seq": seq] }
     public static func ping(seq: UInt64) -> [String: Any] { ["t": "ping", "seq": seq] }
+    /// t5450: the remote renderer saw no frame for a while; the server PLIs the other leg's sender.
+    public static func keyframe(seq: UInt64, reason: String) -> [String: Any] { ["t": "keyframe", "seq": seq, "reason": reason] }
 
     public static func encode(_ frame: [String: Any]) -> String? {
         guard let d = try? JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys]) else { return nil }
