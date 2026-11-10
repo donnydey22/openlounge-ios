@@ -49,6 +49,21 @@ public final class OLNativeCallHost {
     }
   }
 
+  // olcall (tgcalls) video: VideoMetalView / sample-buffer views from TgVoipWebrtc, placed in this screen's own frames.
+  public func setVideoView(_ v: UIView, local: Bool) {
+    if local { model.localView = v } else { model.remoteView = v }
+    host?.rootView = OLNativeCallView(model: model)
+  }
+  public func setRemoteVideoActive(_ on: Bool) {
+    guard model.remoteVideoOn != on else { return }
+    model.remoteVideoOn = on
+    host?.rootView = OLNativeCallView(model: model)
+  }
+  public func clearVideoViews() {
+    model.localView = nil; model.remoteView = nil; model.remoteVideoOn = false
+    host?.rootView = OLNativeCallView(model: model)
+  }
+
   public func dismiss() {
     stopTimer()
     host?.dismiss(animated: true)
@@ -94,6 +109,29 @@ final class OLNativeCallModel: ObservableObject {
   @Published var muted = false
   @Published var speaker = false
   @Published var camOn = false
+  /// olcall only: far side's video (shown full screen while active) and the local preview (squircle).
+  @Published var remoteView: UIView?
+  @Published var localView: UIView?
+  @Published var remoteVideoOn = false
+}
+
+/// Hosts a UIKit video view (tgcalls VideoMetalView) inside the SwiftUI call screen.
+struct OLHostedVideoView: UIViewRepresentable {
+  let view: UIView
+  func makeUIView(context: Context) -> UIView {
+    let c = UIView()
+    c.backgroundColor = .black
+    c.clipsToBounds = true
+    return c
+  }
+  func updateUIView(_ c: UIView, context: Context) {
+    if view.superview !== c {
+      c.subviews.forEach { $0.removeFromSuperview() }
+      view.frame = c.bounds
+      view.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+      c.addSubview(view)
+    }
+  }
 }
 
 struct OLNativeCallView: View {
@@ -101,6 +139,21 @@ struct OLNativeCallView: View {
   var body: some View {
     ZStack {
       Color(red: 0.043, green: 0.071, blue: 0.125).ignoresSafeArea() // #0b1220
+      if model.remoteVideoOn, let rv = model.remoteView {
+        OLHostedVideoView(view: rv).ignoresSafeArea()
+      }
+      if model.camOn, let lv = model.localView {
+        VStack {
+          HStack {
+            Spacer()
+            OLHostedVideoView(view: lv)
+              .frame(width: 110, height: 160)
+              .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+              .padding(.top, 12).padding(.trailing, 16)
+          }
+          Spacer()
+        }
+      }
       VStack(spacing: 16) {
         Spacer()
         ZStack {
@@ -139,17 +192,17 @@ struct OLNativeCallView: View {
           } else {
             roundBtn(model.speaker ? "Speaker" : "Earpiece", color: Color.white.opacity(0.15)) {
               model.speaker.toggle()
-              OLAudioSessionOwner.shared.applyRoute(speakerWanted: model.speaker, headsetAttached: false)
+              OLCallManager.shared.setSpeaker(model.speaker)
             }
             if model.video {
               roundBtn(model.camOn ? "Stop video" : "Video", color: Color.white.opacity(0.15)) {
                 model.camOn.toggle()
-                try? OLRtcVideo.shared.camera(on: model.camOn, facing: "user")
+                OLCallManager.shared.setCamera(on: model.camOn)
               }
             }
             roundBtn(model.muted ? "Unmute" : "Mute", color: Color.white.opacity(0.15)) {
               model.muted.toggle()
-              OLCallAudioEngine.shared.setMute(model.muted)
+              OLCallManager.shared.setMediaMuted(model.muted)
             }
             roundBtn("End", color: Color(red: 0.937, green: 0.267, blue: 0.267)) {
               OLCallManager.shared.endFromApp()

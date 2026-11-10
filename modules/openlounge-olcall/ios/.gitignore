@@ -1,0 +1,3 @@
+# TgVoipWebrtc.xcframework (~1.3 GB unzipped) is never committed: CI fetches it from the
+# oltgcalls-swift-ios workflow artifact (ci: .github/workflows/ol-olcall-ios-app.yml).
+Frameworks/

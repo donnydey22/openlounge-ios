@@ -1,0 +1,4 @@
+module OLAudioCore {
+    header "../../audio/core/ol_audio.h"
+    export *
+}

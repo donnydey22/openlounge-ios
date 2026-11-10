@@ -1,0 +1,109 @@
+# Open Lounge iOS app + olcall (tgcalls <-> olcall Go/Pion, wss://<host>/v1/call): COMPILE ONLY.
+# Simulator Debug, unsigned. No signing, no IPA, no upload anywhere, no /download. Branch ol-olcall-ios-app only.
+# TgVoipWebrtc.xcframework comes from the oltgcalls-swift-ios workflow artifact (run id in
+# modules/openlounge-olcall/ios/xcf-seed-run.txt); it is never committed.
+name: ol-olcall-ios-app
+
+on:
+  push:
+    branches: [ol-olcall-ios-app]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  actions: read   # download the TgVoipWebrtc.xcframework artifact from the oltgcalls-swift-ios run
+
+concurrency:
+  group: ol-olcall-ios-app-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  compile:
+    runs-on: macos-26
+    timeout-minutes: 120
+    env:
+      EXPO_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: xcframework seed run id
+        id: seed
+        run: echo "run=$(tr -dc '0-9' < modules/openlounge-olcall/ios/xcf-seed-run.txt)" >> "$GITHUB_OUTPUT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: oltgcalls-swift-ios
+          path: seed
+          run-id: ${{ steps.seed.outputs.run }}
+          github-token: ${{ github.token }}
+      - name: Unpack TgVoipWebrtc.xcframework into modules/openlounge-olcall/ios/Frameworks
+        run: |
+          set -euo pipefail
+          z="$(find seed -name TgVoipWebrtc.xcframework.zip | head -n1)"
+          test -n "$z" || { echo "FAIL: seed artifact has no TgVoipWebrtc.xcframework.zip"; exit 1; }
+          dst=modules/openlounge-olcall/ios/Frameworks
+          rm -rf "$dst" && mkdir -p "$dst"
+          ditto -x -k "$z" "$dst"
+          rm -rf seed
+          test -f "$dst/TgVoipWebrtc.xcframework/Info.plist"
+          ls "$dst/TgVoipWebrtc.xcframework"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Fetch interim BSD WebRTC.xcframework (M152) (existing path, unchanged)
+        env:
+          OL_WEBRTC_IOS_CACHE: ${{ runner.temp }}/webrtc-bsd-m152-ios
+        run: |
+          set -euo pipefail
+          bash scripts/ios-fetch-webrtc.sh
+          test -f modules/openlounge-call-engine/ios/WebRTC.xcframework/Info.plist
+      - name: REPORT — audio-session owner gate (informational on this branch; see report)
+        continue-on-error: true
+        run: bash scripts/check-audio-session-owner.sh
+      - name: REPORT — ObjC classes defined by BOTH TgVoipWebrtc and WebRTC.xcframework
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          tg=modules/openlounge-olcall/ios/Frameworks/TgVoipWebrtc.xcframework/ios-arm64-simulator/TgVoipWebrtc.framework/TgVoipWebrtc
+          wr="$(find modules/openlounge-call-engine/ios/WebRTC.xcframework -path '*simulator*' -type f -name WebRTC | head -n1)"
+          echo "WebRTC binary: $wr"; file "$wr" || true
+          nm -gU "$tg" 2>/dev/null | grep -oE '_OBJC_CLASS_\$_[A-Za-z0-9_]+' | sort -u > tg.txt
+          nm -gU "$wr" 2>/dev/null | grep -oE '_OBJC_CLASS_\$_[A-Za-z0-9_]+' | sort -u > wr.txt
+          comm -12 tg.txt wr.txt > dup.txt
+          echo "TgVoipWebrtc ObjC classes: $(wc -l < tg.txt)  WebRTC.xcframework ObjC classes: $(wc -l < wr.txt)  defined in BOTH: $(wc -l < dup.txt)"
+          head -n 80 dup.txt
+      - name: prebuild + pod install + simulator Debug build (unsigned)
+        run: |
+          set -euo pipefail
+          npx expo prebuild --platform ios --no-install --clean
+          cd ios && pod install
+          grep -q 'OpenLoungeOlcall' Podfile.lock || { echo "FAIL: OpenLoungeOlcall missing from Podfile.lock"; exit 1; }
+          grep -q 'TgVoipWebrtc.xcframework' Pods/Pods.xcodeproj/project.pbxproj || { echo "FAIL: TgVoipWebrtc.xcframework not vendored"; exit 1; }
+          WS=$(ls -d *.xcworkspace | head -1); SCHEME=${WS%.xcworkspace}
+          echo "WS=$WS SCHEME=$SCHEME"
+          set +e
+          xcodebuild -workspace "$WS" -scheme "$SCHEME" -configuration Debug -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' ARCHS=arm64 ONLY_ACTIVE_ARCH=NO EXCLUDED_ARCHS=x86_64 \
+            CODE_SIGNING_ALLOWED=NO -derivedDataPath "$PWD/dd" build > ../xb.log 2>&1
+          rc=$?
+          set -e
+          grep -E ' error: |duplicate symbol|\*\* BUILD' ../xb.log | sort -u | head -120 || true
+          exit $rc
+      - name: REQUIRE — tgcalls engine + olcall routing linked into the app
+        run: |
+          set -euo pipefail
+          APP=$(find ios/dd/Build/Products -name "*.app" -maxdepth 3 | head -1)
+          BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
+          echo "APP=$APP"
+          nm -a "$BIN" | grep -m3 'OBJC_CLASS_$_OngoingCallThreadLocalContextWebrtc' || { echo "FAIL: TgVoipWebrtc not linked"; exit 1; }
+          nm -a "$BIN" | grep -m3 -E 'OLSignalingRelay|OLRtcServers|OLCallRoute' || { echo "FAIL: olcall Swift not linked"; exit 1; }
+          echo "OK: tgcalls (TgVoipWebrtc) + OLSignalingRelay/OLRtcServers/OLCallRoute linked"
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ol-olcall-ios-app-xb-log
+          path: |
+            xb.log
+            dup.txt
+          if-no-files-found: warn
+          retention-days: 14

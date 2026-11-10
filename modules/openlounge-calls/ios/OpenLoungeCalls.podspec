@@ -12,6 +12,7 @@ Pod::Spec.new do |s|
   s.static_framework = true
   s.dependency 'ExpoModulesCore'
   s.dependency 'OpenLoungeCallEngine' # native call engine: RingRTC session model over WebRTC (modules/openlounge-call-engine)
+  s.dependency 'OpenLoungeOlcall' # tgcalls <-> olcall Go/Pion (modules/openlounge-olcall); used only when CallMedia.provider == "olcall"
   s.frameworks = 'CallKit', 'PushKit', 'AVFoundation'
   s.source_files   = '**/*.{h,m,swift}'
   s.resources      = ['resources/openlounge-incoming.caf']

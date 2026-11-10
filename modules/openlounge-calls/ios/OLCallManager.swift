@@ -1,6 +1,7 @@
 import AVFoundation
 import CallKit
 import OpenLoungeCallEngine
+import OpenLoungeOlcall
 import Foundation
 import PushKit
 import Security
@@ -47,6 +48,11 @@ final class OLCall {
   var declineToken: String?
   var expiryTimer: Timer?
   var pollTimer: Timer?
+  /// The backend's CallMedia for THIS party (call:start / call:accept / call:get "media"). provider "olcall" routes
+  /// the call to the tgcalls engine on the olcall Go/Pion server (OLCallRoute); never logged (holds a join token).
+  var media: [String: Any]?
+  /// olcall: media was re-read with call:get right before connecting (the caller's start-time token may be old).
+  var mediaRefreshed = false
 
   init(callId: String, uuid: UUID, incoming: Bool, video: Bool, nativeMedia: Bool = false) {
     self.callId = callId
@@ -139,6 +145,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   private var ringback: AVAudioPlayer?
   /// CallKit owns activation while it has the session
   private var callKitAudioActive = false
+  /// olcall (tgcalls <-> Pion) call in progress, and the CallKit session it must be told about.
+  private var olcall: OpenLoungeOlcall.OLCall?
+  private var olcallUUID: UUID?
+  private var activatedSession: AVAudioSession?
   private var callHolder: OLAudioHolderToken?
   private var pageMuted: Bool?
   /// FX-063: page-requested mute values whose CXSetMutedCallAction has not been performed yet (in tap order). Fast taps
@@ -479,6 +489,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     }
     calls.removeAll()
     OLRtcCall.shared.close(sendBye: false)
+    closeOlcall()
     endCallAudioSession()
   }
 
@@ -511,11 +522,27 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         return
       }
       if let info = r["call"] as? [String: Any], let p = info["callerPlatform"] as? String { c.peerPlatform = p }
+      self.takeMedia(c, r)
+      c.mediaRefreshed = true // call:accept minted it just now
       self.connectMedia(c)
     }
   }
 
   private func connectMedia(_ c: OLCall) {
+    // olcall/tgcalls ONLY when the backend says so (CallMedia.provider "olcall" + ws(s) url + token); else unchanged.
+    if OLCallRoute.olcall(from: c.media) != nil {
+      if !c.incoming && !c.mediaRefreshed {
+        // Caller: the media from call:start may be close to expiry by the time the callee answers; call:get re-mints it.
+        c.mediaRefreshed = true
+        signal.request("call:get", ["callId": c.callId]) { [weak self] r in
+          guard let self, self.calls[c.uuid] === c, !c.ended else { return }
+          self.takeMedia(c, r)
+          self.connectMedia(c)
+        }
+        return
+      }
+      if let route = OLCallRoute.olcall(from: c.media) { return connectOlcall(c, route) }
+    }
     // Single media path for every pairing (iOS/Android/web): one RTCPeerConnection per rtc contract v1.
     // Order: owner lease (CallKit didActivate) → WebRTC audio enabled → PC created with the live audio track.
     OLCallDiskLog.shared.mark("connect-media", "p2p peer=\(c.peerPlatform ?? "?")")
@@ -544,6 +571,79 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     }
   }
 
+  // MARK: - olcall (tgcalls <-> olcall Go/Pion server, wss://<host>/v1/call; same protocol as Android OlTgcallsEngine)
+
+  private func takeMedia(_ c: OLCall, _ r: [String: Any]) {
+    if let m = r["media"] as? [String: Any] { c.media = m }
+  }
+
+  /// One PeerConnection-equivalent per call: tgcalls Instance (audio + video) over one olcall leg, signaling blobs relayed
+  /// on the raw WebSocket, ICE = joined iceServers (coturn STUN/TURN; CallMedia.iceServers fallback), direct first.
+  private func connectOlcall(_ c: OLCall, _ route: OLCallRoute.Olcall) {
+    // counts only: the join token and the relay credentials are never logged
+    OLCallDiskLog.shared.mark("connect-media", "olcall peer=\(c.peerPlatform ?? "?") appIce=\((route.appIceServers as? [Any])?.count ?? 0)")
+    closeOlcall()
+    let call: OpenLoungeOlcall.OLCall
+    do {
+      call = try OpenLoungeOlcall.OLCall(serverURL: route.url, joinToken: route.token, video: c.video, usesCallKit: true,
+                                         appIceServers: route.appIceServers)
+    } catch {
+      OLCallDiskLog.shared.mark("olcall-create-failed", "\(error)")
+      return endFromRemote(c, reason: .failed)
+    }
+    olcall = call
+    olcallUUID = c.uuid
+    call.onEvent = { [weak self, weak call] e in // main queue
+      guard let self, let call, self.olcall === call, self.calls[c.uuid] === c, !c.ended else { return }
+      switch e {
+      case let .joined(outgoing, version):
+        OLCallDiskLog.shared.mark("olcall-joined", "outgoing=\(outgoing) version=\(version)")
+      case let .state(st, remoteVideo, remoteMuted):
+        OLCallDiskLog.shared.mark("olcall-state", "\(st.rawValue) rv=\(remoteVideo) rm=\(remoteMuted)")
+        if st == .connected { self.markConnected(c) }
+        Task { @MainActor in OLNativeCallHost.shared.setRemoteVideoActive(remoteVideo) }
+      case let .remoteVideoView(v):
+        Task { @MainActor in OLNativeCallHost.shared.setVideoView(v, local: false) }
+      case let .localVideoView(v):
+        Task { @MainActor in OLNativeCallHost.shared.setVideoView(v, local: true) }
+      case let .audioFailed(why):
+        OLCallDiskLog.shared.mark("olcall-audio-failed", why) // LOCAL: end, never relay/TURN
+        self.endFromRemote(c, reason: .failed)
+      case let .ended(reason):
+        OLCallDiskLog.shared.mark("olcall-ended", reason)
+        self.olcall = nil; self.olcallUUID = nil
+        self.endFromRemote(c, reason: reason.hasPrefix("bye") ? .remoteEnded : .failed)
+      case .audio, .route:
+        break
+      }
+    }
+    call.start()
+    // CallKit may already have activated the session (answer → didActivate before call:accept's reply).
+    if callKitAudioActive, let s = activatedSession { call.callKitDidActivate(s) }
+    if pageMuted == true { call.setMuted(true) }
+  }
+
+  private func closeOlcall() {
+    guard let o = olcall else { return }
+    olcall = nil
+    olcallUUID = nil
+    o.hangup()
+    Task { @MainActor in OLNativeCallHost.shared.clearVideoViews() }
+  }
+
+  /// Native call screen controls: the olcall engine when it carries the call, else the existing engine.
+  func setMediaMuted(_ muted: Bool) {
+    if let o = olcall { o.setMuted(muted) } else { OLCallAudioEngine.shared.setMute(muted) }
+  }
+  func setCamera(on: Bool) {
+    if let o = olcall { o.setVideoEnabled(on) } else { try? OLRtcVideo.shared.camera(on: on, facing: "user") }
+  }
+  func setSpeaker(_ on: Bool) {
+    speaker = on
+    OLAudioSessionOwner.shared.applyRoute(speakerWanted: on, headsetAttached: false)
+    olcall?.setSpeaker(on)
+  }
+
   private func markConnected(_ c: OLCall) {
     guard !c.connected else { return }
     c.connected = true
@@ -561,6 +661,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     calls[c.uuid] = nil
     provider?.reportCall(with: c.uuid, endedAt: Date(), reason: reason)
     if c.native { OLRtcCall.shared.close(sendBye: false) }
+    if olcallUUID == c.uuid { closeOlcall() }
     pageMuted = nil; pendingPageMutes = []
     stopRingback()
     emitState(c, "terminated")
@@ -619,6 +720,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
         guard let self, self.calls[c.uuid] === c else { return }
         let phase = ((r["call"] as? [String: Any])?["phase"] as? String) ?? ""
         if c.peerPlatform == nil, let p = (r["call"] as? [String: Any])?[c.incoming ? "callerPlatform" : "calleePlatform"] as? String { c.peerPlatform = p }
+        self.takeMedia(c, r)
         if r["ok"] as? Bool != true || phase == "ended" { self.endFromRemote(c, reason: .remoteEnded) }
         else if phase == "active" && !c.incoming && !c.connected { self.connectMedia(c) }
       }
@@ -644,6 +746,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       let peer = ((glare ? info["caller"] : info["callee"]) as? [String: Any]) ?? [:]
       let c = OLCall(callId: callId, uuid: UUID(), incoming: false, video: video)
       c.native = true
+      self.takeMedia(c, r)
       c.peerPlatform = (glare ? info["callerPlatform"] : info["calleePlatform"]) as? String
       if let n = peer["name"] as? String, !n.isEmpty { c.name = String(n.prefix(80)) }
       if let ph = peer["photoUrl"] as? String, ph.hasPrefix("http") { c.photo = ph }
@@ -734,6 +837,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
       emit(["type": "hangup", "callId": c.callId])
     }
     OLRtcCall.shared.close(sendBye: true)
+    if olcallUUID == c.uuid { closeOlcall() } // sends the olcall "hangup" frame
     emitState(c, "terminated")
     action.fulfill(withDateEnded: Date()) // CallKitIntegration.swift:392
     endCallAudioSession()
@@ -743,6 +847,7 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "mute")
     action.fulfill()
     OLCallAudioEngine.shared.setMute(action.isMuted) // CallKitIntegration.swift:400-409 setCallMuted → engine
+    olcall?.setMuted(action.isMuted)
     emit(["type": "muted", "muted": action.isMuted]) // our call screen's Mute state
     if let i = pendingPageMutes.firstIndex(of: action.isMuted) { pendingPageMutes.removeSubrange(0...i); return } // echo of a page tap
     if pageMuted == action.isMuted { return } // already the page's state
@@ -788,7 +893,9 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
     OLCallDiskLog.shared.mark("callkit", "didActivate")
     // Signal: forward activation to the sole owner → RTCAudioSession → lease resolves → engine enables audio.
     callKitAudioActive = true
+    activatedSession = audioSession
     OLAudioSessionOwner.shared.callKitDidActivate(audioSession)
+    olcall?.callKitDidActivate(audioSession) // tgcalls ADM starts only after CallKit hands over the session
     OLAudioSessionOwner.shared.applyRoute(speakerWanted: speaker, headsetAttached: Self.headsetAttached())
     if calls.values.contains(where: { !$0.incoming && !$0.ended && !$0.answered && !$0.connected }) { startRingback() }
   }
@@ -796,8 +903,10 @@ public final class OLCallManager: NSObject, PKPushRegistryDelegate, CXProviderDe
   public func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
     OLCallDiskLog.shared.mark("callkit", "didDeactivate")
     callKitAudioActive = false
+    activatedSession = nil
     // Suspend media; KEEP the call holder (resume on the next didActivate). Teardown only on call end.
     OLAudioSessionOwner.shared.callKitDidDeactivate(audioSession)
+    olcall?.callKitDidDeactivate(audioSession)
   }
 
   // MARK: - page → native (src/calls.ts forwards {type:"call:*"} bridge messages)
