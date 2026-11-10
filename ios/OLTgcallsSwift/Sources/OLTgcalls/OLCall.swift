@@ -34,6 +34,7 @@ public final class OLCall {
     private let relay: OLSignalingRelay
     private let token: String
     private let video: Bool
+    private let appIceServers: Any?
     private var engine: OLTgcallsCall?
     private var ended = false
 
@@ -42,12 +43,14 @@ public final class OLCall {
     ///   - joinToken: the olcall token the OL backend issued for THIS party on call:accept
     ///   - video: start with the camera on (and loudspeaker, OL behaviour)
     ///   - usesCallKit: forward CXProvider didActivate/didDeactivate to callKitDidActivate/Deactivate
-    public init(serverURL: URL, joinToken: String, video: Bool, usesCallKit: Bool) throws {
+    ///   - appIceServers: CallMedia.iceServers from the OL backend (fallback relay list; the joined frame's win)
+    public init(serverURL: URL, joinToken: String, video: Bool, usesCallKit: Bool, appIceServers: Any? = nil) throws {
         let local = OLTgcallsCall.linkedVersions()
         guard let v = OLTgcallsVersion.pick(local: local) else { throw OLTgcallsError.noCommonVersion(local) }
         version = v
         token = joinToken
         self.video = video
+        self.appIceServers = appIceServers
         crumbs = OLBreadcrumbs(crumbURL: OLBreadcrumbs.crumbURL(forCallURL: serverURL), engineBuild: OLSignalingRelay.engine)
         audio = OLCallAudioDevice(usesCallKit: usesCallKit, crumbs: crumbs)
         relay = OLSignalingRelay(url: serverURL, queue: queue, crumbs: crumbs)
@@ -90,11 +93,16 @@ public final class OLCall {
                 relay.hangup()
                 return
             }
+            // Relay list: coturn STUN + TURN UDP/TCP with the short-lived REST login (joined frame
+            // first, CallMedia.iceServers fallback). allowP2P stays on, so direct pairs win and TURN
+            // is only the fallback. Counts only in breadcrumbs; credentials are never logged.
+            let (rtc, source) = OLRtcServers.select(joined: j.iceServers, app: appIceServers)
+            crumbs.event("tg", "rtc-servers:source=\(source):" + OLRtcServers.summary(rtc))
             let docs = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
             do {
                 var key = j.key
                 let e = try OLTgcallsCall(config: .init(version: version, key: key, isOutgoing: j.isOutgoing, video: video,
-                                                        logDirectory: docs, traceId: traceId),
+                                                        logDirectory: docs, traceId: traceId, rtcServers: rtc),
                                           queue: queue, audioDevice: audio,
                                           sendSignalingData: { [weak self] blob in self?.relay.sendBlob(blob) })
                 key.resetBytes(in: 0..<key.count)  // tgcalls holds its own copy

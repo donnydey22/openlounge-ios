@@ -3,7 +3,11 @@
 //
 // tgcalls surface ("surface":"tgcalls"):
 //   C->S  join {token, traceId, surface, platform, device, os, engine, version}
-//   S->C  joined {callId, leg, key(b64, 256 B), isOutgoing, versions}
+//   S->C  joined {callId, leg, key(b64, 256 B), isOutgoing, versions, iceServers?}
+//         iceServers = coturn STUN + TURN with short-lived REST creds (never logged);
+//         parsed by OLRtcServers, same rules as Android OlRtcServers.kt
+//   The join token rides in the join frame (never in the URL), exactly as Android's
+//   OlTgcallsEngine does and as olcall/server/server.go VerifyToken(join.Token) reads it.
 //   C<->S blob {b64}        one tgcalls signaling blob, byte-identical both ways
 //   S->C  stats {stats}     per-leg packet counters (every 2 s)
 //   C->S  hangup            S->C bye {reason}   S->C error {error}
@@ -27,6 +31,8 @@ public final class OLSignalingRelay {
         public let key: Data
         public let isOutgoing: Bool
         public let serverVersions: [String]
+        /// Raw RTCIceServer[] JSON from the joined frame (nil if absent). Use OLRtcServers.select.
+        public let iceServers: Any?
     }
 
     public struct JoinInfo {
@@ -73,7 +79,8 @@ public final class OLSignalingRelay {
             guard let b64 = o["key"] as? String, let key = Data(base64Encoded: b64), key.count == 256,
                   let out = o["isOutgoing"] as? Bool else { return .error("bad-joined") }
             return .joined(Joined(callId: o["callId"] as? String ?? "", leg: o["leg"] as? String ?? "", key: key,
-                                  isOutgoing: out, serverVersions: o["versions"] as? [String] ?? []))
+                                  isOutgoing: out, serverVersions: o["versions"] as? [String] ?? [],
+                                  iceServers: o["iceServers"]))
         case "blob":
             guard let b64 = o["b64"] as? String, let d = Data(base64Encoded: b64) else { return .error("bad-blob") }
             return .blob(d)

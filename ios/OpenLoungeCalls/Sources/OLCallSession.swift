@@ -73,9 +73,11 @@ public final class OLCallSession: NSObject {
     private var connectedAt: Date?
     private var timer: Timer?
 
-    public init(serverURL: URL, joinToken: String, peer: Peer, video: Bool, usesCallKit: Bool = false) throws {
+    public init(serverURL: URL, joinToken: String, peer: Peer, video: Bool, usesCallKit: Bool = false,
+                appIceServers: Any? = nil) throws {
         self.peer = peer
-        call = try OLCall(serverURL: serverURL, joinToken: joinToken, video: video, usesCallKit: usesCallKit)
+        call = try OLCall(serverURL: serverURL, joinToken: joinToken, video: video, usesCallKit: usesCallKit,
+                          appIceServers: appIceServers)
         state = UiState(isVideoCall: video, cameraOn: video, speakerOn: video)
         super.init()
     }

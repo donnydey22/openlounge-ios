@@ -9,9 +9,11 @@
 // No second shim is needed because Swift only ever calls its ObjC API.
 //
 // Proven configuration (Linux, same library, through the olcall Pion server:
-// 14/14 matrix + 5/5 cross-version cells): P2P on, no reflectors (the server's
-// host candidates are the only remote candidates), VP8 preferred (the relay
-// forwards VP8), Opus (tgcalls' only audio codec in V2).
+// 14/14 matrix + 5/5 cross-version cells): P2P on, no Telegram reflectors, VP8
+// preferred (the relay forwards VP8), Opus (tgcalls' only audio codec in V2).
+// Gap item 3 (2026-11-09): the joined frame's coturn STUN/TURN list is passed as
+// rtcServers (same as Android's JNI), so direct host/srflx pairs win and the TURN
+// relay is the fallback for carrier-grade NAT.
 //
 // Threading: create and use on `queue` (the wrapper asserts it). Callbacks are
 // delivered on `queue`.
@@ -34,9 +36,14 @@ public final class OLTgcallsCall {
         /// tgcalls/WebRTC log + stats files (app caches dir; uploaded nowhere).
         public var logDirectory: URL
         public var traceId: String
-        public init(version: String, key: Data, isOutgoing: Bool, video: Bool, logDirectory: URL, traceId: String) {
+        /// coturn STUN + TURN (joined iceServers, else CallMedia.iceServers): tgcalls Descriptor.rtcServers.
+        /// Direct first (allowP2P stays on), relay fallback. Empty = direct only.
+        public var rtcServers: [OLRtcServers.Server]
+        public init(version: String, key: Data, isOutgoing: Bool, video: Bool, logDirectory: URL, traceId: String,
+                    rtcServers: [OLRtcServers.Server] = []) {
             self.version = version; self.key = key; self.isOutgoing = isOutgoing
             self.video = video; self.logDirectory = logDirectory; self.traceId = traceId
+            self.rtcServers = rtcServers
         }
     }
 
@@ -76,7 +83,7 @@ public final class OLTgcallsCall {
             derivedState: Data(),
             key: config.key,
             isOutgoing: config.isOutgoing,
-            connections: [],                  // no Telegram reflectors: the olcall server is the only peer
+            connections: OLRtcServers.connections(config.rtcServers), // coturn STUN/TURN (reflectorId 0); no Telegram reflectors
             maxLayer: OngoingCallThreadLocalContextWebrtc.maxLayer(),
             allowP2P: true,                   // proven path: host/srflx candidates to the Pion leg
             allowTCP: false,

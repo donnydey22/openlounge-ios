@@ -1,0 +1,118 @@
+[
+  {
+    "name": "olcall-joined-live-shape",
+    "iceServers": [
+      {
+        "credentialType": "password",
+        "urls": [
+          "stun:turn.openlounge.app:3478"
+        ]
+      },
+      {
+        "credential": "ZmFrZS1maXh0dXJlLWNyZWRlbnRpYWw=",
+        "credentialType": "password",
+        "urls": [
+          "turn:turn.openlounge.app:3478?transport=udp",
+          "turn:turn.openlounge.app:3478?transport=tcp",
+          "turns:turn.openlounge.app:5349?transport=tcp"
+        ],
+        "username": "1794287623:u42"
+      }
+    ],
+    "expect": [
+      {
+        "host": "turn.openlounge.app",
+        "port": 3478,
+        "login": "",
+        "password": "",
+        "isTurn": false,
+        "isTcp": false
+      },
+      {
+        "host": "turn.openlounge.app",
+        "port": 3478,
+        "login": "1794287623:u42",
+        "password": "ZmFrZS1maXh0dXJlLWNyZWRlbnRpYWw=",
+        "isTurn": true,
+        "isTcp": false
+      },
+      {
+        "host": "turn.openlounge.app",
+        "port": 3478,
+        "login": "1794287623:u42",
+        "password": "ZmFrZS1maXh0dXJlLWNyZWRlbnRpYWw=",
+        "isTurn": true,
+        "isTcp": true
+      }
+    ]
+  },
+  {
+    "name": "no-iceServers",
+    "iceServers": null,
+    "expect": null
+  },
+  {
+    "name": "defaults-ipv6-dupes-and-rejects",
+    "iceServers": [
+      {
+        "credentialType": "password",
+        "urls": [
+          "stun:1.2.3.4",
+          "stun:1.2.3.4:3478",
+          "stun:[2001:db8::1]:3479",
+          "stuns:x:5349",
+          "bogus"
+        ]
+      },
+      {
+        "credentialType": "password",
+        "urls": [
+          "turn:1.2.3.4"
+        ]
+      },
+      {
+        "credential": "x",
+        "credentialType": "password",
+        "urls": [
+          "turn:5.6.7.8:80?transport=tcp"
+        ],
+        "username": "reflector"
+      },
+      {
+        "credential": "c",
+        "credentialType": "password",
+        "urls": [
+          "turn:5.6.7.8:443?transport=tcp",
+          "turn:host.invalid:99999"
+        ],
+        "username": "9:u"
+      }
+    ],
+    "expect": [
+      {
+        "host": "1.2.3.4",
+        "port": 3478,
+        "login": "",
+        "password": "",
+        "isTurn": false,
+        "isTcp": false
+      },
+      {
+        "host": "2001:db8::1",
+        "port": 3479,
+        "login": "",
+        "password": "",
+        "isTurn": false,
+        "isTcp": false
+      },
+      {
+        "host": "5.6.7.8",
+        "port": 443,
+        "login": "9:u",
+        "password": "c",
+        "isTurn": true,
+        "isTcp": true
+      }
+    ]
+  }
+]
