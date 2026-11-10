@@ -23,26 +23,34 @@ run() { local name="$1"; shift; echo "== $name"; if "$@"; then results+=("\"$nam
 run clean_slate bash ci/clean-slate.sh
 
 echo "== xcframework"
-rm -rf build/xcf OLCall/Frameworks
-mkdir -p build/xcf OLCall/Frameworks
+rm -rf build/xcf build/xcf-lib OLCall/Frameworks
+mkdir -p build/xcf build/xcf-lib OLCall/Frameworks
 ditto -x -k "$zip" build/xcf
 xcf="$(find build/xcf -maxdepth 2 -type d -name 'TgVoipWebrtc.xcframework' | head -n1)"
 [ -n "$xcf" ] && [ -f "$xcf/Info.plist" ] || { echo "FAIL: no TgVoipWebrtc.xcframework in $zip" >&2; exit 1; }
-cp -R "$xcf" OLCall/Frameworks/TgVoipWebrtc.xcframework
-for slice in OLCall/Frameworks/TgVoipWebrtc.xcframework/*/; do
+# The engine is a static library. Repackage every slice as a library xcframework (static archive +
+# headers + module map) so Xcode links it into the app binary and embeds nothing.
+args=()
+for slice in "$xcf"/*/; do
   [ -d "$slice" ] || continue
+  name="$(basename "$slice")"
   if [ -d "$slice/TgVoipWebrtc.framework" ]; then
-    fw="$slice/TgVoipWebrtc.framework"
-    if [ ! -f "$fw/Modules/module.modulemap" ]; then
-      mkdir -p "$fw/Modules"
-      printf 'framework module TgVoipWebrtc {\n  header "OngoingCallThreadLocalContext.h"\n  export *\n}\n' > "$fw/Modules/module.modulemap"
-    fi
-  elif [ -d "$slice/Headers" ] && [ ! -f "$slice/Headers/module.modulemap" ]; then
-    hdr="$(cd "$slice/Headers" && find . -name OngoingCallThreadLocalContext.h | head -n1)"
-    [ -n "$hdr" ] || { echo "FAIL: slice $slice has no OngoingCallThreadLocalContext.h" >&2; exit 1; }
-    printf 'module TgVoipWebrtc {\n  header "%s"\n  export *\n}\n' "${hdr#./}" > "$slice/Headers/module.modulemap"
+    fw="$slice/TgVoipWebrtc.framework"; bin="$fw/TgVoipWebrtc"; hdrs="$fw/Headers"
+  else
+    bin="$(find "$slice" -maxdepth 1 -name '*.a' | head -n1)"; hdrs="$slice/Headers"
   fi
+  [ -f "$bin" ] && [ -d "$hdrs" ] || { echo "FAIL: slice $name has no binary/headers" >&2; exit 1; }
+  file "$bin"
+  out="build/xcf-lib/$name"; mkdir -p "$out/Headers"
+  cp "$bin" "$out/libTgVoipWebrtc.a"
+  cp -R "$hdrs/." "$out/Headers/"
+  rm -f "$out/Headers/module.modulemap"
+  top="$(cd "$out/Headers" && find . -name OngoingCallThreadLocalContext.h | head -n1)"
+  [ -n "$top" ] || { echo "FAIL: slice $name has no OngoingCallThreadLocalContext.h" >&2; exit 1; }
+  printf 'module TgVoipWebrtc {\n  header "%s"\n  export *\n}\n' "${top#./}" > "$out/Headers/module.modulemap"
+  args+=(-library "$out/libTgVoipWebrtc.a" -headers "$out/Headers")
 done
+xcodebuild -create-xcframework "${args[@]}" -output OLCall/Frameworks/TgVoipWebrtc.xcframework
 ls OLCall/Frameworks/TgVoipWebrtc.xcframework
 
 sim="$(xcrun simctl list devices available | sed -n 's/^ *\(iPhone [^()]*\) (\([0-9A-F-]*\)).*/\2/p' | head -n1)"
@@ -80,7 +88,7 @@ dups() {
 }
 run duplicate_classes dups
 
-tests="$(grep -E "^Test Suite 'All tests' (passed|failed)" -A1 "$log" | sed -n 's/.*Executed \([0-9]*\) tests\{0,1\}, with \([0-9]*\) failures.*/\1 \2/p' | tail -n1)"
+tests="$(awk "/^Test Suite '.*\\.xctest' (passed|failed)/{getline; print}" "$log" | sed -n 's/.*Executed \([0-9]*\) tests\{0,1\}, with \([0-9]*\) failures.*/\1 \2/p' | awk '{e+=$1; f+=$2} END {print e" "f}')"
 echo "tests (executed failures): ${tests:-unknown}"
 printf '{"xcode":"%s","tests":"%s",%s}\n' "$(xcodebuild -version | head -n1)" "${tests:-unknown}" "$(IFS=,; echo "${results[*]}")" > build/RESULT.json
 cat build/RESULT.json
