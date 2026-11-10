@@ -89,6 +89,19 @@ jobs:
           key: ${{ steps.key.outputs.key }}
       - name: Build + test
         run: bash ci/build.sh "$PWD/xcf/TgVoipWebrtc.xcframework.zip"
+      - name: Signed ad hoc IPA (existing distribution certificate + ad hoc profile)
+        env:
+          P12_B64: ${{ secrets.IOS_DIST_P12_B64 }}
+          P12_PASSWORD: ${{ secrets.IOS_DIST_P12_PASSWORD }}
+          PROFILE_B64: ${{ secrets.IOS_ADHOC_PROFILE_B64 }}
+          ARTIFACT_PASSPHRASE: ${{ secrets.IOS_ARTIFACT_PASSPHRASE }}
+        run: bash ci/adhoc.sh
+      - name: Upload encrypted IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: openlounge-ios-adhoc-encrypted
+          path: out/
+          retention-days: 14
       - name: Upload results
         if: always()
         uses: actions/upload-artifact@v4

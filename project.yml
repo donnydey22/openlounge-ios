@@ -1,7 +1,7 @@
 # XcodeGen spec for the Open Lounge iOS app. ci/build.sh runs `xcodegen generate`.
 name: OpenLounge
 options:
-  bundleIdPrefix: org.openlounge
+  bundleIdPrefix: com.donnydey
   deploymentTarget:
     iOS: "16.4"
   createIntermediateGroups: true
@@ -11,8 +11,12 @@ packages:
 settings:
   base:
     SWIFT_VERSION: "5.0"
-    MARKETING_VERSION: "1.0.0"
-    CURRENT_PROJECT_VERSION: "1"
+    MARKETING_VERSION: "0.4.0"
+    CURRENT_PROJECT_VERSION: "129"
+    # Unsigned unless ci/adhoc.sh passes these on the command line (app target only).
+    OL_SIGNING_ALLOWED: "NO"
+    OL_PROFILE: ""
+    OL_SIGN_IDENTITY: ""
     ARCHS: arm64
     EXCLUDED_ARCHS[sdk=iphonesimulator*]: x86_64
     ENABLE_BITCODE: NO
@@ -26,12 +30,15 @@ targets:
           - Info.plist
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.openlounge.ios
+        PRODUCT_BUNDLE_IDENTIFIER: com.donnydey.openlounge
         INFOPLIST_FILE: App/Info.plist
         TARGETED_DEVICE_FAMILY: "1"
         OTHER_LDFLAGS: ["$(inherited)", "-ObjC"]
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGN_IDENTITY: ""
+        DEVELOPMENT_TEAM: 9A6NA2ZAFH
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_ALLOWED: "$(OL_SIGNING_ALLOWED)"
+        CODE_SIGN_IDENTITY: "$(OL_SIGN_IDENTITY)"
+        PROVISIONING_PROFILE_SPECIFIER: "$(OL_PROFILE)"
     dependencies:
       - package: OLCall
         product: OLCall
