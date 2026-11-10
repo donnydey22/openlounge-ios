@@ -134,7 +134,6 @@ final class CallController: ObservableObject {
             goLiveIfReady()
         }
     }
-    }
 
     func engineEnded(callId id: String) {
         guard id == callId else { return }
