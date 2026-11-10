@@ -93,10 +93,13 @@ jobs:
         run: |
           set -euo pipefail
           APP=$(find ios/dd/Build/Products -name "*.app" -maxdepth 3 | head -1)
-          BIN="$APP/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")"
-          echo "APP=$APP"
-          nm -a "$BIN" | grep -m3 'OBJC_CLASS_$_OngoingCallThreadLocalContextWebrtc' || { echo "FAIL: TgVoipWebrtc not linked"; exit 1; }
-          nm -a "$BIN" | grep -m3 -E 'OLSignalingRelay|OLRtcServers|OLCallRoute' || { echo "FAIL: olcall Swift not linked"; exit 1; }
+          # Xcode 16+ Debug builds put the app's code in <App>.debug.dylib (the main binary is a stub): scan every Mach-O.
+          find "$APP" -maxdepth 1 -type f \( -name "*.dylib" -o -perm -111 \) > bins.txt
+          cat bins.txt
+          while read -r b; do nm -a "$b" 2>/dev/null || true; done < bins.txt > syms.txt
+          echo "symbols: $(wc -l < syms.txt)"
+          grep -m3 -F 'OBJC_CLASS_$_OngoingCallThreadLocalContextWebrtc' syms.txt || { echo "FAIL: TgVoipWebrtc not linked"; exit 1; }
+          grep -m3 -E 'OLSignalingRelay|OLRtcServers|OLCallRoute|OLCallStates' syms.txt || { echo "FAIL: olcall Swift not linked"; exit 1; }
           echo "OK: tgcalls (TgVoipWebrtc) + OLSignalingRelay/OLRtcServers/OLCallRoute linked"
       - if: always()
         uses: actions/upload-artifact@v4

@@ -37,6 +37,11 @@ public final class OLCall {
     private let appIceServers: Any?
     private var engine: OLTgcallsCall?
     private var ended = false
+    /// idle/joining/offering/answering/connected/failed; one log line per transition (OLCallStates). Used on `queue`.
+    public let states: OLCallStates
+    /// No Established this long after "joined" -> failed with the diagnosed reason (e.g. ice-stalled).
+    public static let connectTimeout: TimeInterval = 30
+    private var connectWatchdog: DispatchWorkItem?
 
     /// - Parameters:
     ///   - serverURL: wss://<olcall host>/v1/call
@@ -54,6 +59,8 @@ public final class OLCall {
         crumbs = OLBreadcrumbs(crumbURL: OLBreadcrumbs.crumbURL(forCallURL: serverURL), engineBuild: OLSignalingRelay.engine)
         audio = OLCallAudioDevice(usesCallKit: usesCallKit, crumbs: crumbs)
         relay = OLSignalingRelay(url: serverURL, queue: queue, crumbs: crumbs)
+        let c = crumbs
+        states = OLCallStates(sink: { line in NSLog("%@", line); c.event("state", line) })
     }
 
     public func start() {
@@ -65,6 +72,7 @@ public final class OLCall {
         }
         relay.onInbound = { [weak self] in self?.onInbound($0) }
         relay.onClosed = { [weak self] reason in self?.finish(reason) }
+        queue.dispatch { self.states.setState(.joining, reason: "join-sent") }
         relay.start(join: .init(token: token, traceId: traceId, version: version, device: OLDevice.model,
                                 os: "iOS \(UIDevice.current.systemVersion)"))
     }
@@ -87,6 +95,9 @@ public final class OLCall {
         case let .joined(j):
             crumbs.callId = j.callId
             crumbs.leg = j.leg
+            states.callId = j.callId
+            states.setState(j.isOutgoing ? .offering : .answering, reason: "joined")
+            armConnectWatchdog()
             crumbs.event("tg", "joined:outgoing=\(j.isOutgoing):version=\(version)")
             if !j.serverVersions.isEmpty && !j.serverVersions.contains(version) {
                 crumbs.event("tg", "server-lacks-version:\(version)", level: "error")
@@ -104,11 +115,20 @@ public final class OLCall {
                 let e = try OLTgcallsCall(config: .init(version: version, key: key, isOutgoing: j.isOutgoing, video: video,
                                                         logDirectory: docs, traceId: traceId, rtcServers: rtc),
                                           queue: queue, audioDevice: audio,
-                                          sendSignalingData: { [weak self] blob in self?.relay.sendBlob(blob) })
+                                          sendSignalingData: { [weak self] blob in
+                                              guard let self else { return }
+                                              self.queue.dispatch { self.states.blobSent() }
+                                              self.relay.sendBlob(blob)
+                                          })
                 key.resetBytes(in: 0..<key.count)  // tgcalls holds its own copy
                 e.onState = { [weak self] st, rv, rm in
-                    self?.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
-                    if st == .failed { self?.relay.close("tg-failed") }
+                    guard let self else { return }
+                    if st == .connected {
+                        self.connectWatchdog?.cancel()
+                        self.states.setState(.connected, reason: "tg-established")
+                    }
+                    self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
+                    if st == .failed { self.relay.close("tg-failed") }
                 }
                 engine = e
                 e.makeIncomingVideoView { [weak self] v in if let v { self?.emit(.remoteVideoView(v)) } }
@@ -119,6 +139,7 @@ public final class OLCall {
                 relay.close("native-create-failed")
             }
         case let .blob(b):
+            states.blobReceived()
             engine?.receiveSignalingData(b)
         case let .bye(reason):
             relay.close("bye:\(reason)")
@@ -134,12 +155,29 @@ public final class OLCall {
     private func finish(_ reason: String) {
         guard !ended else { return }
         ended = true
+        connectWatchdog?.cancel()
+        // Normal ends (local hangup, far side's bye) are not failures; everything else before Established is.
+        let normal = reason == "local-hangup" || reason.hasPrefix("bye:")
+        if states.state != .connected && !normal { states.fail(reason) }
         engine?.stop()
         engine = nil
         audio.end()
         crumbs.event("call", "ended:\(reason)")
         crumbs.flush()
         emit(.ended(reason))
+    }
+
+    // queue
+    private func armConnectWatchdog() {
+        connectWatchdog?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            self?.queue.dispatch {
+                guard let self, !self.ended, self.states.state != .connected else { return }
+                self.relay.close("connect-timeout")  // -> finish -> failed with e.g. ice-stalled:connect-timeout
+            }
+        }
+        connectWatchdog = w
+        DispatchQueue.global().asyncAfter(deadline: .now() + Self.connectTimeout, execute: w)
     }
 
     private func emit(_ e: Event) { DispatchQueue.main.async { self.onEvent?(e) } }
