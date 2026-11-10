@@ -6,7 +6,8 @@ struct Squircle: Shape {
     var cornerRadius: CGFloat = OLMetric.avatarCorner
 
     func path(in rect: CGRect) -> Path {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous).path(in: rect)
+        // .circular: web 101e00a border-radius 47 on 112 and Android's outline, so the avatar is the same shape everywhere.
+        RoundedRectangle(cornerRadius: cornerRadius, style: .circular).path(in: rect)
     }
 }
 

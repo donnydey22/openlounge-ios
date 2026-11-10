@@ -5,8 +5,13 @@ import SwiftUI
 enum Initials {
     /// One word: its first two characters; several: first letter of the first and last word; none: "?".
     static func of(_ name: String) -> String {
+        // Same as Android NativeCallScreen.initials: emoji / symbol words are skipped ("Keiko 🦋" -> "KE").
         let words = name.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-        guard let first = words.first else { return "?" }
+            .filter { w in w.unicodeScalars.first.map { CharacterSet.alphanumerics.contains($0) } ?? false }
+        guard let first = words.first else {
+            let t = name.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? "?" : String(t.prefix(1))
+        }
         if words.count == 1 { return String(first.prefix(2)).uppercased() }
         return (String(first.prefix(1)) + String(words[words.count - 1].prefix(1))).uppercased()
     }

@@ -69,6 +69,9 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
         let ucc = WKUserContentController()
         ucc.addUserScript(WKUserScript(source: OLBridgeScript.injected(version: Self.version, build: Self.build, phoneAuth: PhoneAuth.available),
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
+        // One call screen: the native first-design CallScreen. The page's CallOverlay always renders under it
+        // (and showed through after hang-up and under the minimized bar), so hide its non-incoming states.
+        ucc.addUserScript(WKUserScript(source: CallWebOverlay.hideJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         ucc.add(WeakMessageHandler(self), name: OLBridgeScript.handlerName)
         config.userContentController = ucc
 
@@ -231,6 +234,13 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             currentURL: currentURL,
             origin: origin
         )
+        // Engine-branch call states (ringing acknowledged / server answered) drive the pre-answer card.
+        // OLShellCore drops call types it does not know yet, so read them here (UI only, no engine change).
+        if message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let raw = body,
+           let o = CallPresence.object(fromJSON: raw), let t = o["type"] as? String,
+           CallController.pageStateTypes.contains(t) {
+            CallController.shared.onPageState(t, callId: (o["callId"] as? String) ?? "")
+        }
         let req = body.flatMap(OLBridgeMessage.parse)
         guard message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let req else {
             if let id = OLAppURL.bridgeRequestId(from: body) {

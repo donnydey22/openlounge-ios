@@ -1,7 +1,8 @@
 // First Open Lounge call UI (web 101e00a, 2026-10-07 10:51 PM MST): full-screen #0b1220
 // stage, drifting blobs + blurred photo, pulsing rings while calling, 56pt RoundBtn with
 // a 12pt label (Speaker, Flip when the camera is on, Video, Mute, End call), draggable
-// 100×150 PiP with 18pt corners, 4s control autohide on video, green minimize bar.
+// 100×150 PiP with 18pt corners (dragged, snapped to a corner by Telegram's rule, CallPip), controls over the
+// video on Telegram's top/bottom shadows, 4s control autohide on video, green minimize bar, end card.
 // Wired only to the existing Pion-engine CallController
 import SwiftUI
 
@@ -11,7 +12,12 @@ struct CallScreen: View {
     @State private var showCtl = true
     @State private var hideTask: Task<Void, Never>?
 
-    var videoStage: Bool { !call.failed && (call.remoteVideoOn || call.cameraOn) }
+    /// Video only once media flows after the answer (call.live); before it the opaque pre-answer card covers any preview.
+    var videoStage: Bool { !call.failed && !call.endedCard && call.live && (call.remoteVideoOn || call.cameraOn) }
+    /// Calling / Ringing / Connecting: avatar, name, status and one Cancel (same as Android).
+    var preAnswer: Bool { !call.failed && !call.endedCard && !call.live }
+    /// Failure or end card: no bottom row (its space stays reserved), Close top-right.
+    var cardOnly: Bool { call.failed || call.endedCard }
 
     var body: some View {
         GeometryReader { geo in
@@ -22,32 +28,29 @@ struct CallScreen: View {
                 } else {
                     CallBackdrop(name: call.peerName, photoURL: call.peerPhoto)
                 }
+                if videoStage && showCtl {
+                    // Telegram DrKLO 3de37c8 VoIPFragment.java:917-923: 160pt shadows under the controls.
+                    VStack(spacing: 0) {
+                        LinearGradient(colors: [Color.black.opacity(0.4), .clear], startPoint: .top, endPoint: .bottom).frame(height: 160)
+                        Spacer()
+                        LinearGradient(colors: [.clear, Color.black.opacity(0.5)], startPoint: .top, endPoint: .bottom).frame(height: 160)
+                    }
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+                }
                 if videoStage && call.remoteVideoOn && call.cameraOn {
-                    Pip(view: swap ? (call.remoteVideoView) : call.localVideoView, mirrored: !swap && call.facingFront, size: geo.size) {
+                    Pip(view: swap ? (call.remoteVideoView) : call.localVideoView, mirrored: !swap && call.facingFront, size: geo.size,
+                        insets: CallPip.insets(controlsShown: showCtl, rowReserve: OLMetric.rowBottom + OLMetric.rowHeight + geo.safeAreaInsets.bottom)) {
                         swap.toggle()
                     }
-                } else if videoStage && call.cameraOn, let local = call.localVideoView, !call.remoteVideoOn {
-                    // outgoing video before the far side's tile is up: local is the big stage, already in videoLayer
                 }
 
                 VStack(spacing: 0) {
                     topBar
-                    if call.failed {
-                        Text(call.failedText)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white)
-                            .multilineTextAlignment(.center)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 6)
-                            .background(Color.black.opacity(0.60))
-                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 8)
-                    }
                     centerBlock
                     Spacer(minLength: 0)
-                    if call.failed {
-                        Color.clear.frame(height: 56 + geo.safeAreaInsets.bottom)
+                    if cardOnly {
+                        Color.clear.frame(height: OLMetric.rowBottom + OLMetric.rowHeight + geo.safeAreaInsets.bottom)
                     } else if showCtl || !videoStage {
                         controlRow
                             .padding(.bottom, OLMetric.rowBottom + geo.safeAreaInsets.bottom)
@@ -57,6 +60,23 @@ struct CallScreen: View {
                 }
                 .ignoresSafeArea(edges: .bottom)
                 .opacity(showCtl || !videoStage ? 1 : 0)
+                if call.failed {
+                    // Banner under the X, over the stage (does not push the avatar down), same as Android.
+                    VStack(spacing: 0) {
+                        Text(call.failedText)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white)
+                            .multilineTextAlignment(.center)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.60))
+                            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                            .frame(maxWidth: OLMetric.failBannerWidth)
+                            .padding(.top, OLMetric.failBannerTop)
+                        Spacer()
+                    }
+                    .allowsHitTesting(false)
+                }
             }
             .contentShape(Rectangle())
             .onTapGesture { if videoStage { poke() } }
@@ -82,22 +102,20 @@ struct CallScreen: View {
 
     private var topBar: some View {
         HStack {
-            if call.failed {
+            if cardOnly {
                 Spacer().frame(width: 40, height: 40)
                 Spacer()
-                Button(action: { call.dismissFailed() }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 16, weight: .semibold))
+                Button(action: { if call.failed { call.dismissFailed() } else { call.dismissEndCard() } }) {
+                    CallGlyph(name: "ol_call_close", size: 20)
                         .foregroundColor(.white)
                         .frame(width: 40, height: 40)
                         .background(Color.white.opacity(0.10))
                         .clipShape(Circle())
                 }
                 .accessibilityLabel("Close")
-            } else if call.phase != .ended {
+            } else if call.phase != .ended && !preAnswer {
                 Button(action: { call.setMinimized(true) }) {
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 20, weight: .semibold))
+                    CallGlyph(name: "ol_call_chevron_down", size: 24)
                         .foregroundColor(.white)
                         .frame(width: 40, height: 40)
                         .background(Color.white.opacity(0.10))
@@ -112,8 +130,7 @@ struct CallScreen: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.top, 8)
-        .frame(height: 56)
+        .frame(height: OLMetric.topBar)
     }
 
     private var centerBlock: some View {
@@ -127,16 +144,20 @@ struct CallScreen: View {
                 }
                 .padding(.bottom, OLMetric.avatarGap - 12)
             }
-            Text(call.peerName)
-                .font(.system(size: videoStage ? OLMetric.nameSizeVideo : OLMetric.nameSize, weight: .semibold))
-                .foregroundColor(.white)
-                .lineLimit(1)
-                .shadow(color: .black.opacity(0.4), radius: 4)
-            Text(call.statusText)
-                .font(.system(size: OLMetric.statusSize).monospacedDigit())
-                .foregroundColor(OLColor.status)
-                .shadow(color: .black.opacity(0.4), radius: 4)
-                .accessibilityIdentifier("call-status")
+            // 101e00a: name, then status 4pt under it (mt-1), same on Android and incoming.
+            VStack(spacing: OLMetric.statusGap) {
+                Text(call.peerName)
+                    .font(.system(size: videoStage ? OLMetric.nameSizeVideo : OLMetric.nameSize, weight: .semibold))
+                    .tracking(videoStage ? OLMetric.nameTracking * OLMetric.nameSizeVideo / OLMetric.nameSize : OLMetric.nameTracking)
+                    .foregroundColor(.white)
+                    .lineLimit(1)
+                    .shadow(color: .black.opacity(0.4), radius: 4)
+                Text(call.statusText)
+                    .font(.system(size: OLMetric.statusSize).monospacedDigit())
+                    .foregroundColor(OLColor.status)
+                    .shadow(color: .black.opacity(0.4), radius: 4)
+                    .accessibilityIdentifier("call-status")
+            }
         }
         .frame(maxWidth: .infinity)
         .padding(.horizontal, OLMetric.horizontalPadding)
@@ -144,25 +165,39 @@ struct CallScreen: View {
         .frame(maxHeight: videoStage ? nil : .infinity, alignment: videoStage ? .top : .center)
     }
 
+    @ViewBuilder
     private var controlRow: some View {
+        if preAnswer {
+            HStack(alignment: .top, spacing: 0) {
+                RoundButton(label: "Cancel", glyph: "ol_call_end", fill: OLColor.end) { call.end() }
+            }
+            .padding(.horizontal, OLMetric.rowPad)
+            .accessibilityIdentifier("call-controls")
+        } else {
+            fullRow
+        }
+    }
+
+    private var fullRow: some View {
         HStack(alignment: .top, spacing: 0) {
+            // Same lucide glyphs as Android (Assets.xcassets ol_call_* = res/drawable ol_call_*).
             RoundButton(label: call.speakerOn ? "Speaker" : "Phone",
-                        systemImage: call.speakerOn ? "speaker.wave.2.fill" : "iphone",
+                        glyph: call.speakerOn ? "ol_call_speaker" : "ol_call_speaker_off",
                         on: call.speakerOn) { call.toggleSpeaker() }
             if call.cameraOn {
-                RoundButton(label: "Flip", systemImage: "arrow.triangle.2.circlepath") { call.flip() }
+                RoundButton(label: "Flip", glyph: "ol_call_flip") { call.flip() }
             }
             RoundButton(label: call.cameraOn ? "Camera" : "Video",
-                        systemImage: call.cameraOn ? "video.fill" : "video.slash.fill",
+                        glyph: call.cameraOn ? "ol_call_video" : "ol_call_video_off",
                         on: call.cameraOn, enabled: call.canToggleVideo || call.phase == .calling || call.phase == .connecting || call.phase == .active) {
                 call.toggleVideo()
             }
             RoundButton(label: call.muted ? "Unmute" : "Mute",
-                        systemImage: call.muted ? "mic.slash.fill" : "mic.fill",
+                        glyph: call.muted ? "ol_call_mic_off" : "ol_call_mic",
                         on: call.muted) { call.toggleMute() }
-            RoundButton(label: "End call", systemImage: "phone.down.fill", fill: OLColor.end) { call.end() }
+            RoundButton(label: "End call", glyph: "ol_call_end", fill: OLColor.end) { call.end() }
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, OLMetric.rowPad)
         .accessibilityIdentifier("call-controls")
     }
 
@@ -299,22 +334,54 @@ private struct Ring: View {
     }
 }
 
+/// Self-view placement, the Telegram rules (same math as Android CallPip.kt):
+///  - four corner slots, default bottom-right (Telegram-iOS 279f89e VideoContainerView.swift:237);
+///  - slot frame = corner of the inset area (VideoContainerView.swift:610-619);
+///  - insets 12 left/right, top 60 while controls show (0 hidden), bottom = control row + 12
+///    (PrivateCallScreen.swift:1013-1017);
+///  - on release the centre is projected along the fling velocity, pos - v / (1000 ln 0.99), and the PiP snaps to
+///    the nearest inset corner (VideoContainerView.swift:428-464).
+/// Size and radius stay the first-design 100×150 / 18 (Telegram-iOS also rounds 18, VideoContainerView.swift:771-776).
+enum CallPip {
+    enum Corner: CaseIterable { case topLeft, topRight, bottomLeft, bottomRight }
+    static func insets(controlsShown: Bool, rowReserve: CGFloat) -> UIEdgeInsets {
+        UIEdgeInsets(top: controlsShown ? 60 : 0, left: OLMetric.pipInset,
+                     bottom: (controlsShown ? rowReserve : 0) + OLMetric.pipInset, right: OLMetric.pipInset)
+    }
+    static func origin(_ c: Corner, size: CGSize, pip: CGSize, insets i: UIEdgeInsets) -> CGPoint {
+        switch c {
+        case .topLeft: return CGPoint(x: i.left, y: i.top)
+        case .topRight: return CGPoint(x: size.width - i.right - pip.width, y: i.top)
+        case .bottomLeft: return CGPoint(x: i.left, y: size.height - i.bottom - pip.height)
+        case .bottomRight: return CGPoint(x: size.width - i.right - pip.width, y: size.height - i.bottom - pip.height)
+        }
+    }
+    static func snap(center: CGPoint, velocity v: CGPoint, size: CGSize, insets i: UIEdgeInsets) -> Corner {
+        let k = 1000.0 * log(0.99)
+        let e = CGPoint(x: center.x - v.x / k, y: center.y - v.y / k)
+        return Corner.allCases.min { a, b in dist(e, a, size, i) < dist(e, b, size, i) }!
+    }
+    private static func dist(_ e: CGPoint, _ c: Corner, _ size: CGSize, _ i: UIEdgeInsets) -> CGFloat {
+        let px = (c == .topLeft || c == .bottomLeft) ? i.left : size.width - i.right
+        let py = (c == .topLeft || c == .topRight) ? i.top : size.height - i.bottom
+        return hypot(e.x - px, e.y - py)
+    }
+}
+
 struct Pip: View {
     let view: UIView?
     var mirrored: Bool
     let size: CGSize
+    let insets: UIEdgeInsets
     let onSwap: () -> Void
-    @State private var corner = "tr"
+    @State private var corner: CallPip.Corner = .bottomRight
     @State private var drag: CGSize = .zero
     @State private var moving = false
+    @State private var last: (t: Date, p: CGSize)?
+    @State private var velocity: CGPoint = .zero
 
-    private var origin: CGPoint {
-        let w = OLMetric.pipWidth
-        let h = OLMetric.pipHeight
-        let x: CGFloat = corner.hasSuffix("l") ? OLMetric.pipInset : size.width - w - OLMetric.pipInset
-        let y: CGFloat = corner.hasPrefix("t") ? OLMetric.pipTop : size.height - h - OLMetric.pipBottomReserve
-        return CGPoint(x: x, y: y)
-    }
+    private var pipSize: CGSize { CGSize(width: OLMetric.pipWidth, height: OLMetric.pipHeight) }
+    private var origin: CGPoint { CallPip.origin(corner, size: size, pip: pipSize, insets: insets) }
 
     var body: some View {
         Group {
@@ -328,35 +395,52 @@ struct Pip: View {
         .frame(width: OLMetric.pipWidth, height: OLMetric.pipHeight)
         .clipShape(RoundedRectangle(cornerRadius: OLMetric.pipCorner, style: .continuous))
         .shadow(color: .black.opacity(0.45), radius: 16, y: 8)
-        .offset(x: origin.x + drag.width, y: origin.y + drag.height)
+        .position(x: origin.x + OLMetric.pipWidth / 2 + drag.width, y: origin.y + OLMetric.pipHeight / 2 + drag.height)
         .gesture(
             DragGesture()
                 .onChanged { v in
                     moving = true
+                    let now = Date()
+                    if let l = last {
+                        let dt = now.timeIntervalSince(l.t)
+                        if dt > 0 { velocity = CGPoint(x: (v.translation.width - l.p.width) / dt, y: (v.translation.height - l.p.height) / dt) }
+                    }
+                    last = (now, v.translation)
                     drag = v.translation
                 }
                 .onEnded { v in
-                    let cx = origin.x + v.translation.width + OLMetric.pipWidth / 2
-                    let cy = origin.y + v.translation.height + OLMetric.pipHeight / 2
                     if hypot(v.translation.width, v.translation.height) < 6 {
                         onSwap()
                     } else {
-                        let tb = cy < size.height / 2 ? "t" : "b"
-                        let lr = cx < size.width / 2 ? "l" : "r"
-                        corner = tb + lr
+                        let c = CGPoint(x: origin.x + OLMetric.pipWidth / 2 + v.translation.width,
+                                        y: origin.y + OLMetric.pipHeight / 2 + v.translation.height)
+                        corner = CallPip.snap(center: c, velocity: velocity, size: size, insets: insets)
                     }
                     drag = .zero
                     moving = false
+                    last = nil
+                    velocity = .zero
                 }
         )
-        .animation(moving ? nil : .spring(response: 0.26, dampingFraction: 0.85), value: corner)
+        .animation(moving ? nil : .easeOut(duration: 0.15), value: corner)
         .accessibilityIdentifier("call-pip")
+    }
+}
+
+/// One lucide glyph from Assets.xcassets (vector PDF, template), drawn at the Android dp size.
+struct CallGlyph: View {
+    let name: String
+    var size: CGFloat = OLMetric.buttonIconSize
+    var body: some View {
+        Image(name).renderingMode(.template).resizable().interpolation(.high)
+            .frame(width: size, height: size)
+            .accessibilityHidden(true)
     }
 }
 
 struct RoundButton: View {
     let label: String
-    var systemImage: String? = nil
+    var glyph: String? = nil
     var on = false
     var enabled = true
     var fill: Color? = nil
@@ -369,22 +453,16 @@ struct RoundButton: View {
             VStack(spacing: 6) {
                 ZStack {
                     Circle().fill(fill ?? (on ? OLColor.buttonOn : OLColor.button))
-                    if let systemImage {
-                        Image(systemName: systemImage)
-                            .font(.system(size: OLMetric.buttonIconSize, weight: .regular))
-                            .foregroundColor(fill != nil ? .white : (on ? OLColor.buttonOnIcon : .white))
-                    } else {
-                        Text(label)
-                            .font(.system(size: OLMetric.buttonLabelSize))
-                            .foregroundColor(.white)
-                    }
+                    // Always an icon; the label sits under the disc (never text-only discs).
+                    CallGlyph(name: glyph ?? "ol_call_phone")
+                        .foregroundColor(fill != nil ? .white : (on ? OLColor.buttonOnIcon : .white))
                 }
                 .frame(width: size, height: size)
                 Text(label)
                     .font(.system(size: labelSize, weight: .medium))
                     .foregroundColor(OLColor.label)
                     .lineLimit(1)
-                    .frame(maxWidth: 76)
+                    .frame(maxWidth: 76, minHeight: 14, maxHeight: 14)
             }
         }
         .disabled(!enabled)

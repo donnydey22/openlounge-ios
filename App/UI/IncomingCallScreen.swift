@@ -22,6 +22,8 @@ struct IncomingCallScreen: View {
                 OLColor.stage.ignoresSafeArea()
                 CallBackdrop(name: call.peerName, photoURL: call.peerPhoto)
                 VStack(spacing: 0) {
+                    // Same frame as CallScreen: 56pt top bar, block centered above the 24 + 76 row.
+                    Color.clear.frame(height: OLMetric.topBar)
                     Spacer()
                     ZStack {
                         RingPulse()
@@ -30,6 +32,7 @@ struct IncomingCallScreen: View {
                     .padding(.bottom, 12)
                     Text(call.peerName.isEmpty ? "Incoming call" : call.peerName)
                         .font(.system(size: OLMetric.nameSize, weight: .semibold))
+                        .tracking(OLMetric.nameTracking)
                         .foregroundColor(.white)
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
@@ -37,19 +40,19 @@ struct IncomingCallScreen: View {
                     Text(call.video ? "Open Lounge video call" : "Open Lounge audio call")
                         .font(.system(size: OLMetric.statusSize))
                         .foregroundColor(OLColor.status)
-                        .padding(.top, 4)
+                        .padding(.top, OLMetric.statusGap)
                     Spacer()
                     HStack(alignment: .bottom, spacing: 0) {
-                        RoundButton(label: "Decline", systemImage: "phone.down.fill", fill: OLColor.decline, size: OLMetric.buttonSize, labelSize: OLMetric.buttonLabelSize) {
+                        RoundButton(label: "Decline", glyph: "ol_call_end", fill: OLColor.decline, size: OLMetric.buttonSize, labelSize: OLMetric.buttonLabelSize) {
                             call.decline()
                         }
-                        RoundButton(label: "Message", systemImage: "message", size: OLMetric.buttonSize, labelSize: OLMetric.buttonLabelSize) {
+                        RoundButton(label: "Message", glyph: "ol_call_message", size: OLMetric.buttonSize, labelSize: OLMetric.buttonLabelSize) {
                             replies = true
                         }
                         acceptButton
                     }
-                    .padding(.horizontal, 24)
-                    .padding(.bottom, 24 + geo.safeAreaInsets.bottom)
+                    .padding(.horizontal, OLMetric.rowPad)
+                    .padding(.bottom, OLMetric.rowBottom + geo.safeAreaInsets.bottom)
                 }
                 .ignoresSafeArea(edges: .bottom)
 
@@ -66,8 +69,7 @@ struct IncomingCallScreen: View {
                 ZStack {
                     AcceptHalo()
                     Button(action: { call.accept() }) {
-                        Image(systemName: call.video ? "video.fill" : "phone.fill")
-                            .font(.system(size: OLMetric.buttonIconSize, weight: .regular))
+                        CallGlyph(name: call.video ? "ol_call_video" : "ol_call_phone")
                             .foregroundColor(.white)
                             .frame(width: OLMetric.buttonSize, height: OLMetric.buttonSize)
                             .background(OLColor.accept)
@@ -89,6 +91,7 @@ struct IncomingCallScreen: View {
                 Text("Accept")
                     .font(.system(size: OLMetric.buttonLabelSize, weight: .medium))
                     .foregroundColor(OLColor.label)
+                    .frame(minHeight: 14, maxHeight: 14)
             }
             Text("swipe up")
                 .font(.system(size: 11))

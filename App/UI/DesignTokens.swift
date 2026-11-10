@@ -51,6 +51,13 @@ enum OLMetric {
     static let presenceRing: CGFloat = 3
     static let presenceInset: CGFloat = 4
     static let rowBottom: CGFloat = 24
+    /// 56 disc + 6 gap + 14 label; the failure screen keeps this space empty so the avatar does not move.
+    static let rowHeight: CGFloat = 76
+    static let rowPad: CGFloat = 16
+    static let topBar: CGFloat = 56
+    static let failBannerTop: CGFloat = 64
+    static let failBannerWidth: CGFloat = 260
+    static let nameTracking: CGFloat = -0.28   // -0.01em, same as Android letterSpacing
     static let disabledOpacity: Double = 0.4
     static let avatarSize: CGFloat = 112
     static let avatarCorner: CGFloat = 47
@@ -60,9 +67,7 @@ enum OLMetric {
     static let pipWidth: CGFloat = 100
     static let pipHeight: CGFloat = 150
     static let pipCorner: CGFloat = 18
-    static let pipTop: CGFloat = 64
     static let pipInset: CGFloat = 12
-    static let pipBottomReserve: CGFloat = 150
     static let barHeight: CGFloat = 28
     static let cardPadding: CGFloat = 12
     static let cardCorner: CGFloat = 24

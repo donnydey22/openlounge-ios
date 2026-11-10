@@ -33,6 +33,24 @@ final class CallController: ObservableObject {
     /// First-design network-failure chrome (ended overlay + the connect-on-this-network copy). Stays until Close.
     @Published private(set) var failed = false
     @Published private(set) var failedText = ""
+    /// Server answered (call:answered, or call:connected / media up on engines that do not post it yet).
+    /// Until then CallScreen is the pre-answer card: avatar, name, Calling… / Ringing… and one Cancel.
+    @Published private(set) var answered = false
+    /// Callee's device acknowledged the ring (call:ringing) -> "Ringing…".
+    @Published private(set) var ringingAck = false
+    /// t5456: media is flowing (engine mediaFlowing state, or the native engine's media-up callback).
+    @Published private(set) var mediaFlowing = false
+    /// Full call UI (row, timer, video, minimize) only once media flows after the server answer.
+    var live: Bool { answered && mediaFlowing }
+
+    /// Engine-branch "ringing acknowledged" / "media flowing" page types (raw JSON; see ShellViewController).
+    static let ringingAckTypes: Set<String> = ["call:ringing"]
+    static let mediaFlowingTypes: Set<String> = ["call:mediaFlowing"]
+    static let pageStateTypes: Set<String> = ringingAckTypes.union(mediaFlowingTypes).union(["call:answered"])
+
+    private func goLiveIfReady() {
+        if live { setPhase(.active) } else { tick() } // the timer starts here, on media after the answer
+    }
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -58,9 +76,9 @@ final class CallController: ObservableObject {
             let n = names[id]
             begin(id, name: n?.0 ?? peerName, photo: n?.1, video: video || (n?.2 ?? false), phase: .connecting)
         case let .connected(id):
-            if id.isEmpty || id == callId { setPhase(.active) }
+            if id.isEmpty || id == callId { answered = true; goLiveIfReady() }
         case let .ended(id):
-            if id.isEmpty || id == callId { finish() }
+            if id.isEmpty || id == callId { endOrCard() }
             if id.isEmpty || id == callId { incomingVisible = false }
         case let .muted(m):
             muted = m
@@ -86,7 +104,23 @@ final class CallController: ObservableObject {
         speakerOn = video
     }
 
-    func mediaConnected(callId id: String) { if id == callId { setPhase(.active) } }
+    /// Native engine media up (tgcalls Established): not proof of an answer, so it waits for call:connected / answered.
+    func mediaConnected(callId id: String) { if id == callId { mediaFlowing = true; goLiveIfReady() } }
+
+    /// call:ringing / call:answered from the engine branch (raw page JSON; see ShellViewController).
+    func onPageState(_ type: String, callId id: String) {
+        guard visible, id.isEmpty || id == callId else { return }
+        if Self.ringingAckTypes.contains(type) {
+            if !live { ringingAck = true; tick() }
+        } else if type == "call:answered" {
+            answered = true
+            goLiveIfReady()
+        } else if Self.mediaFlowingTypes.contains(type) {
+            answered = true // the engine posts mediaFlowing only after the answer
+            mediaFlowing = true
+            goLiveIfReady()
+        }
+    }
 
     func engineEnded(callId id: String) {
         guard id == callId else { return }
@@ -133,8 +167,29 @@ final class CallController: ObservableObject {
         host?.dispatchNativeCall(["type": "call:hangup", "callId": id])
         NativeMedia.shared.close()
         CallCenter.shared.endFromApp(id)
-        finish()
+        endOrCard()
     }
+
+    /// Normal end of a live call: the end card (avatar, name, "Call ended · m:ss"), same structure as the calling
+    /// screen, for web engine.ts:93 ENDED_LINGER_MS (1.8 s); same as Android NativeCallScreen.showEndCard.
+    @Published private(set) var endedCard = false
+    private var endedWork: DispatchWorkItem?
+    private func endOrCard() {
+        guard visible, live, let at = activeAt, !failed else { finish(); return }
+        let secs = Int(Date().timeIntervalSince(at))
+        timer?.invalidate()
+        timer = nil
+        minimized = false
+        engineEnded(callId: callId)
+        endedCard = true
+        phase = .ended
+        statusText = "Call ended · " + OLCallPhase.active.status(seconds: secs)
+        let w = DispatchWorkItem { [weak self] in if self?.endedCard == true { self?.finish() } }
+        endedWork = w
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: w)
+    }
+
+    func dismissEndCard() { finish() }
 
     private(set) var incomingCallId = ""
 
@@ -171,6 +226,11 @@ final class CallController: ObservableObject {
             minimized = false
             failed = false
             failedText = ""
+            answered = false
+            mediaFlowing = false
+            endedCard = false
+            endedWork?.cancel()
+            ringingAck = false
         }
         callId = id
         peerName = name.isEmpty ? "Open Lounge" : name
@@ -194,10 +254,13 @@ final class CallController: ObservableObject {
 
     private func tick() {
         let secs = activeAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
-        statusText = phase.status(seconds: secs)
+        statusText = (!live && ringingAck && phase == .calling) ? "Ringing…" : phase.status(seconds: secs)
     }
 
     private func finish() {
+        endedWork?.cancel()
+        endedWork = nil
+        endedCard = false
         timer?.invalidate()
         timer = nil
         presenceTimer?.invalidate()
@@ -208,6 +271,9 @@ final class CallController: ObservableObject {
         failedText = ""
         activeAt = nil
         peerPresence = nil
+        answered = false
+        mediaFlowing = false
+        ringingAck = false
         phase = .ended
         engineEnded(callId: callId)
     }
