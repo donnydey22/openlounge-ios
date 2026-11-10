@@ -77,6 +77,14 @@ public final class OLCallAudioDevice {
 
     deinit { observers.forEach(NotificationCenter.default.removeObserver) }
 
+    /// Configure the session (PlayAndRecord / VoiceChat, inactive) through Telegram's
+    /// RTCAudioSessionConfiguration BEFORE a CallKit start/answer action is fulfilled, so
+    /// CallKit activates an already-configured session and this class owns it from the
+    /// first sample. Idempotent: `begin` applies the same configuration again.
+    public static func prepareSessionForCallKit() {
+        SharedCallAudioDevice.setupAudioSession()
+    }
+
     /// Configure the session (inactive) and activate it per policy. With CallKit,
     /// activation is CallKit's: this only arms a 5 s didActivate watchdog.
     public func begin(speakerOn: Bool, completion: @escaping (Outcome) -> Void) {
