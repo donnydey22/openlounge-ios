@@ -16,7 +16,7 @@
 #     python3 build-system/Make/Make.py --overrideXcodeVersion build \
 #       --configurationPath=build-system/template_minimal_development_configuration.json \
 #       --codesigningInformationPath=build-system/fake-codesigning \
-#       --disableProvisioningProfiles --configuration=debug_sim_arm64 --buildNumber=1 \
+#       --configuration=debug_sim_arm64 --buildNumber=1 \
 #       --target=//OLTgPeerTest:OLTgPeerTest
 #   device:
 #     python3 build-system/Make/Make.py --overrideXcodeVersion build \

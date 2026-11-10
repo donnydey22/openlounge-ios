@@ -15,10 +15,10 @@
 #     python3 build-system/Make/Make.py --overrideXcodeVersion build \
 #       --configurationPath=build-system/template_minimal_development_configuration.json \
 #       --codesigningInformationPath=build-system/fake-codesigning \
-#       --disableProvisioningProfiles --configuration=debug_sim_arm64 \
+#       --configuration=debug_sim_arm64 \
 #       --buildNumber=1 --target=//OLTgPeerTest:OLTgPeerTest
 #   device (needs YOUR provisioning profile, see install-into-telegram-ios.sh):
-#     same with --configuration=debug_arm64, without --disableProvisioningProfiles,
+#     same with --configuration=debug_arm64
 #     and --codesigningInformationPath=<dir with OLTgPeerTest.mobileprovision>.
 load("@rules_cc//cc:objc_library.bzl", "objc_library")
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
@@ -41,8 +41,8 @@ TGVOIP_COPTS = [
 
 MINIMUM_OS = "15.0"
 
-# Reuses Telegram's public flag, so Make.py --disableProvisioningProfiles
-# (which passes --//Telegram:disableProvisioningProfiles) works for this target.
+# Reuses Telegram's public bazel flag; Make.py at the pin has NO --disableProvisioningProfiles option,
+# so pass --bazelArguments="--//Telegram:disableProvisioningProfiles=True" to use it.
 config_setting(
     name = "noProvisioning",
     flag_values = {"//Telegram:disableProvisioningProfiles": "True"},

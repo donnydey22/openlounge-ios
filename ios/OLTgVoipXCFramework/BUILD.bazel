@@ -9,7 +9,7 @@
 #   python3 build-system/Make/Make.py --overrideXcodeVersion build \
 #     --configurationPath=build-system/template_minimal_development_configuration.json \
 #     --codesigningInformationPath=build-system/fake-codesigning \
-#     --disableProvisioningProfiles --configuration=release_arm64 --buildNumber=1 \
+#     --configuration=release_arm64 --buildNumber=1 \
 #     --target=//OLTgVoipXCFramework:TgVoipWebrtc
 #   -> bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework
 # (--configuration only selects -c opt; the ios / minimum_os_versions below

@@ -46,7 +46,7 @@ elif [ -d "$src/submodules/TgVoipWebrtc" ]; then
   bash "$root/ios/install-into-telegram-ios.sh" "$src" org.openlounge.oltgpeertest
   (cd "$src" && python3 build-system/Make/Make.py --overrideXcodeVersion build \
       --configurationPath=build-system/template_minimal_development_configuration.json \
-      --codesigningInformationPath=build-system/fake-codesigning --disableProvisioningProfiles \
+      --codesigningInformationPath=build-system/fake-codesigning \
       --configuration=release_arm64 --buildNumber=1 --target=//OLTgVoipXCFramework:TgVoipWebrtc)
   xcf="$src/bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework"
 fi

@@ -52,7 +52,7 @@ useEffect(() => {
 ios/install-into-telegram-ios.sh <Telegram-iOS@24638bc> org.openlounge.oltgpeertest
 cd <Telegram-iOS> && python3 build-system/Make/Make.py --overrideXcodeVersion build \
   --configurationPath=build-system/template_minimal_development_configuration.json \
-  --codesigningInformationPath=build-system/fake-codesigning --disableProvisioningProfiles \
+  --codesigningInformationPath=build-system/fake-codesigning \
   --configuration=release_arm64 --buildNumber=1 --target=//OLTgVoipXCFramework:TgVoipWebrtc
 ios/install-into-ol-app.sh <ol-ios-clone> <Telegram-iOS>/bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework
 cd <ol-ios-clone> && npx expo prebuild --platform ios && (cd ios && pod install) && <existing EAS/Xcode build>
