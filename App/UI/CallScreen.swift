@@ -32,7 +32,6 @@ struct CallScreen: View {
 
                 VStack(spacing: 0) {
                     topBar
-                    banners
                     centerBlock
                     Spacer(minLength: 0)
                     if showCtl || !videoStage {
@@ -88,21 +87,6 @@ struct CallScreen: View {
         .padding(.horizontal, 12)
         .padding(.top, 8)
         .frame(height: 56)
-    }
-
-    private var banners: some View {
-        VStack(spacing: 8) {
-            if call.phase == .connecting {
-                Text("Connecting…")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 4)
-                    .background(Color.black.opacity(0.5))
-                    .clipShape(Capsule())
-            }
-        }
-        .padding(.horizontal, 16)
     }
 
     private var centerBlock: some View {
