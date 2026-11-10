@@ -22,11 +22,11 @@ if [ -n "$hits" ]; then
   echo "FAIL: direct AVAudioSession use outside the two owners ($OLCALL_OWNER during olcall calls, $OWNER outside calls):"; echo "$hits"; exit 1
 fi
 # Scope of OWNER: each func containing a mutator must contain `guard !olcallOwnsSession` (olcall owns calls).
-MUT='\.setActive\(|\.setCategory\(|\.setMode\(|overrideOutputAudioPort|setPreferredInput|setPreferredSampleRate|setPreferredIOBufferDuration|setPreferredInputNumberOfChannels|setPreferredOutputNumberOfChannels|setAggregatedIOPreference|setPrefersNoInterruptionsFromSystemAlerts|setInputGain|setInputDataSource|setOutputDataSource|setPreferredDataSource|requestRecordPermission'
-unscoped=$(awk -v mut="$MUT" '
+MUT='[.]setActive[(]|[.]setCategory[(]|[.]setMode[(]|overrideOutputAudioPort|setPreferredInput|setPreferredSampleRate|setPreferredIOBufferDuration|setPreferredInputNumberOfChannels|setPreferredOutputNumberOfChannels|setAggregatedIOPreference|setPrefersNoInterruptionsFromSystemAlerts|setInputGain|setInputDataSource|setOutputDataSource|setPreferredDataSource|requestRecordPermission'
+unscoped=$(MUT="$MUT" awk '
   /^[[:space:]]*\/\// { next }
   /(^|[[:space:]])func[[:space:]]/ { if (fn != "" && m && !g) print fn; fn = $0; m = 0; g = 0 }
-  fn != "" && $0 ~ mut { m = 1 }
+  fn != "" && $0 ~ ENVIRON["MUT"] { m = 1 }
   fn != "" && /guard[[:space:]]+!olcallOwnsSession/ { g = 1 }
   END { if (fn != "" && m && !g) print fn }' "$OWNER")
 grep -qE 'var[[:space:]]+olcallOwnsSession' "$OWNER" || unscoped="${unscoped}
