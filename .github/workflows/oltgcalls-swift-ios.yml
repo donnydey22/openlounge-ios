@@ -37,7 +37,15 @@ jobs:
           [ -d "/Applications/Xcode_${want}.app" ] && sudo xcode-select -s "/Applications/Xcode_${want}.app" || true
           xcodebuild -version
           sw_vers
+      # The xcframework build (Telegram-iOS Bazel, ~48 min) is cached by pin + our Bazel/installer files.
+      - name: Restore TgVoipWebrtc.xcframework cache
+        id: xcf
+        uses: actions/cache/restore@v4
+        with:
+          path: xcf-cache
+          key: tgvoipwebrtc-xcf-${{ inputs.telegram_ios_ref || '24638bc69bd083981b178dd1e7f921eebbf7fc46' }}-${{ hashFiles('ol/ios/OLTgVoipXCFramework/BUILD.bazel', 'ol/ios/install-into-telegram-ios.sh') }}
       - name: Fetch Telegram-iOS at the pin
+        if: steps.xcf.outputs.cache-hit != 'true'
         env: { REF: "${{ inputs.telegram_ios_ref || '24638bc69bd083981b178dd1e7f921eebbf7fc46' }}" }
         run: |
           git init -q tg && cd tg
@@ -46,7 +54,19 @@ jobs:
           git submodule update --init --recursive --depth 1 --jobs 8
           git rev-parse HEAD
       - name: Build xcframework + OLTgcalls (device + simulator) + XCTest
-        run: bash ol/ios/OLTgcallsSwift/build.sh "$PWD/tg"
+        env: { OL_XCF_CACHE: "${{ github.workspace }}/xcf-cache" }
+        run: |
+          if [ -f xcf-cache/TgVoipWebrtc.xcframework.zip ]; then
+            bash ol/ios/OLTgcallsSwift/build.sh "$PWD/xcf-cache/TgVoipWebrtc.xcframework.zip"
+          else
+            bash ol/ios/OLTgcallsSwift/build.sh "$PWD/tg"
+          fi
+      - name: Save TgVoipWebrtc.xcframework cache
+        if: always() && steps.xcf.outputs.cache-hit != 'true' && hashFiles('xcf-cache/TgVoipWebrtc.xcframework.zip') != ''
+        uses: actions/cache/save@v4
+        with:
+          path: xcf-cache
+          key: ${{ steps.xcf.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -54,4 +74,6 @@ jobs:
           path: |
             ol/ios/OLTgcallsSwift/build/RESULT.json
             ol/ios/OLTgcallsSwift/build/OLTgcalls-*.log
+            xcf-cache/TgVoipWebrtc.xcframework.zip
           if-no-files-found: warn
+          retention-days: 14

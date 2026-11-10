@@ -25,7 +25,7 @@ command -v xcodebuild >/dev/null || { echo "BLOCKED: xcodebuild not found (insta
 
 here="$(cd "$(dirname "$0")" && pwd)"
 root="$(cd "$here/../.." && pwd)"
-src="${1:?usage: build.sh <TgVoipWebrtc.xcframework | Telegram-iOS tree>}"
+src="${1:?usage: build.sh <TgVoipWebrtc.xcframework[.zip] | Telegram-iOS tree>}"
 stamp="$(date -u +%Y%m%dT%H%M%SZ)"
 mkdir -p "$here/build"
 log="$here/build/OLTgcalls-$stamp.log"
@@ -51,6 +51,17 @@ elif [ -d "$src/submodules/TgVoipWebrtc" ]; then
       --xcodeManagedCodesigning \
       --configuration=release_arm64 --buildNumber=1 --target=//OLTgVoipXCFramework:TgVoipWebrtc)
   xcf="$src/bazel-bin/OLTgVoipXCFramework/TgVoipWebrtc.xcframework"
+  # rules_apple's apple_static_xcframework emits a .zip, not a directory.
+  [ -d "$xcf" ] || xcf="$xcf.zip"
+  if [ -n "${OL_XCF_CACHE:-}" ] && [ -f "$xcf" ]; then mkdir -p "$OL_XCF_CACHE"; cp "$xcf" "$OL_XCF_CACHE/TgVoipWebrtc.xcframework.zip"; fi
+elif [ -f "$src" ] && [ "${src%.xcframework.zip}" != "$src" ]; then
+  xcf="$src"
+fi
+if [ -n "$xcf" ] && [ -f "$xcf" ] && [ "${xcf%.zip}" != "$xcf" ]; then
+  rm -rf "$here/build/xcf"; mkdir -p "$here/build/xcf"
+  ditto -x -k "$xcf" "$here/build/xcf"
+  xcf="$(find "$here/build/xcf" -maxdepth 2 -type d -name 'TgVoipWebrtc.xcframework' | head -n1)"
+  echo "unzipped xcframework: $xcf"; ls "$xcf"
 fi
 [ -n "$xcf" ] && [ -f "$xcf/Info.plist" ] || { echo "FAIL: no TgVoipWebrtc.xcframework from $src" >&2; exit 1; }
 rm -rf "$here/Frameworks"; mkdir -p "$here/Frameworks"
