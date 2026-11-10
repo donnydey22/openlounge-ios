@@ -1,57 +1,175 @@
-// Incoming call card (325110e): dimmed stage, bottom card with kicker, caller name, and
-// Decline / Accept side by side. The 9c851a0 squircle avatar leads the card.
+// First Open Lounge incoming UI (web 101e00a, 2026-10-07 10:51 PM MST): full-screen
+// stage with blurred avatar, 72pt red Decline, 48pt Message, 72pt pulsing emerald Accept
+// (swipe up), "Open Lounge audio/video call", quick-reply sheet. Accept / Decline still
+// go through CallController (existing Pion / CallKit path).
 import SwiftUI
 
 struct IncomingCallScreen: View {
     @ObservedObject var call: CallController
+    @State private var replies = false
+    @State private var dragY: CGFloat = 0
+
+    private static let quick = [
+        "Can't talk now. What's up?",
+        "I'll call you right back.",
+        "I'll call you later.",
+        "Can't talk now. Call me later?",
+    ]
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            OLColor.scrim.ignoresSafeArea()
-            VStack(alignment: .leading, spacing: 0) {
-                Avatar(name: call.peerName, photoURL: call.peerPhoto, size: 56)
-                    .padding(.bottom, OLMetric.avatarGap)
-                Text(call.video ? "Open Lounge video call" : "Open Lounge audio call")
-                    .font(.system(size: OLMetric.kickerSize, weight: .semibold))
-                    .foregroundColor(OLColor.kicker)
-                    .padding(.bottom, OLMetric.kickerGap)
-                Text(call.peerName.isEmpty ? "Incoming call" : call.peerName)
-                    .font(.system(size: OLMetric.cardNameSize, weight: .bold))
-                    .foregroundColor(.white)
-                    .lineLimit(2)
-                    .padding(.bottom, OLMetric.cardNameGap)
-                HStack(spacing: OLMetric.cardButtonGap) {
-                    CardButton(title: "Decline", fill: OLColor.decline) { call.decline() }
-                    CardButton(title: "Accept", fill: OLColor.accept) { call.accept() }
+        GeometryReader { geo in
+            ZStack {
+                OLColor.stage.ignoresSafeArea()
+                CallBackdrop(name: call.peerName, photoURL: call.peerPhoto)
+                VStack(spacing: 0) {
+                    Spacer()
+                    ZStack {
+                        RingPulse()
+                        Avatar(name: call.peerName, photoURL: call.peerPhoto)
+                    }
+                    .padding(.bottom, 12)
+                    Text(call.peerName.isEmpty ? "Incoming call" : call.peerName)
+                        .font(.system(size: OLMetric.nameSize, weight: .semibold))
+                        .foregroundColor(.white)
+                        .lineLimit(2)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, 24)
+                    Text(call.video ? "Open Lounge video call" : "Open Lounge audio call")
+                        .font(.system(size: OLMetric.statusSize))
+                        .foregroundColor(OLColor.status)
+                        .padding(.top, 4)
+                    Spacer()
+                    HStack(alignment: .bottom, spacing: 0) {
+                        RoundButton(label: "Decline", systemImage: "phone.down.fill", fill: OLColor.decline, size: OLMetric.buttonBig, labelSize: OLMetric.incomingLabelSize) {
+                            call.decline()
+                        }
+                        RoundButton(label: "Message", systemImage: "message", size: OLMetric.buttonMessage, labelSize: 12) {
+                            replies = true
+                        }
+                        acceptButton
+                    }
+                    .padding(.horizontal, 24)
+                    .padding(.bottom, 24 + geo.safeAreaInsets.bottom)
                 }
+                .ignoresSafeArea(edges: .bottom)
+
+                if replies { replySheet }
             }
-            .padding(OLMetric.cardPadding)
-            .background(OLColor.card)
-            .clipShape(RoundedRectangle(cornerRadius: OLMetric.cardCorner, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: OLMetric.cardCorner, style: .continuous)
-                .stroke(OLColor.cardBorder, lineWidth: 1 / UIScreen.main.scale))
-            .padding(.horizontal, OLMetric.cardOuterPadding)
-            .padding(.bottom, OLMetric.cardBottom)
         }
         .accessibilityIdentifier("incoming-call")
     }
+
+    private var acceptButton: some View {
+        VStack(spacing: 8) {
+            Text("swipe up")
+                .font(.system(size: 11))
+                .foregroundColor(.white.opacity(0.6))
+                .modifier(SwipeHint())
+            ZStack {
+                AcceptHalo()
+                Button(action: { call.accept() }) {
+                    Image(systemName: call.video ? "video.fill" : "phone.fill")
+                        .font(.system(size: 28, weight: .regular))
+                        .foregroundColor(.white)
+                        .frame(width: OLMetric.buttonBig, height: OLMetric.buttonBig)
+                        .background(OLColor.accept)
+                        .clipShape(Circle())
+                        .shadow(color: Color(hex: 0x064E3B).opacity(0.4), radius: 10, y: 6)
+                        .modifier(AcceptPulse())
+                }
+                .accessibilityLabel(call.video ? "Accept video call" : "Accept")
+                .offset(y: dragY)
+                .gesture(
+                    DragGesture()
+                        .onChanged { v in dragY = min(0, v.translation.height) }
+                        .onEnded { v in
+                            if v.translation.height < -60 { call.accept() }
+                            dragY = 0
+                        }
+                )
+            }
+            Text("Accept")
+                .font(.system(size: OLMetric.incomingLabelSize, weight: .medium))
+                .foregroundColor(OLColor.label)
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    private var replySheet: some View {
+        ZStack(alignment: .bottom) {
+            Color.black.opacity(0.4).ignoresSafeArea().onTapGesture { replies = false }
+            VStack(spacing: 0) {
+                Capsule().fill(Color.white.opacity(0.2)).frame(width: 40, height: 4).padding(.top, 12).padding(.bottom, 8)
+                ForEach(Self.quick, id: \.self) { t in
+                    Button(action: { call.decline(); replies = false }) {
+                        Text(t)
+                            .font(.system(size: 15))
+                            .foregroundColor(.white)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 16)
+                            .padding(.vertical, 14)
+                    }
+                }
+                Button(action: { replies = false }) {
+                    Text("Cancel")
+                        .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(Color(hex: 0x34D399))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                }
+            }
+            .padding(.bottom, 12)
+            .background(OLColor.card)
+            .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+        }
+    }
 }
 
-private struct CardButton: View {
-    let title: String
-    let fill: Color
-    let action: () -> Void
+private struct AcceptPulse: ViewModifier {
+    @State private var up = false
+    func body(content: Content) -> some View {
+        content.scaleEffect(up ? 1.08 : 1)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true)) { up = true }
+            }
+    }
+}
 
+private struct AcceptHalo: View {
     var body: some View {
-        Button(action: action) {
-            Text(title)
-                .font(.system(size: OLMetric.cardButtonText, weight: .bold))
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, OLMetric.cardButtonVertical)
-                .background(fill)
-                .clipShape(RoundedRectangle(cornerRadius: OLMetric.cardButtonCorner, style: .continuous))
+        ZStack {
+            Halo(delay: 0)
+            Halo(delay: 0.7)
         }
-        .accessibilityLabel(title)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct Halo: View {
+    let delay: Double
+    @State private var go = false
+    var body: some View {
+        Circle()
+            .fill(OLColor.halo)
+            .frame(width: OLMetric.buttonBig, height: OLMetric.buttonBig)
+            .scaleEffect(go ? 1.8 : 1)
+            .opacity(go ? 0 : 0.7)
+            .onAppear {
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                    withAnimation(.easeOut(duration: 1.4).repeatForever(autoreverses: false)) { go = true }
+                }
+            }
+    }
+}
+
+private struct SwipeHint: ViewModifier {
+    @State private var up = false
+    func body(content: Content) -> some View {
+        content
+            .offset(y: up ? -6 : 0)
+            .opacity(up ? 1 : 0.5)
+            .onAppear {
+                withAnimation(.easeInOut(duration: 0.8).repeatForever(autoreverses: true)) { up = true }
+            }
     }
 }

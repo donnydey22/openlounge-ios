@@ -77,15 +77,20 @@ struct LockCover: View {
     }
 }
 
-/// Call screens over everything (the incoming card also over App Lock).
+/// Call screens over everything (incoming is the first full-screen UI, also over App Lock).
 struct CallLayer: View {
     @ObservedObject var call: CallController
     var body: some View {
         ZStack {
-            if call.visible { CallScreen(call: call).transition(.opacity) }
-            if call.incomingVisible { IncomingCallScreen(call: call).transition(.move(edge: .bottom)) }
+            if call.visible && call.minimized {
+                MiniBar(call: call).transition(.move(edge: .top))
+            } else if call.visible {
+                CallScreen(call: call).transition(.opacity)
+            }
+            if call.incomingVisible { IncomingCallScreen(call: call).transition(.opacity) }
         }
         .animation(.easeInOut(duration: 0.2), value: call.visible)
         .animation(.easeInOut(duration: 0.2), value: call.incomingVisible)
+        .animation(.easeInOut(duration: 0.2), value: call.minimized)
     }
 }

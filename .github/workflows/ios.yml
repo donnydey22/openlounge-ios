@@ -1,9 +1,9 @@
-# Mac CI for the Open Lounge iOS app (branch ol-ios-fresh). Unsigned builds only: no signing, no upload.
-name: ol-ios-fresh
+# Mac CI for the first-call-UI branch. Does not push to main or ol-ios-fresh, and does not deploy.
+name: ol-first-call-ui
 
 on:
   push:
-    branches: [ol-ios-fresh]
+    branches: [ol-first-call-ui]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
   actions: read   # read seed artifacts from earlier runs in this repository
 
 concurrency:
-  group: ol-ios-fresh
+  group: ol-first-call-ui
   cancel-in-progress: true
 
 jobs:
@@ -106,7 +106,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ol-ios-fresh-results
+          name: ol-first-call-ui-results
           path: |
             build/RESULT.json
             build/ci-*.log

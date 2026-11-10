@@ -26,6 +26,8 @@ final class CallController: ObservableObject {
     @Published var remoteVideoOn = false
     @Published var remoteVideoView: UIView?
     @Published var localVideoView: UIView?
+    @Published private(set) var facingFront = true
+    @Published private(set) var minimized = false
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -105,7 +107,19 @@ final class CallController: ObservableObject {
 
     func toggleVideo() {
         let on = !cameraOn
-        NativeMedia.shared.handle(["op": .string("camera"), "on": .bool(on), "facing": .string("user")]) { _, _, _ in }
+        NativeMedia.shared.handle(["op": .string("camera"), "on": .bool(on), "facing": .string(facingFront ? "user" : "environment")]) { _, _, _ in }
+    }
+
+    /// Flip the local camera. Uses the existing NativeMedia camera op; does not change the engine path.
+    func flip() {
+        guard cameraOn else { return }
+        facingFront.toggle()
+        NativeMedia.shared.handle(["op": .string("camera"), "on": .bool(true), "facing": .string(facingFront ? "user" : "environment")]) { _, _, _ in }
+    }
+
+    func setMinimized(_ on: Bool) {
+        // UI-only: the engine, media and logging stay running.
+        minimized = on
     }
 
     func end() {
@@ -146,6 +160,8 @@ final class CallController: ObservableObject {
             remoteVideoOn = false
             remoteVideoView = nil
             localVideoView = nil
+            facingFront = true
+            minimized = false
         }
         callId = id
         peerName = name.isEmpty ? "Open Lounge" : name
@@ -175,6 +191,7 @@ final class CallController: ObservableObject {
         timer?.invalidate()
         timer = nil
         visible = false
+        minimized = false
         activeAt = nil
         phase = .ended
         engineEnded(callId: callId)
