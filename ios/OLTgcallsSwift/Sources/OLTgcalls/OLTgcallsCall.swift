@@ -5,7 +5,7 @@
 // Telegram-iOS itself uses (Sources/OngoingCallThreadLocalContext.mm). That file
 // IS the ObjC++ shim: it builds tgcalls::Descriptor, owns the Instance, maps
 // callbacks onto our queue, and passes signaling blobs through byte-for-byte
-// (signalingDataEmitted -> NSData copy; addSignalingData -> receiveSignalingData).
+// (signalingDataEmitted -> NSData copy; addSignalingData [Swift: addSignaling(_:)] -> receiveSignalingData).
 // No second shim is needed because Swift only ever calls its ObjC API.
 //
 // Proven configuration (Linux, same library, through the olcall Pion server:
@@ -103,7 +103,7 @@ public final class OLTgcallsCall {
 
     /// A blob from the server ("blob" frame), unchanged.
     public func receiveSignalingData(_ data: Data) {
-        queue.dispatch { self.context.addSignalingData(data) }
+        queue.dispatch { self.context.addSignaling(data) }
     }
 
     public func setMuted(_ muted: Bool) { queue.dispatch { self.context.setIsMuted(muted) } }

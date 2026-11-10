@@ -45,6 +45,9 @@ let package = Package(
                 .linkedFramework("GLKit"), .linkedFramework("Metal"), .linkedFramework("MetalKit"),
                 .linkedFramework("UIKit"), .linkedFramework("Network"), .linkedFramework("Security"),
                 .linkedFramework("SystemConfiguration"),
+                // third-party/webrtc + submodules/ffmpeg + MtProtoKit linkopts/sdk_frameworks at the pin.
+                .linkedFramework("CoreAudio"), .linkedFramework("CoreGraphics"), .linkedFramework("QuartzCore"),
+                .linkedFramework("CoreFoundation"), .linkedFramework("CFNetwork"), .linkedFramework("Foundation"),
                 .linkedLibrary("z"), .linkedLibrary("c++"), .linkedLibrary("bz2"), .linkedLibrary("iconv"),
                 .unsafeFlags(["-ObjC"]),
             ]

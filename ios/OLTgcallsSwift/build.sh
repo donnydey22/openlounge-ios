@@ -54,6 +54,10 @@ elif [ -d "$src/submodules/TgVoipWebrtc" ]; then
   # rules_apple's apple_static_xcframework emits a .zip, not a directory.
   [ -d "$xcf" ] || xcf="$xcf.zip"
   if [ -n "${OL_XCF_CACHE:-}" ] && [ -f "$xcf" ]; then mkdir -p "$OL_XCF_CACHE"; cp "$xcf" "$OL_XCF_CACHE/TgVoipWebrtc.xcframework.zip"; fi
+  if [ "${OL_XCF_ONLY:-}" = 1 ]; then
+    [ -f "${OL_XCF_CACHE:-/nonexistent}/TgVoipWebrtc.xcframework.zip" ] || { echo "FAIL: xcframework zip not produced" >&2; exit 1; }
+    echo "xcframework ready: $(du -h "$OL_XCF_CACHE/TgVoipWebrtc.xcframework.zip")"; exit 0
+  fi
 elif [ -f "$src" ] && [ "${src%.xcframework.zip}" != "$src" ]; then
   xcf="$src"
 fi
@@ -86,16 +90,31 @@ grep -q "ios-arm64-simulator\|ios-arm64_x86_64-simulator" "$here/Frameworks/TgVo
   || { echo "FAIL: xcframework has no simulator slice" >&2; exit 1; }
 
 cd "$here"
+# Audit aid: the Swift view of the ObjC API we compile against (selector renames etc.).
+sdk_sim="$(xcrun --sdk iphonesimulator --show-sdk-path)"
+hdrs="$(find "$here/Frameworks/TgVoipWebrtc.xcframework" -path '*simulator*' -name module.modulemap -exec dirname {} \; | head -n1)"
+if [ -n "$hdrs" ]; then
+  xcrun swift-synthesize-interface -module-name TgVoipWebrtc -sdk "$sdk_sim" -target arm64-apple-ios15.0-simulator \
+    -I "$hdrs" -o "$here/build/TgVoipWebrtc.swiftinterface.txt" 2>&1 | tail -n 5 || true
+  [ -s "$here/build/TgVoipWebrtc.swiftinterface.txt" ] && grep -n "addSignal\|func stop\|func setIsMuted\|func requestVideo\|func makeIncomingVideoView\|func makeOutgoingVideoView\|func switchVideoInput\|func setIsVideoEnabled\|func setManualAudioSessionIsActive\|class func versions\|class func maxLayer\|func setupAudioSession" "$here/build/TgVoipWebrtc.swiftinterface.txt" || true
+fi
+# A single-product package gets one scheme named after the product (it includes the test target);
+# "<Package>-Package" only exists when there are several products.
+schemes="$(xcodebuild -list -json 2>/dev/null || true)"
+echo "$schemes"
+scheme=OLTgcalls
+echo "$schemes" | grep -q '"OLTgcalls-Package"' && scheme=OLTgcalls-Package
+echo "using scheme: $scheme"
 results=()
 run() { local name="$1"; shift; echo "== $name"; if "$@"; then results+=("\"$name\":true"); else results+=("\"$name\":false"); fi; }
 dd="$here/build/dd"
-run build_device xcodebuild -scheme OLTgcalls -destination 'generic/platform=iOS' -derivedDataPath "$dd" \
+run build_device xcodebuild -scheme "$scheme" -destination 'generic/platform=iOS' -derivedDataPath "$dd" \
   -configuration Release ARCHS=arm64 ONLY_ACTIVE_ARCH=NO BUILD_LIBRARY_FOR_DISTRIBUTION=NO build
-run build_simulator xcodebuild -scheme OLTgcalls -destination 'generic/platform=iOS Simulator' -derivedDataPath "$dd" \
+run build_simulator xcodebuild -scheme "$scheme" -destination 'generic/platform=iOS Simulator' -derivedDataPath "$dd" \
   -configuration Debug ARCHS=arm64 ONLY_ACTIVE_ARCH=NO build
 sim="$(xcrun simctl list devices available | sed -n 's/^ *\(iPhone [^()]*\) (\([0-9A-F-]*\)).*/\2/p' | head -n1)"
 if [ -n "$sim" ]; then
-  run test_simulator xcodebuild -scheme OLTgcalls-Package -destination "id=$sim" -derivedDataPath "$dd" test
+  run test_simulator xcodebuild -scheme "$scheme" -destination "id=$sim" -derivedDataPath "$dd" test
 else
   echo "no available iPhone simulator"; results+=("\"test_simulator\":false")
 fi

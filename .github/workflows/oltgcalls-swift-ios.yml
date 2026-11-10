@@ -1,8 +1,10 @@
 # macOS CI for ios/OLTgcallsSwift (thin Swift wrapper over raw tgcalls, Open Lounge calls).
 # Source: pion-tgcalls-reference ci/github/workflows/oltgcalls-swift-ios.yml (Donny approved
 # push + Mac build 2026-11-09 6:21 PM MST). Lives ONLY on branch ol-tgcalls-swift-ios.
-# Builds TgVoipWebrtc.xcframework from the pinned Telegram-iOS tree, then
-# ios/OLTgcallsSwift/build.sh: device arm64 build + simulator arm64 build + XCTest on a simulator.
+# 1. TgVoipWebrtc.xcframework (Telegram-iOS Bazel at the pin, ~48 min): actions cache ->
+#    seed artifact from an earlier run of THIS workflow (ci/xcf-seed-run.txt) -> full build.
+#    Saved to the cache right after it exists, independent of the Swift steps.
+# 2. ios/OLTgcallsSwift/build.sh: device arm64 build + simulator arm64 build + XCTest on a simulator.
 # The Go golden-frame proof (olcall/integration) runs on the dev host, not here.
 # Not a device result: iPhone<->Pion still needs a physical iPhone call. No signing, no upload.
 name: oltgcalls-swift-ios
@@ -18,10 +20,14 @@ on:
 
 permissions:
   contents: read
+  actions: read   # download the seed xcframework artifact from an earlier run of this workflow
 
 concurrency:
   group: oltgcalls-swift-ios
   cancel-in-progress: true
+
+env:
+  TG_REF: ${{ inputs.telegram_ios_ref || '24638bc69bd083981b178dd1e7f921eebbf7fc46' }}
 
 jobs:
   ios:
@@ -37,36 +43,64 @@ jobs:
           [ -d "/Applications/Xcode_${want}.app" ] && sudo xcode-select -s "/Applications/Xcode_${want}.app" || true
           xcodebuild -version
           sw_vers
-      # The xcframework build (Telegram-iOS Bazel, ~48 min) is cached by pin + our Bazel/installer files.
+      - name: xcframework cache key
+        id: key
+        run: |
+          h="$(cat ol/ios/OLTgVoipXCFramework/BUILD.bazel ol/ios/install-into-telegram-ios.sh | shasum -a 256 | cut -c1-16)"
+          echo "key=tgvoipwebrtc-xcf-${TG_REF}-${h}" >> "$GITHUB_OUTPUT"
+          seed="$(tr -dc '0-9' < ol/ci/xcf-seed-run.txt 2>/dev/null || true)"
+          echo "seed=${seed}" >> "$GITHUB_OUTPUT"
       - name: Restore TgVoipWebrtc.xcframework cache
         id: xcf
         uses: actions/cache/restore@v4
         with:
           path: xcf-cache
-          key: tgvoipwebrtc-xcf-${{ inputs.telegram_ios_ref || '24638bc69bd083981b178dd1e7f921eebbf7fc46' }}-${{ hashFiles('ol/ios/OLTgVoipXCFramework/BUILD.bazel', 'ol/ios/install-into-telegram-ios.sh') }}
-      - name: Fetch Telegram-iOS at the pin
+          key: ${{ steps.key.outputs.key }}
+      - name: Seed xcframework from earlier run artifact
+        id: seed
+        if: steps.xcf.outputs.cache-hit != 'true' && steps.key.outputs.seed != ''
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: oltgcalls-swift-ios
+          path: seed
+          run-id: ${{ steps.key.outputs.seed }}
+          github-token: ${{ github.token }}
+      - name: Use seed if it carries the xcframework
+        id: seeded
         if: steps.xcf.outputs.cache-hit != 'true'
-        env: { REF: "${{ inputs.telegram_ios_ref || '24638bc69bd083981b178dd1e7f921eebbf7fc46' }}" }
+        run: |
+          z="$(find seed -name TgVoipWebrtc.xcframework.zip 2>/dev/null | head -n1 || true)"
+          if [ -n "$z" ]; then
+            mkdir -p xcf-cache && mv "$z" xcf-cache/TgVoipWebrtc.xcframework.zip
+            echo "seeded from run ${{ steps.key.outputs.seed }}: $(du -h xcf-cache/TgVoipWebrtc.xcframework.zip)"
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "no seed xcframework; full Telegram-iOS build"
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          rm -rf seed
+      - name: Fetch Telegram-iOS at the pin
+        if: steps.xcf.outputs.cache-hit != 'true' && steps.seeded.outputs.ok != 'true'
         run: |
           git init -q tg && cd tg
           git remote add origin https://github.com/TelegramMessenger/Telegram-iOS.git
-          git fetch -q --depth 1 origin "$REF" && git checkout -q FETCH_HEAD
+          git fetch -q --depth 1 origin "$TG_REF" && git checkout -q FETCH_HEAD
           git submodule update --init --recursive --depth 1 --jobs 8
           git rev-parse HEAD
-      - name: Build xcframework + OLTgcalls (device + simulator) + XCTest
-        env: { OL_XCF_CACHE: "${{ github.workspace }}/xcf-cache" }
-        run: |
-          if [ -f xcf-cache/TgVoipWebrtc.xcframework.zip ]; then
-            bash ol/ios/OLTgcallsSwift/build.sh "$PWD/xcf-cache/TgVoipWebrtc.xcframework.zip"
-          else
-            bash ol/ios/OLTgcallsSwift/build.sh "$PWD/tg"
-          fi
+      - name: Build TgVoipWebrtc.xcframework (Telegram-iOS Bazel)
+        id: xcfbuild
+        if: steps.xcf.outputs.cache-hit != 'true' && steps.seeded.outputs.ok != 'true'
+        env: { OL_XCF_CACHE: "${{ github.workspace }}/xcf-cache", OL_XCF_ONLY: "1" }
+        run: bash ol/ios/OLTgcallsSwift/build.sh "$PWD/tg"
       - name: Save TgVoipWebrtc.xcframework cache
-        if: always() && steps.xcf.outputs.cache-hit != 'true' && hashFiles('xcf-cache/TgVoipWebrtc.xcframework.zip') != ''
+        if: always() && steps.xcf.outputs.cache-hit != 'true' && (steps.seeded.outputs.ok == 'true' || steps.xcfbuild.outcome == 'success')
         uses: actions/cache/save@v4
         with:
           path: xcf-cache
-          key: ${{ steps.xcf.outputs.cache-primary-key }}
+          key: ${{ steps.key.outputs.key }}
+      - name: OLTgcalls build (device + simulator) + XCTest
+        run: bash ol/ios/OLTgcallsSwift/build.sh "$PWD/xcf-cache/TgVoipWebrtc.xcframework.zip"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -74,6 +108,6 @@ jobs:
           path: |
             ol/ios/OLTgcallsSwift/build/RESULT.json
             ol/ios/OLTgcallsSwift/build/OLTgcalls-*.log
-            xcf-cache/TgVoipWebrtc.xcframework.zip
+            ol/ios/OLTgcallsSwift/build/TgVoipWebrtc.swiftinterface.txt
           if-no-files-found: warn
           retention-days: 14
