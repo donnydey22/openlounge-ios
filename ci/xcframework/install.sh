@@ -10,7 +10,7 @@ cp "$here/BUILD.bazel" "$tree/OLTgVoipXCFramework/BUILD"
 tgbuild="$tree/submodules/TgVoipWebrtc/BUILD"
 grep -q 'olcall: export public headers' "$tgbuild" || \
   printf '\n# olcall: export public headers for //OLTgVoipXCFramework\nexports_files(glob(["PublicHeaders/**/*.h"]))\n' >> "$tgbuild"
-# Portrait capture (t5457): tgcalls' VideoCameraCapturer already has a rotation lock (_rotationLock, read in
+# Portrait capture (t5457, built from source, never seeded): tgcalls' VideoCameraCapturer already has a rotation lock (_rotationLock, read in
 # captureOutput) that nothing sets. Set it at init so the frame rotation stays at the init value; the app is
 # portrait-only (Info.plist), so that is RTCVideoRotation_90 (portrait) whatever the phone's tilt.
 cap="$tree/submodules/TgVoipWebrtc/tgcalls/tgcalls/platform/darwin/VideoCameraCapturer.mm"

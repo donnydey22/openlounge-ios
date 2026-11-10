@@ -39,6 +39,8 @@ jobs:
           h="$(cat ci/xcframework/BUILD.bazel ci/xcframework/install.sh | shasum -a 256 | cut -c1-16)"
           echo "key=ol-tgvoipwebrtc-xcf-${pin}-${h}" >> "$GITHUB_OUTPUT"
           echo "pin=${pin}" >> "$GITHUB_OUTPUT"
+          # seeds are unpatched engines: when install.sh patches the engine source, build it (then cache by key)
+          if grep -q 'olcall: portrait capture' ci/xcframework/install.sh; then echo "seedok=false" >> "$GITHUB_OUTPUT"; else echo "seedok=true" >> "$GITHUB_OUTPUT"; fi
           grep -v '^#' ci/xcf-seed-runs.txt | awk 'NR==1{print "run1="$1; print "name1="$2} NR==2{print "run2="$1; print "name2="$2}' >> "$GITHUB_OUTPUT"
       - name: Restore engine xcframework cache
         id: cache
@@ -47,7 +49,7 @@ jobs:
           path: xcf
           key: ${{ steps.key.outputs.key }}
       - name: Seed 1
-        if: steps.cache.outputs.cache-hit != 'true'
+        if: steps.cache.outputs.cache-hit != 'true' && steps.key.outputs.seedok == 'true'
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
@@ -56,7 +58,7 @@ jobs:
           run-id: ${{ steps.key.outputs.run1 }}
           github-token: ${{ github.token }}
       - name: Seed 2
-        if: steps.cache.outputs.cache-hit != 'true' && hashFiles('seed1/**/TgVoipWebrtc.xcframework.zip') == ''
+        if: steps.cache.outputs.cache-hit != 'true' && steps.key.outputs.seedok == 'true' && hashFiles('seed1/**/TgVoipWebrtc.xcframework.zip') == ''
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
