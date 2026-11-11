@@ -79,7 +79,7 @@ public final class OLTgcallsInstance {
             isOutgoing: config.isOutgoing,
             connections: Self.connections(config.rtcServers),
             maxLayer: OngoingCallThreadLocalContextWebrtc.maxLayer(),
-            allowP2P: true,                   // same ICE policy as Android (call 0c5402df): host/srflx first, TURN as fallback
+            allowP2P: true,                   // same ICE policy as Android (call 0c5402df): direct host/srflx pairs first, TURN relay when they fail
             allowTCP: false,
             enableStunMarking: false,
             logPath: dir.appendingPathComponent("olcall-\(config.traceId).engine.log").path,

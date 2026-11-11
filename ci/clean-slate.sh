@@ -18,8 +18,8 @@ out=$(echo "$files" | xargs grep -n -I -i -E "$ci_patterns" -- 2>/dev/null || tr
 if [ -n "$out" ]; then echo "$out"; hits=$((hits + $(echo "$out" | wc -l))); fi
 out=$(echo "$files" | xargs grep -n -I -E "$cs_patterns" -- 2>/dev/null || true)
 if [ -n "$out" ]; then echo "$out"; hits=$((hits + $(echo "$out" | wc -l))); fi
-# The engine's relay-only switch is the one allowed mention of the word, and it must say false.
-out=$(echo "$files" | xargs grep -n -I -E 'allowP2P' -- 2>/dev/null | grep -v -E 'allowP2P: false,' || true)
+# The engine's ICE switch is the one allowed mention of the word: true, as on the working Android path (direct first, TURN relay when direct fails).
+out=$(echo "$files" | xargs grep -n -I -E 'allowP2P' -- 2>/dev/null | grep -v -E 'allowP2P: true,' || true)
 if [ -n "$out" ]; then echo "$out"; hits=$((hits + $(echo "$out" | wc -l))); fi
 
 # Call control belongs to the page: no app or package source names the realtime socket's call
