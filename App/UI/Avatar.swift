@@ -1,5 +1,6 @@
 // Avatar (9c851a0): initials stay underneath, the profile photo fades in once loaded, a broken or
 // non-http(s) URL leaves the initials. Squircle, #64748B, 30 pt medium white initials.
+import OLShellCore
 import SwiftUI
 
 enum Initials {
@@ -50,8 +51,8 @@ enum CallPresence {
 
     static let failMsg = "Can't connect the call on this network. Try another Wi-Fi or mobile data."
 
-    static let peekPhotoJS =
-        "(function(){try{var img=document.querySelector('[data-testid=\'call-screen\'] img')||document.querySelector('[data-testid=\'incoming-call\'] img');var s=img&&img.src||'';if(s.indexOf('http')===0)return s;return '';}catch(e){return '';}})()"
+    /// Read-only page photo peek; one copy, in OLShellCore (OLCallIdentity), where it is compiled and run in tests.
+    static let peekPhotoJS = OLCallIdentity.peekPhotoJS
 
     static func object(fromJSON raw: String) -> [String: Any]? {
         guard let data = raw.data(using: .utf8) else { return nil }

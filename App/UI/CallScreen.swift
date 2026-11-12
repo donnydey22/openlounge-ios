@@ -14,7 +14,7 @@ struct CallScreen: View {
 
     /// Video only once media flows after the answer (call.live); before it the opaque pre-answer card covers any preview.
     var videoStage: Bool { !call.failed && !call.endedCard && call.live && (call.remoteVideoOn || call.cameraOn) }
-    /// Calling / Ringing / Connecting: avatar, name, status and one Cancel (same as Android).
+    /// Calling / Ringing / Connecting: avatar, name, status and the in-call row (Speaker / Mute / End call).
     var preAnswer: Bool { !call.failed && !call.endedCard && !call.live }
     /// Failure or end card: no bottom row (its space stays reserved), Close top-right.
     var cardOnly: Bool { call.failed || call.endedCard }
@@ -169,8 +169,18 @@ struct CallScreen: View {
     @ViewBuilder
     private var controlRow: some View {
         if preAnswer {
+            // Nov 12: the outgoing card had one bare Cancel; it now carries the in-call row's look (same glyphs,
+            // discs and labels as the audio in-call row) so ringing and connected read as one screen. Speaker and
+            // Mute run the very same in-call actions and only once this phone's media leg is up (engineUp), so
+            // they never act on a leg that does not exist yet; End call is the same end() Cancel ran.
             HStack(alignment: .top, spacing: 0) {
-                RoundButton(label: "Cancel", glyph: "ol_call_end", fill: OLColor.end) { call.end() }
+                RoundButton(label: "Speaker",
+                            glyph: call.speakerOn ? "ol_call_speaker" : "ol_call_speaker_off",
+                            on: call.speakerOn, enabled: call.engineUp) { call.toggleSpeaker() }
+                RoundButton(label: call.muted ? "Unmute" : "Mute",
+                            glyph: call.muted ? "ol_call_mic_off" : "ol_call_mic",
+                            on: call.muted, enabled: call.engineUp) { call.toggleMute() }
+                RoundButton(label: "End call", glyph: "ol_call_end", fill: OLColor.end) { call.end() }
             }
             .padding(.horizontal, OLMetric.rowPad)
             .accessibilityIdentifier("call-controls")

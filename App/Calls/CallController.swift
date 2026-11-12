@@ -36,7 +36,7 @@ final class CallController: ObservableObject {
     /// This phone's media leg reached the Pion server (tgcalls Established). NOT "answered" and not first media.
     @Published private(set) var engineUp = false
     /// Server answered (call:answered, or call:connected on engines that do not post it yet).
-    /// Until then CallScreen is the pre-answer card: avatar, name, Calling… / Ringing… and one Cancel.
+    /// Until then CallScreen is the pre-answer card: avatar, name, Calling… / Ringing… and the Speaker / Mute / End call row.
     @Published private(set) var answered = false
     /// Callee's device acknowledged the ring (call:ringing) -> "Ringing…".
     @Published private(set) var ringingAck = false
@@ -333,23 +333,35 @@ final class CallController: ObservableObject {
     private func startPresencePeek() {
         presenceTimer?.invalidate()
         peekPresence()
+        // The page renders the server's call info (current profile) a moment after it posts call:outgoing: look again
+        // right away instead of showing the chat header's snapshot / initials until the next 2 s tick.
+        for d in [0.3, 1.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + d) { [weak self] in
+                guard let self, self.presenceTimer != nil else { return }
+                self.peekPresence()
+            }
+        }
         presenceTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             self?.peekPresence()
         }
     }
 
+    /// Presence, display name and profile photo follow the page call screen, i.e. the person's current profile
+    /// (OLCallIdentity), from the "Calling…" card through the call. Read-only page peeks; never touches the call.
     private func peekPresence() {
         host?.peekCallPresence { [weak self] raw in
             DispatchQueue.main.async { self?.applyPeek(raw) }
         }
-        if peerPhoto == nil {
-            host?.peekCallPhoto { [weak self] raw in
-                DispatchQueue.main.async {
-                    guard let self, self.peerPhoto == nil else { return }
-                    let t = (raw ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-                        .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
-                    if let u = Self.photoURL(t) { self.peerPhoto = u }
-                }
+        host?.peekCallName { [weak self] raw in
+            DispatchQueue.main.async {
+                guard let self, self.visible || self.incomingVisible else { return }
+                if let n = OLCallIdentity.name(peeked: raw, current: self.peerName) { self.peerName = n }
+            }
+        }
+        host?.peekCallPhoto { [weak self] raw in
+            DispatchQueue.main.async {
+                guard let self, self.visible || self.incomingVisible else { return }
+                if let u = OLCallIdentity.photo(peeked: raw, current: self.peerPhoto) { self.peerPhoto = u }
             }
         }
     }

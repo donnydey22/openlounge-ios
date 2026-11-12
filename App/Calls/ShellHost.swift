@@ -16,11 +16,14 @@ protocol ShellHost: AnyObject {
     func unlockForCall()
     /// Read-only peek of the page's existing call-screen presence (`data-presence`), if any.
     func peekCallPresence(_ done: @escaping (String?) -> Void)
-    /// Read-only peek of the page call-screen profile photo src, when the message had none.
+    /// Read-only peek of the page call-screen profile photo src (the person's current profile photo).
     func peekCallPhoto(_ done: @escaping (String?) -> Void)
+    /// Read-only peek of the page call-screen display name (the person's current profile name, OLCallIdentity).
+    func peekCallName(_ done: @escaping (String?) -> Void)
 }
 
 extension ShellHost {
     func peekCallPresence(_ done: @escaping (String?) -> Void) { done(nil) }
     func peekCallPhoto(_ done: @escaping (String?) -> Void) { done(nil) }
+    func peekCallName(_ done: @escaping (String?) -> Void) { done(nil) }
 }

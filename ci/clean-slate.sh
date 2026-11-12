@@ -3,7 +3,7 @@
 # Open Lounge calling on iOS has exactly one path, the same as the Android olcall build:
 #   call control  the openlounge.app page in the app's WKWebView: call:start / call:accept / call:get
 #                 on its own signed-in realtime socket (Railway). The app never opens that socket.
-#   media / ICE   OLTgcallsEngine -> wss://turn.openlounge.app/v1/call (Pion) over TURN relay only.
+#   media / ICE   OLTgcallsEngine -> wss://turn.openlounge.app/v1/call (Pion); direct pairs first, TURN relay when direct fails.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 self="ci/clean-slate.sh"
@@ -21,6 +21,12 @@ if [ -n "$out" ]; then echo "$out"; hits=$((hits + $(echo "$out" | wc -l))); fi
 # The engine's ICE switch is the one allowed mention of the word: true, as on the working Android path (direct first, TURN relay when direct fails).
 out=$(echo "$files" | xargs grep -n -I -E 'allowP2P' -- 2>/dev/null | grep -v -E 'allowP2P: true,' || true)
 if [ -n "$out" ]; then echo "$out"; hits=$((hits + $(echo "$out" | wc -l))); fi
+
+# The call log states the engine's ICE policy: with the ICE switch above on, the log must not default to relayOnly (b132 logged
+# relayOnly: true on calls Pion connected directly).
+if ! grep -q -E '^    public var relayOnly = false$' OLCall/Sources/OLCallCore/OLCallLog.swift; then
+  echo "OLCall/Sources/OLCallCore/OLCallLog.swift: relayOnly default must be false while the engine ICE switch is on (direct first)"; hits=$((hits + 1))
+fi
 
 # Call control belongs to the page: no app or package source names the realtime socket's call
 # events, and the engine is the only code that opens a WebSocket (to /v1/call).

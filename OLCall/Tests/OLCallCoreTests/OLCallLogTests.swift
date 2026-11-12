@@ -28,6 +28,23 @@ final class OLCallLogTests: XCTestCase {
         XCTAssertEqual(OLCallLogTags.tag("ice-stalled:tg-failed", relayOnly: true), "turn_relay_failure")
     }
 
+    /// 132+ engine is direct-first (OLTgcallsInstance ICE switch on): events must not claim relayOnly, and an ICE failure stays ice_failure.
+    func testDirectFirstEngineIsNotLoggedAsRelayOnly() {
+        let url = tmpURL()
+        let log = OLCallLog(queue: OLCallLogQueue(url: url), uploader: nil, meta: meta(), nowMs: { 1 })
+        XCTAssertFalse(log.relayOnly)
+        log.turnServers = 2
+        log.event("rtc_servers", extra: ["turnServers": 2, "stunServers": 1])
+        let states = OLCallStates(nowMs: { 0 }, sink: { _ in })
+        log.attach(states)
+        states.setState(.joining, reason: "join-sent")
+        states.setState(.offering, reason: "joined"); states.blobReceived(); states.blobSent()
+        states.fail("ice-stalled:tg-failed")
+        let ev = OLCallLogQueue(url: url).all()
+        for e in ev { XCTAssertEqual((e["extra"] as? [String: Any])?["relayOnly"] as? Bool, false) }
+        XCTAssertEqual(ev.last?["reason"] as? String, "ice_failure")
+    }
+
     func testStateMachineQueuedWithTimestampsTagsAndSurvivesRestart() {
         let url = tmpURL()
         var clock: Int64 = 1000

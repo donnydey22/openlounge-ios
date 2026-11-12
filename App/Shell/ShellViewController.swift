@@ -169,7 +169,7 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
     private func js(_ s: String) { webView?.evaluateJavaScript(s, completionHandler: nil) }
 
     func peekCallPresence(_ done: @escaping (String?) -> Void) {
-        let script = "(function(){try{var el=document.querySelector('[data-testid=\'call-screen\'] [data-presence]')||document.querySelector('[data-testid=\'incoming-call\'] [data-presence]');if(!el)return '';return el.getAttribute('data-presence')||'offline';}catch(e){return '';}})()"
+        let script = OLCallIdentity.peekPresenceJS
         guard let webView else { done(nil); return }
         webView.evaluateJavaScript(script) { r, _ in
             done(r as? String)
@@ -179,6 +179,13 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
     func peekCallPhoto(_ done: @escaping (String?) -> Void) {
         guard let webView else { done(nil); return }
         webView.evaluateJavaScript(CallPresence.peekPhotoJS) { r, _ in
+            done(r as? String)
+        }
+    }
+
+    func peekCallName(_ done: @escaping (String?) -> Void) {
+        guard let webView else { done(nil); return }
+        webView.evaluateJavaScript(OLCallIdentity.peekNameJS) { r, _ in
             done(r as? String)
         }
     }
