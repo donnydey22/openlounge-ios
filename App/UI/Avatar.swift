@@ -51,8 +51,8 @@ enum CallPresence {
 
     static let failMsg = "Can't connect the call on this network. Try another Wi-Fi or mobile data."
 
-    /// Read-only page photo peek; one copy, in OLShellCore (OLCallIdentity), where it is compiled and run in tests.
-    static let peekPhotoJS = OLCallIdentity.peekPhotoJS
+    /// Read-only page photo peek; one copy, in OLShellCore (OLCallScreenIdentity), where it is compiled and run in tests.
+    static let peekPhotoJS = OLCallScreenIdentity.peekPhotoJS
 
     static func object(fromJSON raw: String) -> [String: Any]? {
         guard let data = raw.data(using: .utf8) else { return nil }

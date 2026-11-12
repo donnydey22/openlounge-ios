@@ -7,12 +7,12 @@
 // Read-only: these rules only decide what the screen shows; they never touch the call or its media.
 import Foundation
 
-public enum OLCallIdentity {
+public enum OLCallScreenIdentity {
     // Read-only page scripts. The attribute values are in double quotes: the b132 scripts wrote them as \' inside a
     // Swift literal, which Swift turns into a bare ' and the page got
     // document.querySelector('[data-testid='call-screen'] img') — a JavaScript SyntaxError, so the photo and presence
     // peeks never returned anything on iOS and the screen kept the initials and no presence dot for the whole call
-    // (Android's twin scripts use \" and work). OLCallIdentityTests compiles and runs each one in JavaScriptCore.
+    // (Android's twin scripts use \" and work). OLCallScreenIdentityTests compiles and runs each one in JavaScriptCore.
 
     /// The page call screen's (or incoming card's) display name, "" when none is on screen.
     public static let peekNameJS =

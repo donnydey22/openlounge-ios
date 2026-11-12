@@ -347,7 +347,7 @@ final class CallController: ObservableObject {
     }
 
     /// Presence, display name and profile photo follow the page call screen, i.e. the person's current profile
-    /// (OLCallIdentity), from the "Calling…" card through the call. Read-only page peeks; never touches the call.
+    /// (OLCallScreenIdentity), from the "Calling…" card through the call. Read-only page peeks; never touches the call.
     private func peekPresence() {
         host?.peekCallPresence { [weak self] raw in
             DispatchQueue.main.async { self?.applyPeek(raw) }
@@ -355,13 +355,13 @@ final class CallController: ObservableObject {
         host?.peekCallName { [weak self] raw in
             DispatchQueue.main.async {
                 guard let self, self.visible || self.incomingVisible else { return }
-                if let n = OLCallIdentity.name(peeked: raw, current: self.peerName) { self.peerName = n }
+                if let n = OLCallScreenIdentity.name(peeked: raw, current: self.peerName) { self.peerName = n }
             }
         }
         host?.peekCallPhoto { [weak self] raw in
             DispatchQueue.main.async {
                 guard let self, self.visible || self.incomingVisible else { return }
-                if let u = OLCallIdentity.photo(peeked: raw, current: self.peerPhoto) { self.peerPhoto = u }
+                if let u = OLCallScreenIdentity.photo(peeked: raw, current: self.peerPhoto) { self.peerPhoto = u }
             }
         }
     }

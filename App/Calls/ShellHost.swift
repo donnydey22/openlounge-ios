@@ -18,7 +18,7 @@ protocol ShellHost: AnyObject {
     func peekCallPresence(_ done: @escaping (String?) -> Void)
     /// Read-only peek of the page call-screen profile photo src (the person's current profile photo).
     func peekCallPhoto(_ done: @escaping (String?) -> Void)
-    /// Read-only peek of the page call-screen display name (the person's current profile name, OLCallIdentity).
+    /// Read-only peek of the page call-screen display name (the person's current profile name, OLCallScreenIdentity).
     func peekCallName(_ done: @escaping (String?) -> Void)
 }
 

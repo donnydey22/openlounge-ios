@@ -261,31 +261,31 @@ final class OLRingTests: XCTestCase {
 }
 
 /// The native call screen follows the page call screen's identity (the server's current-profile peer).
-final class OLCallIdentityTests: XCTestCase {
+final class OLCallScreenIdentityTests: XCTestCase {
     func testNameFollowsThePageCallScreen() {
         // stale chat-header snapshot on call:outgoing -> the page's current profile name replaces it
-        XCTAssertEqual(OLCallIdentity.name(peeked: "Keiko 🦋", current: "K D"), "Keiko 🦋")
-        XCTAssertEqual(OLCallIdentity.name(peeked: "  Keiko\n  Dey ", current: "Open Lounge"), "Keiko Dey")
-        XCTAssertNil(OLCallIdentity.name(peeked: "Keiko 🦋", current: "Keiko 🦋"), "unchanged: keep")
-        XCTAssertNil(OLCallIdentity.name(peeked: "", current: "Keiko"), "no page call screen: keep")
-        XCTAssertNil(OLCallIdentity.name(peeked: nil, current: "Keiko"))
-        XCTAssertNil(OLCallIdentity.name(peeked: " \n ", current: "Keiko"))
-        XCTAssertEqual(OLCallIdentity.name(peeked: String(repeating: "a", count: 200), current: "")?.count, OLCallIdentity.maxName)
+        XCTAssertEqual(OLCallScreenIdentity.name(peeked: "Keiko 🦋", current: "K D"), "Keiko 🦋")
+        XCTAssertEqual(OLCallScreenIdentity.name(peeked: "  Keiko\n  Dey ", current: "Open Lounge"), "Keiko Dey")
+        XCTAssertNil(OLCallScreenIdentity.name(peeked: "Keiko 🦋", current: "Keiko 🦋"), "unchanged: keep")
+        XCTAssertNil(OLCallScreenIdentity.name(peeked: "", current: "Keiko"), "no page call screen: keep")
+        XCTAssertNil(OLCallScreenIdentity.name(peeked: nil, current: "Keiko"))
+        XCTAssertNil(OLCallScreenIdentity.name(peeked: " \n ", current: "Keiko"))
+        XCTAssertEqual(OLCallScreenIdentity.name(peeked: String(repeating: "a", count: 200), current: "")?.count, OLCallScreenIdentity.maxName)
     }
 
     func testPhotoFollowsThePageCallScreen() {
         let a = URL(string: "https://openlounge.app/avatars/u1.jpg?v=1")!
-        XCTAssertEqual(OLCallIdentity.photo(peeked: "https://openlounge.app/avatars/u1.jpg?v=1", current: nil), a)
-        XCTAssertEqual(OLCallIdentity.photo(peeked: "\"https://openlounge.app/avatars/u1.jpg?v=2\"", current: a)?.absoluteString,
+        XCTAssertEqual(OLCallScreenIdentity.photo(peeked: "https://openlounge.app/avatars/u1.jpg?v=1", current: nil), a)
+        XCTAssertEqual(OLCallScreenIdentity.photo(peeked: "\"https://openlounge.app/avatars/u1.jpg?v=2\"", current: a)?.absoluteString,
                        "https://openlounge.app/avatars/u1.jpg?v=2", "a changed profile photo replaces the old one")
-        XCTAssertNil(OLCallIdentity.photo(peeked: a.absoluteString, current: a))
-        XCTAssertNil(OLCallIdentity.photo(peeked: "", current: a), "page has no photo right now: keep")
-        XCTAssertNil(OLCallIdentity.photo(peeked: "data:image/png;base64,AAAA", current: nil))
-        XCTAssertNil(OLCallIdentity.photo(peeked: "javascript:alert(1)", current: nil))
+        XCTAssertNil(OLCallScreenIdentity.photo(peeked: a.absoluteString, current: a))
+        XCTAssertNil(OLCallScreenIdentity.photo(peeked: "", current: a), "page has no photo right now: keep")
+        XCTAssertNil(OLCallScreenIdentity.photo(peeked: "data:image/png;base64,AAAA", current: nil))
+        XCTAssertNil(OLCallScreenIdentity.photo(peeked: "javascript:alert(1)", current: nil))
     }
 
     func testPeekScriptsAreReadOnlyAndScopedToTheCallScreen() {
-        for js in [OLCallIdentity.peekNameJS, OLCallIdentity.peekPhotoJS, OLCallIdentity.peekPresenceJS] {
+        for js in [OLCallScreenIdentity.peekNameJS, OLCallScreenIdentity.peekPhotoJS, OLCallScreenIdentity.peekPresenceJS] {
             XCTAssertTrue(js.contains("[data-testid=\"call-screen\"]"))
             for w in ["dispatchEvent", "postMessage", "innerHTML", "document.cookie", "fetch(", "=document"] { XCTAssertFalse(js.contains(w), w) }
         }
@@ -313,18 +313,18 @@ final class OLCallIdentityTests: XCTestCase {
 
     /// b132 root cause: the peeks were not valid JavaScript, so iOS never got the photo or the presence dot.
     func testPeekScriptsCompileAndReadTheCallScreen() {
-        let (name, e1) = run(OLCallIdentity.peekNameJS, page: page)
-        let (photo, e2) = run(OLCallIdentity.peekPhotoJS, page: page)
-        let (presence, e3) = run(OLCallIdentity.peekPresenceJS, page: page)
+        let (name, e1) = run(OLCallScreenIdentity.peekNameJS, page: page)
+        let (photo, e2) = run(OLCallScreenIdentity.peekPhotoJS, page: page)
+        let (presence, e3) = run(OLCallScreenIdentity.peekPresenceJS, page: page)
         XCTAssertFalse(e1 || e2 || e3, "every peek compiles")
-        XCTAssertEqual(OLCallIdentity.name(peeked: name, current: "K D"), "Keiko 🦋")
+        XCTAssertEqual(OLCallScreenIdentity.name(peeked: name, current: "K D"), "Keiko 🦋")
         XCTAssertEqual(photo, "https://openlounge.app/avatars/u_bf0b.jpg?v=7")
         XCTAssertEqual(presence, "online")
         // nothing on screen -> "" (keep what is shown)
         let empty = "var document = { querySelector: function () { return null; } };"
-        XCTAssertEqual(run(OLCallIdentity.peekNameJS, page: empty).0, "")
-        XCTAssertEqual(run(OLCallIdentity.peekPhotoJS, page: empty).0, "")
-        XCTAssertEqual(run(OLCallIdentity.peekPresenceJS, page: empty).0, "")
+        XCTAssertEqual(run(OLCallScreenIdentity.peekNameJS, page: empty).0, "")
+        XCTAssertEqual(run(OLCallScreenIdentity.peekPhotoJS, page: empty).0, "")
+        XCTAssertEqual(run(OLCallScreenIdentity.peekPresenceJS, page: empty).0, "")
         // the b132 photo peek as the page received it (Swift turned \' into ') does not even compile
         let b132 = "(function(){try{var img=document.querySelector('[data-testid='call-screen'] img');return img&&img.src||'';}catch(e){return '';}})()"
         let (old, oldFailed) = run(b132, page: page)
