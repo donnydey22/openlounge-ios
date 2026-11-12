@@ -287,7 +287,8 @@ final class OLCallScreenIdentityTests: XCTestCase {
     func testPeekScriptsAreReadOnlyAndScopedToTheCallScreen() {
         for js in [OLCallScreenIdentity.peekNameJS, OLCallScreenIdentity.peekPhotoJS, OLCallScreenIdentity.peekPresenceJS] {
             XCTAssertTrue(js.contains("[data-testid=\"call-screen\"]"))
-            for w in ["dispatchEvent", "postMessage", "innerHTML", "document.cookie", "fetch(", "=document"] { XCTAssertFalse(js.contains(w), w) }
+            // reads only: no events, messages, network, cookies, navigation or DOM writes (reading `var r=document.querySelector` is fine)
+            for w in ["dispatchEvent", "postMessage", "innerHTML", "document.cookie", "fetch(", "document.write", "location", "setAttribute", ".textContent=", ".src=", "XMLHttpRequest"] { XCTAssertFalse(js.contains(w), w) }
         }
     }
 
