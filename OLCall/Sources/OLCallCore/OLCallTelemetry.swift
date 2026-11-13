@@ -48,9 +48,54 @@ public struct OLFpsSeries {
         return best
     }
 
+    /// Flat (the live call-log keeps only string/number/bool extras): inN/inMin/inMax/inAvg/inP50, out*, runs.
     public var summary: [String: Any] {
-        ["in": Self.stats(inSamples), "out": Self.stats(outSamples),
-         "inBelow20MaxRunSec": Self.longestBelow(inSamples, threshold: 20)]
+        var m: [String: Any] = ["inBelow20MaxRunSec": Self.longestBelow(inSamples, threshold: 20),
+                                "outBelow20MaxRunSec": Self.longestBelow(outSamples, threshold: 20)]
+        for (p, st) in [("in", Self.stats(inSamples)), ("out", Self.stats(outSamples))] {
+            for (k, v) in st { m[p + OLLogExtra.cap(k)] = v }
+        }
+        return m
+    }
+
+    public static func csv(_ a: [Int]) -> String { a.map(String.init).joined(separator: ",") }
+}
+
+/// Extras the live call log keeps (server/calls/callLog.ts cleanExtra): <= 24 keys, values string (<= 160 chars) /
+/// finite number / bool, key [\w.-]{1,32} and not secret-looking. Arrays -> CSV, nested dicts -> prefixed keys.
+public enum OLLogExtra {
+    public static let maxKeys = 24
+    static let secretish = try! NSRegularExpression(pattern: "(token|secret|password|passwd|pwd|credential|key|sdp|blob|b64|ufrag|cookie|auth)", options: .caseInsensitive)
+
+    static func cap(_ k: String) -> String { k.prefix(1).uppercased() + String(k.dropFirst()) }
+
+    public static func isSecretish(_ k: String) -> Bool {
+        secretish.firstMatch(in: k, range: NSRange(k.startIndex..., in: k)) != nil
+    }
+
+    public static func liveSafe(_ x: [String: Any]) -> [String: Any] {
+        var flat: [(String, Any)] = []
+        func add(_ k: String, _ v: Any) {
+            switch v {
+            case let d as [String: Any]: for (k2, v2) in d.sorted(by: { $0.key < $1.key }) { add(k + cap(k2), v2) }
+            case let a as [Int]: flat.append((k, OLFpsSeries.csv(a)))
+            case let a as [Any]: flat.append((k, a.map { "\($0)" }.joined(separator: ",")))
+            case let b as Bool: flat.append((k, b))
+            case let i as Int: flat.append((k, i))
+            case let d as Double: flat.append((k, d.isFinite ? d : 0))
+            case let s as String: flat.append((k, String(s.prefix(160))))
+            default: flat.append((k, "\(v)".prefix(160).description))
+            }
+        }
+        for (k, v) in x.sorted(by: { $0.key < $1.key }) { add(k, v) }
+        var out: [String: Any] = [:]
+        for (k0, v) in flat {
+            var k = String(k0.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "." || $0 == "-" }.prefix(32))
+            if isSecretish(k) { k = "x_" + k.replacingOccurrences(of: "key", with: "k", options: .caseInsensitive) }
+            guard !k.isEmpty, !isSecretish(k), out[k] == nil, out.count < maxKeys else { continue }
+            out[k] = v
+        }
+        return out
     }
 }
 

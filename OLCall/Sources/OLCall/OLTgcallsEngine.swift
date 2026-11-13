@@ -119,7 +119,7 @@ public final class OLTgcallsEngine {
             guard let self else { return }
             var x = extra
             x["netType"] = self.netType ?? "unknown"
-            self.callLog.event(name, reason: (extra["cause"] as? String) ?? (extra["what"] as? String) ?? (extra["via"] as? String), extra: x)
+            self.callLog.event(name, reason: (extra["cause"] as? String) ?? (extra["what"] as? String) ?? (extra["via"] as? String), extra: OLLogExtra.liveSafe(x))
             if name == "audio_engine_stop" { self.callLog.kickUpload() }
         }
         startPathMonitor()
@@ -490,7 +490,7 @@ public final class OLTgcallsEngine {
         let l = localView?.takeFrames() ?? 0
         statsWindow.remote += r; statsWindow.local += l; statsWindow.ticks += 1
         if connected, let b = fps.add(inFps: r, outFps: l) {
-            callLog.event("video_fps", extra: ["in": b.in, "out": b.out, "remoteActive": remoteVideoActive, "netType": netType ?? "unknown"])
+            callLog.event("video_fps", extra: ["in": OLFpsSeries.csv(b.in), "out": OLFpsSeries.csv(b.out), "remoteActive": remoteVideoActive, "netType": netType ?? "unknown"])
         }
         if r > 0 { queue.dispatch { self.markFlowing("video") } }
         if statsWindow.ticks >= 5 {
@@ -535,19 +535,19 @@ public final class OLTgcallsEngine {
     public func logAppEvent(_ name: String, _ extra: [String: Any]) {
         var x = extra
         x["netType"] = netType ?? "unknown"
-        callLog.event(name, extra: x)
+        callLog.event(name, extra: OLLogExtra.liveSafe(x))
     }
 
     /// Main thread, once at end: unsent fps tail + the per-call summary (min/avg/p50 each way).
     private func logFpsTail() {
         if let b = fps.flush() {
-            callLog.event("video_fps", extra: ["in": b.in, "out": b.out, "remoteActive": remoteVideoActive, "netType": netType ?? "unknown"])
+            callLog.event("video_fps", extra: ["in": OLFpsSeries.csv(b.in), "out": OLFpsSeries.csv(b.out), "remoteActive": remoteVideoActive, "netType": netType ?? "unknown"])
         }
         guard !fps.inSamples.isEmpty else { return }
         var x = fps.summary
         x["netType"] = netType ?? "unknown"
         x["video"] = video
-        callLog.event("video_fps_summary", extra: x)
+        callLog.event("video_fps_summary", extra: OLLogExtra.liveSafe(x))
     }
 
     /// Network type for every call-log line; "network" once, then "network_change" from/to. Like Telegram's
