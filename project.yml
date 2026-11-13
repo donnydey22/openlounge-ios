@@ -15,7 +15,7 @@ settings:
   base:
     SWIFT_VERSION: "5.0"
     MARKETING_VERSION: "0.4.0"
-    CURRENT_PROJECT_VERSION: "133"
+    CURRENT_PROJECT_VERSION: "134"
     # Unsigned unless ci/adhoc.sh passes these on the command line (app target only).
     OL_SIGNING_ALLOWED: "NO"
     OL_PROFILE: ""
