@@ -11,6 +11,7 @@
 // delivered on the main queue.
 import AVFAudio
 import Foundation
+import Network
 import OLCallCore
 import UIKit
 
@@ -73,6 +74,19 @@ public final class OLTgcallsEngine {
     private var resumeTask: URLSessionWebSocketTask?
     private var resumeAttemptWatchdog: DispatchWorkItem?
     private var queuedWhileResuming: [[String: Any]] = []
+    /// Logging only (t5614u): network path + 1 s video fps series.
+    private var pathMonitor: NWPathMonitor?
+    private let netLock = NSLock()
+    private var _netType: String?
+    /// Read from main (fps), the audio queue (onLog) and the engine queue; written only by the path monitor.
+    private var netType: String? {
+        get { netLock.lock(); defer { netLock.unlock() }; return _netType }
+        set { netLock.lock(); _netType = newValue; netLock.unlock() }
+    }
+    private var fps = OLFpsSeries()
+    private let startedAt = Date()
+    /// "push" when the app was not active as this call's media started (VoIP-push / CallKit wake), else "foreground".
+    public var audioTrigger = "foreground"
 
     /// - Parameters:
     ///   - media: the CallMedia the backend issued for THIS participant (url + join token).
@@ -100,6 +114,15 @@ public final class OLTgcallsEngine {
         crumbs.traceId = traceId
         audio.onActiveChanged = { [weak self] on in self?.emit(.audio(active: on)) }
         audio.onRouteChanged = { [weak self] r in self?.emit(.route(r)) }
+        audio.trigger = audioTrigger
+        audio.onLog = { [weak self] name, extra in
+            guard let self else { return }
+            var x = extra
+            x["netType"] = self.netType ?? "unknown"
+            self.callLog.event(name, reason: (extra["cause"] as? String) ?? (extra["what"] as? String) ?? (extra["via"] as? String), extra: x)
+            if name == "audio_engine_stop" { self.callLog.kickUpload() }
+        }
+        startPathMonitor()
         audio.begin(speakerOn: video) { [weak self] outcome in
             if case let .failed(domain, code, first) = outcome {
                 self?.callLog.event("audio_session", reason: "audio_session_handoff_failure", detail: "\(domain):\(code):\(first)")
@@ -205,7 +228,7 @@ public final class OLTgcallsEngine {
         socket = nil
         resumer = OLSignalingResume(now: Date().timeIntervalSince1970)
         crumbs.event("ws", "resume:start", level: "warning")
-        callLog.event("ws_resume", reason: "start")
+        callLog.event("ws_resume", reason: "start", extra: ["netType": netType ?? "unknown"])
         scheduleResumeAttempt()
     }
 
@@ -213,7 +236,8 @@ public final class OLTgcallsEngine {
         guard !ended, var r = resumer else { return }
         guard let d = r.next(now: Date().timeIntervalSince1970) else {
             crumbs.event("ws", "resume:gave-up:attempts=\(r.attempts)", level: "error")
-            callLog.event("ws_resume", reason: "gave_up", detail: "attempts=\(r.attempts)")
+            callLog.event("ws_resume", reason: "gave_up", detail: "attempts=\(r.attempts)",
+                          extra: ["outcome": "failed", "gapMs": Int((Date().timeIntervalSince1970 - r.startedAt) * 1000), "netType": netType ?? "unknown"])
             resumer = nil
             end("ws-failure")
             return
@@ -261,7 +285,8 @@ public final class OLTgcallsEngine {
                     self.socket = t
                     let gapMs = Int((Date().timeIntervalSince1970 - (r?.startedAt ?? 0)) * 1000)
                     self.crumbs.event("ws", "resumed:attempts=\(r?.attempts ?? 0):gapMs=\(gapMs)")
-                    self.callLog.event("ws_resume", reason: "resumed", detail: "attempts=\(r?.attempts ?? 0)", extra: ["gapMs": gapMs])
+                    self.callLog.event("ws_resume", reason: "resumed", detail: "attempts=\(r?.attempts ?? 0)",
+                                       extra: ["outcome": "resumed", "gapMs": gapMs, "netType": self.netType ?? "unknown"])
                     let q = self.queuedWhileResuming
                     self.queuedWhileResuming = []
                     for f in q { self.send(f) }
@@ -273,7 +298,8 @@ public final class OLTgcallsEngine {
                     // refused (unknown call / key): the leg is gone, end exactly as before
                     t.cancel(with: .normalClosure, reason: nil)
                     self.crumbs.event("ws", "resume:refused", level: "error")
-                    self.callLog.event("ws_resume", reason: "refused")
+                    let gap = Int((Date().timeIntervalSince1970 - (self.resumer?.startedAt ?? Date().timeIntervalSince1970)) * 1000)
+                    self.callLog.event("ws_resume", reason: "refused", extra: ["outcome": "failed", "gapMs": gap, "netType": self.netType ?? "unknown"])
                     self.resumer = nil
                     self.end("ws-failure")
                 }
@@ -378,12 +404,18 @@ public final class OLTgcallsEngine {
         resumer = nil
         queuedWhileResuming = []
         resumeKey = nil
+        pathMonitor?.cancel()
+        pathMonitor = nil
         instance?.stop()
         instance = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
         audio.end()
-        DispatchQueue.main.async { self.videoTimer?.invalidate(); self.videoTimer = nil }
+        DispatchQueue.main.async {
+            self.videoTimer?.invalidate(); self.videoTimer = nil
+            self.logFpsTail()
+            self.callLog.kickUpload()
+        }
         crumbs.event("call", "ended:\(reason)")
         let wasConnected = states.state == .connected
         callLog.event("ended", reason: normal ? "normal" : wasConnected ? OLCallLogTags.tag("after-connect:\(reason)") : nil, detail: reason,
@@ -457,6 +489,9 @@ public final class OLTgcallsEngine {
         let r = remoteView?.takeFrames() ?? 0
         let l = localView?.takeFrames() ?? 0
         statsWindow.remote += r; statsWindow.local += l; statsWindow.ticks += 1
+        if connected, let b = fps.add(inFps: r, outFps: l) {
+            callLog.event("video_fps", extra: ["in": b.in, "out": b.out, "remoteActive": remoteVideoActive, "netType": netType ?? "unknown"])
+        }
         if r > 0 { queue.dispatch { self.markFlowing("video") } }
         if statsWindow.ticks >= 5 {
             let w = statsWindow
@@ -493,4 +528,52 @@ public final class OLTgcallsEngine {
     }
 
     private func emit(_ e: Event) { DispatchQueue.main.async { self.onEvent?(e) } }
+
+    // MARK: logs as armor (t5614u) — logging only, no call behavior
+
+    /// App-layer facts (CallKit ordering before the engine existed, replay decision) into this call's log.
+    public func logAppEvent(_ name: String, _ extra: [String: Any]) {
+        var x = extra
+        x["netType"] = netType ?? "unknown"
+        callLog.event(name, extra: x)
+    }
+
+    /// Main thread, once at end: unsent fps tail + the per-call summary (min/avg/p50 each way).
+    private func logFpsTail() {
+        if let b = fps.flush() {
+            callLog.event("video_fps", extra: ["in": b.in, "out": b.out, "remoteActive": remoteVideoActive, "netType": netType ?? "unknown"])
+        }
+        guard !fps.inSamples.isEmpty else { return }
+        var x = fps.summary
+        x["netType"] = netType ?? "unknown"
+        x["video"] = video
+        callLog.event("video_fps_summary", extra: x)
+    }
+
+    /// Network type for every call-log line; "network" once, then "network_change" from/to. Like Telegram's
+    /// setNetworkType (VoIPService.updateNetworkType) this only observes; tgcalls follows the change itself.
+    private func startPathMonitor() {
+        let m = NWPathMonitor()
+        m.pathUpdateHandler = { [weak self] path in
+            let t = OLNetType.name(satisfied: path.status == .satisfied, wifi: path.usesInterfaceType(.wifi),
+                                   cellular: path.usesInterfaceType(.cellular), wired: path.usesInterfaceType(.wiredEthernet))
+            self?.queue.dispatch {
+                guard let self, !self.ended else { return }
+                let from = self.netType
+                guard from != t else { return }
+                self.netType = t
+                let ms = Int(Date().timeIntervalSince(self.startedAt) * 1000)
+                if let from {
+                    self.crumbs.event("net", "change:\(from)->\(t)", level: "warning")
+                    self.callLog.event("network_change", reason: "\(from)->\(t)",
+                                       extra: ["from": from, "to": t, "msSinceStart": ms, "connected": self.states.state == .connected,
+                                               "wsUp": self.socket != nil, "resuming": self.resumer != nil])
+                } else {
+                    self.callLog.event("network", reason: t, extra: ["type": t, "msSinceStart": ms])
+                }
+            }
+        }
+        m.start(queue: DispatchQueue(label: "ol.call.net"))
+        pathMonitor = m
+    }
 }

@@ -84,9 +84,18 @@ final class NativeMedia {
                     self.onEvent(ev, id: id)
                 }
                 CallController.shared.engineStarted(callId: id, video: wantVideo)
+                // Logging only: a call answered from a VoIP-push wake / lock screen starts media while the app is not active.
+                e.audioTrigger = UIApplication.shared.applicationState == .active ? "foreground" : "push"
                 e.start()
+                let now = Date()
+                for ev in self.earlyCallKit.suffix(8) {
+                    e.logAppEvent(ev.name, ["beforeEngine": true, "msBeforeEngine": Int(now.timeIntervalSince(ev.at) * 1000)])
+                }
+                self.earlyCallKit.removeAll()
                 if self.muted { e.setMuted(true) }
-                if usesCallKit, CallCenter.shared.audioActive { e.callKitDidActivate(AVAudioSession.sharedInstance()) }
+                let replay = usesCallKit && CallCenter.shared.audioActive
+                e.logAppEvent("callkit_state_at_connect", ["callkit": usesCallKit, "audioActive": CallCenter.shared.audioActive, "replayActivate": replay])
+                if replay { e.callKitDidActivate(AVAudioSession.sharedInstance()) }
             }
         }
     }
@@ -163,6 +172,14 @@ final class NativeMedia {
         if engine == nil { callId = nil; connected = false; muted = false }
     }
 
-    func callKitDidActivate(_ s: AVAudioSession) { engine?.callKitDidActivate(s) }
-    func callKitDidDeactivate(_ s: AVAudioSession) { engine?.callKitDidDeactivate(s) }
+    /// CallKit audio callbacks that arrived while no engine existed (push-wake: CallKit can activate before the
+    /// page connects). Logging only — the engine still gets activation from the audioActive replay in connect.
+    private var earlyCallKit: [(name: String, at: Date)] = []
+
+    func callKitDidActivate(_ s: AVAudioSession) {
+        if let e = engine { e.callKitDidActivate(s) } else { earlyCallKit.append(("callkit_did_activate", Date())) }
+    }
+    func callKitDidDeactivate(_ s: AVAudioSession) {
+        if let e = engine { e.callKitDidDeactivate(s) } else { earlyCallKit.append(("callkit_did_deactivate", Date())) }
+    }
 }

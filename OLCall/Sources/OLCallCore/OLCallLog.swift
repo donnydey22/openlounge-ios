@@ -269,6 +269,9 @@ public final class OLCallLog {
         queue.append([e]); uploader?.kick()
     }
 
+    /// Upload now (events logged after "ended", e.g. the fps summary / audio engine stop). Logging only.
+    public func kickUpload() { uploader?.kick() }
+
     public func attach(_ states: OLCallStates) {
         states.onTransition = { [weak self] f, t, r, ms in self?.state(from: f, to: t, reason: r, tMs: ms) }
     }
