@@ -6,6 +6,8 @@
 //   S->C  stats {stats}     per-leg packet counters
 //   C->S  hangup            S->C bye {reason}   S->C error {error}
 //   C->S  ping              S->C pong
+//   C->S  resume {callId, leg, resume}   S->C resumed   (signaling socket dropped mid-call, e.g. Wi-Fi ->
+//         cellular: a NEW socket rebinds the SAME leg with the per-leg key from "joined"; tgcalls untouched)
 // The join token rides inside the join frame, never in the URL. Every client frame carries the
 // client's own increasing "seq". Pure and pinned by Tests/OLCallCoreTests/Fixtures/call-frames.jsonl.
 import Foundation
@@ -29,6 +31,8 @@ public enum OLCallFrames {
         public let serverVersions: [String]
         /// RTCIceServer[] JSON from the joined frame (nil if absent). Parse with OLRtcServers.
         public let iceServers: Any?
+        /// Per-leg resume key (b64) for a socket handover; nil from servers without resume. Never logged.
+        public let resume: String?
     }
 
     public enum Inbound {
@@ -38,6 +42,7 @@ public enum OLCallFrames {
         case bye(String)
         case error(String)
         case pong
+        case resumed
         case ignored(String)
     }
 
@@ -53,6 +58,10 @@ public enum OLCallFrames {
 
     public static func hangup(seq: UInt64) -> [String: Any] { ["t": "hangup", "seq": seq] }
     public static func ping(seq: UInt64) -> [String: Any] { ["t": "ping", "seq": seq] }
+    /// First frame on a replacement socket (no join token: it is short-lived and long expired mid-call).
+    public static func resume(callId: String, leg: String, key: String, traceId: String, seq: UInt64) -> [String: Any] {
+        ["t": "resume", "seq": seq, "callId": callId, "leg": leg, "resume": key, "traceId": traceId]
+    }
     /// t5450: the remote renderer saw no frame for a while; the server PLIs the other leg's sender.
     public static func keyframe(seq: UInt64, reason: String) -> [String: Any] { ["t": "keyframe", "seq": seq, "reason": reason] }
 
@@ -71,7 +80,7 @@ public enum OLCallFrames {
                   let out = o["isOutgoing"] as? Bool else { return .error("bad-joined") }
             return .joined(Joined(callId: o["callId"] as? String ?? "", leg: o["leg"] as? String ?? "", key: key,
                                   isOutgoing: out, serverVersions: o["versions"] as? [String] ?? [],
-                                  iceServers: o["iceServers"]))
+                                  iceServers: o["iceServers"], resume: o["resume"] as? String))
         case "blob":
             guard let b64 = o["b64"] as? String, let d = Data(base64Encoded: b64) else { return .error("bad-blob") }
             return .blob(d)
@@ -79,6 +88,7 @@ public enum OLCallFrames {
         case "bye": return .bye(o["reason"] as? String ?? "")
         case "error": return .error(o["error"] as? String ?? "")
         case "pong": return .pong
+        case "resumed": return .resumed
         default: return .ignored(t)
         }
     }

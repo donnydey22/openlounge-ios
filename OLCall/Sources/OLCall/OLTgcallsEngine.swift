@@ -65,6 +65,14 @@ public final class OLTgcallsEngine {
     private var flowing = false
     /// Durable call log for this leg (OLCallLog: on-disk queue, uploaded to /api/call-log).
     public let callLog: OLCallLog
+    /// Socket handover (queue): resume key/ids from "joined"; non-nil `resumer` while re-opening the socket.
+    private var resumeKey: String?
+    private var resumeCallId = ""
+    private var resumeLeg = ""
+    private var resumer: OLSignalingResume?
+    private var resumeTask: URLSessionWebSocketTask?
+    private var resumeAttemptWatchdog: DispatchWorkItem?
+    private var queuedWhileResuming: [[String: Any]] = []
 
     /// - Parameters:
     ///   - media: the CallMedia the backend issued for THIS participant (url + join token).
@@ -108,7 +116,7 @@ public final class OLTgcallsEngine {
             self.crumbs.event("ws", "open")
             self.send(OLCallFrames.join(join, seq: self.nextSeq()))
             self.states.setState(.joining, reason: "join-sent")
-            self.receive()
+            self.receive(on: t)
             let timer = DispatchSource.makeTimerSource(queue: nil)
             timer.schedule(deadline: .now() + 15, repeating: 15)
             timer.setEventHandler { [weak self] in
@@ -149,29 +157,125 @@ public final class OLTgcallsEngine {
     private func nextSeq() -> UInt64 { seq += 1; return seq }
 
     private func send(_ frame: [String: Any]) {
-        guard !ended, let socket, let text = OLCallFrames.encode(frame) else { return }
+        guard !ended else { return }
+        if socket == nil, resumer != nil, let t = frame["t"] as? String, t == "blob" || t == "keyframe" {
+            // Socket handover in progress: keep tgcalls' signaling (e.g. its new-network candidates) for the new socket.
+            queuedWhileResuming.append(frame)
+            if queuedWhileResuming.count > OLSignalingResume.maxQueued { queuedWhileResuming.removeFirst() }
+            return
+        }
+        guard let socket, let text = OLCallFrames.encode(frame) else { return }
         socket.send(.string(text)) { [weak self] err in
             if err != nil { self?.crumbs.event("ws", "send-failed", level: "error") }
         }
     }
 
-    private func receive() {
-        socket?.receive { [weak self] result in
+    private func receive(on t: URLSessionWebSocketTask) {
+        t.receive { [weak self] result in
             guard let self else { return }
             self.queue.dispatch {
-                guard !self.ended else { return }
+                guard !self.ended, self.socket === t else { return } // a replaced (handed-over) socket is ignored
                 switch result {
                 case let .failure(err):
-                    let code = self.socket?.closeCode ?? .invalid
+                    let code = t.closeCode
                     if code != .invalid {
                         self.end("ws-closed:\(code.rawValue)")
                     } else {
                         self.crumbs.event("ws", "failure:\((err as NSError).code)", level: "error")
-                        self.end("ws-failure")
+                        if OLSignalingResume.shouldResume(connected: self.states.state == .connected, hasKey: self.resumeKey != nil, ended: self.ended) {
+                            self.beginResume()
+                        } else {
+                            self.end("ws-failure")
+                        }
                     }
                 case let .success(msg):
                     if case let .string(text) = msg { self.onFrame(OLCallFrames.decode(text)) }
-                    if !self.ended { self.receive() }
+                    if !self.ended { self.receive(on: t) }
+                }
+            }
+        }
+    }
+
+    // MARK: socket handover (queue) — call 11c994c9: the socket died on Wi-Fi -> cellular and the call ended
+    // although tgcalls (which re-gathers on the new network) was fine. Keep tgcalls, re-open the socket, send
+    // {t:"resume"} with the joined key; the server rebinds the same leg. Not resumed in 18 s -> end as before.
+
+    private func beginResume() {
+        socket?.cancel(with: .goingAway, reason: nil)
+        socket = nil
+        resumer = OLSignalingResume(now: Date().timeIntervalSince1970)
+        crumbs.event("ws", "resume:start", level: "warning")
+        callLog.event("ws_resume", reason: "start")
+        scheduleResumeAttempt()
+    }
+
+    private func scheduleResumeAttempt() {
+        guard !ended, var r = resumer else { return }
+        guard let d = r.next(now: Date().timeIntervalSince1970) else {
+            crumbs.event("ws", "resume:gave-up:attempts=\(r.attempts)", level: "error")
+            callLog.event("ws_resume", reason: "gave_up", detail: "attempts=\(r.attempts)")
+            resumer = nil
+            end("ws-failure")
+            return
+        }
+        resumer = r
+        DispatchQueue.global().asyncAfter(deadline: .now() + d) { [weak self] in
+            self?.queue.dispatch { self?.resumeAttempt() }
+        }
+    }
+
+    private func resumeAttempt() {
+        guard !ended, resumer != nil, socket == nil, resumeTask == nil, let key = resumeKey else { return }
+        let t = URLSession.shared.webSocketTask(with: media.url)
+        t.maximumMessageSize = 1 << 20
+        resumeTask = t
+        t.resume()
+        if let text = OLCallFrames.encode(OLCallFrames.resume(callId: resumeCallId, leg: resumeLeg, key: key, traceId: traceId, seq: nextSeq())) {
+            t.send(.string(text)) { _ in }
+        }
+        let w = DispatchWorkItem { [weak self] in
+            self?.queue.dispatch {
+                guard let self, self.resumeTask === t else { return }
+                self.resumeTask = nil
+                t.cancel(with: .goingAway, reason: nil)
+                self.scheduleResumeAttempt()
+            }
+        }
+        resumeAttemptWatchdog = w
+        DispatchQueue.global().asyncAfter(deadline: .now() + OLSignalingResume.attemptTimeout, execute: w)
+        t.receive { [weak self] result in
+            guard let self else { return }
+            self.queue.dispatch {
+                guard !self.ended, self.resumeTask === t else { return }
+                self.resumeAttemptWatchdog?.cancel()
+                self.resumeTask = nil
+                guard case let .success(msg) = result, case let .string(text) = msg else {
+                    t.cancel(with: .goingAway, reason: nil)
+                    self.scheduleResumeAttempt() // no network yet: retry inside the window
+                    return
+                }
+                switch OLCallFrames.decode(text) {
+                case .resumed:
+                    let r = self.resumer
+                    self.resumer = nil
+                    self.socket = t
+                    let gapMs = Int((Date().timeIntervalSince1970 - (r?.startedAt ?? 0)) * 1000)
+                    self.crumbs.event("ws", "resumed:attempts=\(r?.attempts ?? 0):gapMs=\(gapMs)")
+                    self.callLog.event("ws_resume", reason: "resumed", detail: "attempts=\(r?.attempts ?? 0)", extra: ["gapMs": gapMs])
+                    let q = self.queuedWhileResuming
+                    self.queuedWhileResuming = []
+                    for f in q { self.send(f) }
+                    self.receive(on: t)
+                case let .bye(reason):
+                    t.cancel(with: .normalClosure, reason: nil)
+                    self.end("bye:\(reason)")
+                default:
+                    // refused (unknown call / key): the leg is gone, end exactly as before
+                    t.cancel(with: .normalClosure, reason: nil)
+                    self.crumbs.event("ws", "resume:refused", level: "error")
+                    self.callLog.event("ws_resume", reason: "refused")
+                    self.resumer = nil
+                    self.end("ws-failure")
                 }
             }
         }
@@ -182,6 +286,9 @@ public final class OLTgcallsEngine {
         case let .joined(j):
             crumbs.callId = j.callId
             crumbs.leg = j.leg
+            resumeKey = j.resume
+            resumeCallId = j.callId
+            resumeLeg = j.leg
             states.callId = j.callId
             states.setState(j.isOutgoing ? .offering : .answering, reason: "joined")
             crumbs.event("tg", "joined:outgoing=\(j.isOutgoing):version=\(version)")
@@ -251,7 +358,7 @@ public final class OLTgcallsEngine {
             crumbs.event("ws", "server-error:\(e)", level: "error")
             callLog.event("server_error", reason: OLCallLogTags.tag("server-error:\(e)"), detail: String("\(e)".prefix(60)))
             end("server-error")
-        case .stats, .pong, .ignored:
+        case .stats, .pong, .resumed, .ignored:
             break
         }
     }
@@ -265,6 +372,12 @@ public final class OLTgcallsEngine {
         connectWatchdog?.cancel()
         pingTimer?.cancel()
         pingTimer = nil
+        resumeAttemptWatchdog?.cancel()
+        resumeTask?.cancel(with: .normalClosure, reason: nil)
+        resumeTask = nil
+        resumer = nil
+        queuedWhileResuming = []
+        resumeKey = nil
         instance?.stop()
         instance = nil
         socket?.cancel(with: .normalClosure, reason: nil)

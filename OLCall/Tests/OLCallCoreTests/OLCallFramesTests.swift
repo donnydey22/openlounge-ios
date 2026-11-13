@@ -77,4 +77,19 @@ final class OLCallFramesTests: XCTestCase {
         XCTAssertEqual(OLVersions.pick(local: ["11.0.0", "14.0.0", "8.0.0"]), "8.0.0")
         XCTAssertNil(OLVersions.pick(local: ["5.0.0", "11.0.0"]))
     }
+
+    // Handover (call 11c994c9): resume key in "joined", resume / resumed frames.
+    func testJoinedResumeKeyOptional() {
+        let key = Data(repeating: 7, count: 256).base64EncodedString()
+        guard case let .joined(a) = OLCallFrames.decode(#"{"t":"joined","callId":"c","leg":"caller","key":"\#(key)","isOutgoing":true,"resume":"UmVz"}"#) else { return XCTFail("joined") }
+        XCTAssertEqual(a.resume, "UmVz")
+        guard case let .joined(b) = OLCallFrames.decode(#"{"t":"joined","callId":"c","leg":"caller","key":"\#(key)","isOutgoing":true}"#) else { return XCTFail("joined (old server)") }
+        XCTAssertNil(b.resume)
+    }
+
+    func testResumeFrames() {
+        let f = OLCallFrames.resume(callId: "c1", leg: "callee", key: "K", traceId: "tr", seq: 9)
+        XCTAssertEqual(OLCallFrames.encode(f), #"{"callId":"c1","leg":"callee","resume":"K","seq":9,"t":"resume","traceId":"tr"}"#)
+        if case .resumed = OLCallFrames.decode(#"{"t":"resumed","callId":"c1","leg":"callee"}"#) {} else { XCTFail("resumed") }
+    }
 }
