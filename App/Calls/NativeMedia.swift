@@ -89,7 +89,10 @@ final class NativeMedia {
                 e.start()
                 let now = Date()
                 for ev in self.earlyCallKit.suffix(8) {
-                    e.logAppEvent(ev.name, ["beforeEngine": true, "msBeforeEngine": Int(now.timeIntervalSince(ev.at) * 1000)])
+                    // category/mode as CallKit activated it: Telegram configures the session before reportNewIncomingCall
+                    // (CallKitIntegration.swift:295); OL first configures it in OLCallAudioDevice.begin (after this).
+                    e.logAppEvent(ev.name, ["beforeEngine": true, "msBeforeEngine": Int(now.timeIntervalSince(ev.at) * 1000),
+                                            "categoryAtEvent": ev.category, "modeAtEvent": ev.mode])
                 }
                 self.earlyCallKit.removeAll()
                 if self.muted { e.setMuted(true) }
@@ -174,12 +177,12 @@ final class NativeMedia {
 
     /// CallKit audio callbacks that arrived while no engine existed (push-wake: CallKit can activate before the
     /// page connects). Logging only — the engine still gets activation from the audioActive replay in connect.
-    private var earlyCallKit: [(name: String, at: Date)] = []
+    private var earlyCallKit: [(name: String, at: Date, category: String, mode: String)] = []
 
     func callKitDidActivate(_ s: AVAudioSession) {
-        if let e = engine { e.callKitDidActivate(s) } else { earlyCallKit.append(("callkit_did_activate", Date())) }
+        if let e = engine { e.callKitDidActivate(s) } else { earlyCallKit.append(("callkit_did_activate", Date(), s.category.rawValue, s.mode.rawValue)) }
     }
     func callKitDidDeactivate(_ s: AVAudioSession) {
-        if let e = engine { e.callKitDidDeactivate(s) } else { earlyCallKit.append(("callkit_did_deactivate", Date())) }
+        if let e = engine { e.callKitDidDeactivate(s) } else { earlyCallKit.append(("callkit_did_deactivate", Date(), s.category.rawValue, s.mode.rawValue)) }
     }
 }
