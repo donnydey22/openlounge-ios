@@ -3,7 +3,7 @@ name: ol-call-integration
 
 on:
   push:
-    branches: [ol-call-integration]
+    branches: [ol-call-integration, ol-b137]
   workflow_dispatch:
 
 permissions:
@@ -11,7 +11,7 @@ permissions:
   actions: read   # read seed artifacts from earlier runs in this repository
 
 concurrency:
-  group: ol-call-integration
+  group: ol-ios-${{ github.ref_name }}
   cancel-in-progress: true
 
 jobs:

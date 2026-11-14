@@ -74,6 +74,16 @@ public final class OLTgcallsEngine {
     private var resumeTask: URLSessionWebSocketTask?
     private var resumeAttemptWatchdog: DispatchWorkItem?
     private var queuedWhileResuming: [[String: Any]] = []
+    /// Restart tgcalls on a path change or media silence after a signaling resume (b137).
+    private var needsMediaReset = false
+    private var resetInFlight = false
+    private var resetCount = 0
+    private var lastResetAt: TimeInterval?
+    private var resumedAt: TimeInterval?
+    private var silenceAfterResumeWatchdog: DispatchWorkItem?
+    private var resetAckWatchdog: DispatchWorkItem?
+    private var localMuted = false
+    private var localVideoOn = false
     /// Logging only (t5614u): network path + 1 s video fps series.
     private var pathMonitor: NWPathMonitor?
     private let netLock = NSLock()
@@ -123,6 +133,7 @@ public final class OLTgcallsEngine {
             if name == "audio_engine_stop" { self.callLog.kickUpload() }
         }
         startPathMonitor()
+        localVideoOn = video
         audio.begin(speakerOn: video) { [weak self] outcome in
             if case let .failed(domain, code, first) = outcome {
                 self?.callLog.event("audio_session", reason: "audio_session_handoff_failure", detail: "\(domain):\(code):\(first)")
@@ -150,11 +161,12 @@ public final class OLTgcallsEngine {
         }
     }
 
-    public func setMuted(_ m: Bool) { queue.dispatch { self.instance?.setMuted(m) } }
+    public func setMuted(_ m: Bool) { queue.dispatch { self.localMuted = m; self.instance?.setMuted(m) } }
 
     /// Camera on/off. Call only after the camera permission gate passed.
     public func setVideoEnabled(_ on: Bool) {
         queue.dispatch {
+            self.localVideoOn = on
             guard let i = self.instance else { return }
             i.setVideoEnabled(on)
             if on { i.makeOutgoingVideoView { [weak self] v in if let v { self?.showLocal(v) } } }
@@ -291,6 +303,7 @@ public final class OLTgcallsEngine {
                     self.queuedWhileResuming = []
                     for f in q { self.send(f) }
                     self.receive(on: t)
+                    self.onSignalingResumed()
                 case let .bye(reason):
                     t.cancel(with: .normalClosure, reason: nil)
                     self.end("bye:\(reason)")
@@ -323,54 +336,7 @@ public final class OLTgcallsEngine {
                 end("version-mismatch")
                 return
             }
-            let rtc = OLRtcServers.fromIceServers(j.iceServers)
-            crumbs.event("tg", "rtc-servers:" + OLRtcServers.summary(rtc))
-            callLog.turnServers = rtc.filter { $0.isTurn }.count
-            callLog.event("rtc_servers", extra: ["turnServers": rtc.filter { $0.isTurn }.count, "stunServers": rtc.filter { !$0.isTurn }.count])
-            let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            do {
-                var key = j.key
-                let i = try OLTgcallsInstance(
-                    config: .init(version: version, key: key, isOutgoing: j.isOutgoing, video: video,
-                                  logDirectory: caches, traceId: traceId, rtcServers: rtc),
-                    queue: queue, audioDevice: audio,
-                    sendSignalingData: { [weak self] blob in
-                        guard let self else { return }
-                        self.crumbs.blob("send", blob)
-                        self.queue.dispatch {
-                            guard !self.ended else { return }
-                            self.states.blobSent()
-                            self.send(OLCallFrames.blob(blob, seq: self.nextSeq()))
-                        }
-                    })
-                key.resetBytes(in: 0..<key.count) // the engine holds its own copy
-                i.onRemoteAudioLevel = { [weak self] level in
-                    self?.queue.dispatch { self?.onRemoteLevel(level) }
-                }
-                i.onState = { [weak self] st, rv, rm in
-                    guard let self else { return }
-                    self.remoteMuted = rm
-                    self.remoteVideoActive = rv
-                    self.connected = st == .connected
-                    if st == .connected {
-                        self.connectWatchdog?.cancel()
-                        self.states.setState(.connected, reason: "tg-established")
-                    }
-                    self.crumbs.event("tg.state", st.rawValue, level: st == .failed ? "error" : "info")
-                    self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
-                    if st == .failed { self.end("tg-failed") }
-                }
-                instance = i
-                i.makeIncomingVideoView { [weak self] v in if let v { self?.showRemote(v) } }
-                if video { i.makeOutgoingVideoView { [weak self] v in if let v { self?.showLocal(v) } } }
-                emit(.joined(isOutgoing: j.isOutgoing, version: version))
-            } catch OLTgcallsError.noTurn {
-                crumbs.event("tg", "no-turn", level: "error")
-                end("no-turn")
-            } catch {
-                crumbs.event("tg", "create-failed:\(error)", level: "error")
-                end("native-create-failed")
-            }
+            startEngine(from: j, isInitialJoin: true)
         case let .blob(b):
             // The far side is here (a caller joins while the other phone still rings): only now
             // does the connect deadline start.
@@ -380,7 +346,15 @@ public final class OLTgcallsEngine {
             instance?.receiveSignalingData(b)
         case let .bye(reason):
             end("bye:\(reason)")
+        case let .legReset(j):
+            startEngine(from: j, isInitialJoin: false)
         case let .error(e):
+            if e == "reset-limited" || e == "reset-unsupported" || e == "translator" {
+                crumbs.event("tg", "media-reset:\(e)", level: "warning")
+                resetAckWatchdog?.cancel()
+                resetInFlight = false
+                break
+            }
             crumbs.event("ws", "server-error:\(e)", level: "error")
             callLog.event("server_error", reason: OLCallLogTags.tag("server-error:\(e)"), detail: String("\(e)".prefix(60)))
             end("server-error")
@@ -399,6 +373,8 @@ public final class OLTgcallsEngine {
         pingTimer?.cancel()
         pingTimer = nil
         resumeAttemptWatchdog?.cancel()
+        silenceAfterResumeWatchdog?.cancel()
+        resetAckWatchdog?.cancel()
         resumeTask?.cancel(with: .normalClosure, reason: nil)
         resumeTask = nil
         resumer = nil
@@ -437,6 +413,8 @@ public final class OLTgcallsEngine {
     private func markFlowing(_ source: String) {
         guard !flowing, !ended, connected else { return }
         flowing = true
+        silenceAfterResumeWatchdog?.cancel()
+        resumedAt = nil
         crumbs.event("call", "media-flowing:\(source)")
         callLog.event("media_flowing", reason: source, detail: nil)
         emit(.mediaFlowing(source: source))
@@ -550,8 +528,154 @@ public final class OLTgcallsEngine {
         callLog.event("video_fps_summary", extra: OLLogExtra.liveSafe(x))
     }
 
+
+    /// Engine queue. Builds (or rebuilds) the tgcalls instance from a joined / leg-reset frame.
+    private func startEngine(from j: OLCallFrames.Joined, isInitialJoin: Bool) {
+        if !j.serverVersions.isEmpty && !j.serverVersions.contains(version) {
+            crumbs.event("tg", "server-lacks-version:\(version)", level: "error")
+            end("version-mismatch")
+            return
+        }
+        let rtc = OLRtcServers.fromIceServers(j.iceServers)
+        crumbs.event("tg", "rtc-servers:" + OLRtcServers.summary(rtc))
+        callLog.turnServers = rtc.filter { $0.isTurn }.count
+        callLog.event("rtc_servers", extra: ["turnServers": rtc.filter { $0.isTurn }.count, "stunServers": rtc.filter { !$0.isTurn }.count])
+        let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+        do {
+            var key = j.key
+            let i = try OLTgcallsInstance(
+                config: .init(version: version, key: key, isOutgoing: j.isOutgoing, video: isInitialJoin ? video : localVideoOn,
+                              logDirectory: caches, traceId: traceId, rtcServers: rtc),
+                queue: queue, audioDevice: audio,
+                sendSignalingData: { [weak self] blob in
+                    guard let self else { return }
+                    self.crumbs.blob("send", blob)
+                    self.queue.dispatch {
+                        guard !self.ended else { return }
+                        self.states.blobSent()
+                        self.send(OLCallFrames.blob(blob, seq: self.nextSeq()))
+                    }
+                })
+            key.resetBytes(in: 0..<key.count) // the engine holds its own copy
+            i.onRemoteAudioLevel = { [weak self] level in
+                self?.queue.dispatch { self?.onRemoteLevel(level) }
+            }
+            i.onState = { [weak self] st, rv, rm in
+                guard let self else { return }
+                self.remoteMuted = rm
+                self.remoteVideoActive = rv
+                self.connected = st == .connected
+                if st == .connected {
+                    self.connectWatchdog?.cancel()
+                    self.states.setState(.connected, reason: "tg-established")
+                    self.resetInFlight = false
+                }
+                self.crumbs.event("tg.state", st.rawValue, level: st == .failed ? "error" : "info")
+                self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
+                if st == .failed, !self.resetInFlight { self.end("tg-failed") }
+            }
+            instance = i
+            if localMuted { i.setMuted(true) }
+            i.makeIncomingVideoView { [weak self] v in if let v { self?.showRemote(v) } }
+            if isInitialJoin ? video : localVideoOn {
+                i.setVideoEnabled(true)
+                i.makeOutgoingVideoView { [weak self] v in if let v { self?.showLocal(v) } }
+            }
+            if isInitialJoin {
+                emit(.joined(isOutgoing: j.isOutgoing, version: version))
+            } else {
+                resetAckWatchdog?.cancel()
+                peerSeen = true
+                armConnectWatchdog()
+                crumbs.event("tg", "media-reset:engine-started")
+            }
+        } catch OLTgcallsError.noTurn {
+            crumbs.event("tg", "no-turn", level: "error")
+            resetInFlight = false
+            end("no-turn")
+        } catch {
+            crumbs.event("tg", "create-failed:\(error)", level: "error")
+            resetInFlight = false
+            end("native-create-failed")
+        }
+    }
+
+    private func maybeResetOnPath(from: String, to: String) {
+        let connected = states.state == .connected
+        let now = Date().timeIntervalSince1970
+        if OLMediaReset.shouldResetOnPathChange(from: from, to: to, connected: connected, inFlight: resetInFlight,
+                                                ended: ended, count: resetCount, last: lastResetAt, now: now) {
+            if socket != nil, resumer == nil {
+                beginMediaReset(reason: "path:\(from)->\(to)")
+            } else {
+                needsMediaReset = true
+            }
+        } else if OLMediaReset.pathChange(from, to), connected {
+            needsMediaReset = true
+        }
+    }
+
+    private func onSignalingResumed() {
+        flowing = false
+        resumedAt = Date().timeIntervalSince1970
+        if needsMediaReset, states.state == .connected, socket != nil {
+            beginMediaReset(reason: "after-resume")
+        } else {
+            armSilenceAfterResume()
+        }
+    }
+
+    private func armSilenceAfterResume() {
+        silenceAfterResumeWatchdog?.cancel()
+        let started = resumedAt ?? Date().timeIntervalSince1970
+        resumedAt = started
+        let w = DispatchWorkItem { [weak self] in
+            self?.queue.dispatch {
+                guard let self, !self.ended else { return }
+                let now = Date().timeIntervalSince1970
+                if OLMediaReset.shouldResetOnSilence(resumedAt: self.resumedAt, flowing: self.flowing,
+                                                     connected: self.states.state == .connected, inFlight: self.resetInFlight,
+                                                     ended: self.ended, count: self.resetCount, last: self.lastResetAt, now: now) {
+                    self.beginMediaReset(reason: "silence-after-resume")
+                }
+            }
+        }
+        silenceAfterResumeWatchdog = w
+        DispatchQueue.global().asyncAfter(deadline: .now() + OLMediaReset.silenceAfterResume, execute: w)
+    }
+
+    /// Stop this peer's tgcalls instance and ask the server to reset only this slot's translator.
+    private func beginMediaReset(reason: String) {
+        guard !ended, !resetInFlight, socket != nil, resumer == nil else {
+            needsMediaReset = true
+            return
+        }
+        resetInFlight = true
+        needsMediaReset = false
+        resetCount += 1
+        lastResetAt = Date().timeIntervalSince1970
+        flowing = false
+        resumedAt = nil
+        silenceAfterResumeWatchdog?.cancel()
+        crumbs.event("tg", "media-reset:\(reason)", level: "warning")
+        callLog.event("media_reset", reason: reason, extra: ["count": resetCount, "netType": netType ?? "unknown"])
+        let old = instance
+        instance = nil
+        old?.stop()
+        send(OLCallFrames.resetLeg(seq: nextSeq()))
+        let w = DispatchWorkItem { [weak self] in
+            self?.queue.dispatch {
+                guard let self, self.resetInFlight, !self.ended else { return }
+                self.resetInFlight = false
+                self.crumbs.event("tg", "media-reset:timeout", level: "error")
+            }
+        }
+        resetAckWatchdog = w
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5, execute: w)
+    }
+
     /// Network type for every call-log line; "network" once, then "network_change" from/to. Like Telegram's
-    /// setNetworkType (VoIPService.updateNetworkType) this only observes; tgcalls follows the change itself.
+    /// setNetworkType (VoIPService.updateNetworkType). A wifi <-> cellular change now also restarts the engine.
     private func startPathMonitor() {
         let m = NWPathMonitor()
         m.pathUpdateHandler = { [weak self] path in
@@ -568,6 +692,7 @@ public final class OLTgcallsEngine {
                     self.callLog.event("network_change", reason: "\(from)->\(t)",
                                        extra: ["from": from, "to": t, "msSinceStart": ms, "connected": self.states.state == .connected,
                                                "wsUp": self.socket != nil, "resuming": self.resumer != nil])
+                    self.maybeResetOnPath(from: from, to: t)
                 } else {
                     self.callLog.event("network", reason: t, extra: ["type": t, "msSinceStart": ms])
                 }

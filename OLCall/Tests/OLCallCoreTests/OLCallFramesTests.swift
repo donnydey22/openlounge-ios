@@ -92,4 +92,15 @@ final class OLCallFramesTests: XCTestCase {
         XCTAssertEqual(OLCallFrames.encode(f), #"{"callId":"c1","leg":"callee","resume":"K","seq":9,"t":"resume","traceId":"tr"}"#)
         if case .resumed = OLCallFrames.decode(#"{"t":"resumed","callId":"c1","leg":"callee"}"#) {} else { XCTFail("resumed") }
     }
+
+    func testResetLegFrames() {
+        XCTAssertEqual(OLCallFrames.encode(OLCallFrames.resetLeg(seq: 4)), #"{"seq":4,"t":"reset-leg"}"#)
+        let key = Data(repeating: 7, count: 256).base64EncodedString()
+        guard case let .legReset(j) = OLCallFrames.decode(#"{"t":"leg-reset","callId":"c","leg":"caller","key":"\#(key)","isOutgoing":true,"resume":"UmVz"}"#) else { return XCTFail("leg-reset") }
+        XCTAssertEqual(j.callId, "c")
+        XCTAssertEqual(j.leg, "caller")
+        XCTAssertTrue(j.isOutgoing)
+        XCTAssertEqual(j.resume, "UmVz")
+        XCTAssertEqual(j.key.count, 256)
+    }
 }

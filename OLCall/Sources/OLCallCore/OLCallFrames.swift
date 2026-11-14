@@ -8,6 +8,7 @@
 //   C->S  ping              S->C pong
 //   C->S  resume {callId, leg, resume}   S->C resumed   (signaling socket dropped mid-call, e.g. Wi-Fi ->
 //         cellular: a NEW socket rebinds the SAME leg with the per-leg key from "joined"; tgcalls untouched)
+//   C->S  reset-leg   S->C leg-reset {key, isOutgoing, iceServers, resume}  (restart this peer's engine)
 // The join token rides inside the join frame, never in the URL. Every client frame carries the
 // client's own increasing "seq". Pure and pinned by Tests/OLCallCoreTests/Fixtures/call-frames.jsonl.
 import Foundation
@@ -43,6 +44,7 @@ public enum OLCallFrames {
         case error(String)
         case pong
         case resumed
+        case legReset(Joined)
         case ignored(String)
     }
 
@@ -64,6 +66,8 @@ public enum OLCallFrames {
     }
     /// t5450: the remote renderer saw no frame for a while; the server PLIs the other leg's sender.
     public static func keyframe(seq: UInt64, reason: String) -> [String: Any] { ["t": "keyframe", "seq": seq, "reason": reason] }
+    /// Restart this peer's tgcalls translator; the other slot is not touched.
+    public static func resetLeg(seq: UInt64) -> [String: Any] { ["t": "reset-leg", "seq": seq] }
 
     public static func encode(_ frame: [String: Any]) -> String? {
         guard let d = try? JSONSerialization.data(withJSONObject: frame, options: [.sortedKeys]) else { return nil }
@@ -89,6 +93,12 @@ public enum OLCallFrames {
         case "error": return .error(o["error"] as? String ?? "")
         case "pong": return .pong
         case "resumed": return .resumed
+        case "leg-reset":
+            guard let b64 = o["key"] as? String, let key = Data(base64Encoded: b64), key.count == 256,
+                  let out = o["isOutgoing"] as? Bool else { return .error("bad-leg-reset") }
+            return .legReset(Joined(callId: o["callId"] as? String ?? "", leg: o["leg"] as? String ?? "", key: key,
+                                    isOutgoing: out, serverVersions: o["versions"] as? [String] ?? [],
+                                    iceServers: o["iceServers"], resume: o["resume"] as? String))
         default: return .ignored(t)
         }
     }
