@@ -12,7 +12,8 @@ import Foundation
 
 public struct OLSignalingResume {
     /// Below the server's 20 s ws-closed grace and tgcalls' 20 s disconnected timeout.
-    public static let window: TimeInterval = 18
+    /// Below the server's 40 s ws-closed grace (olcall-138, Nov 15 night; was 18 s against 20 s).
+    public static let window: TimeInterval = 36
     /// One attempt that neither connects nor gets "resumed" within this is abandoned and retried.
     public static let attemptTimeout: TimeInterval = 4
     /// Blobs queued while no socket is up (tgcalls candidates during the gap); oldest dropped beyond this.

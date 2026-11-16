@@ -10,8 +10,13 @@ import Foundation
 public struct OLMediaReset {
     /// No inbound media this long after a signaling resume -> restart the engine.
     public static let silenceAfterResume: TimeInterval = 3
-    public static let cooldown: TimeInterval = 8
-    public static let maxPerCall = 3
+    public static let cooldown: TimeInterval = 3
+    /// Dual-connected phones flap Wi-Fi <-> cellular; every flip needs its own restart (Nov 15 night, 138).
+    public static let maxPerCall = 30
+    /// tgcalls stuck in reconnecting this long mid-call -> restart the engine.
+    public static let reconnectingReset: TimeInterval = 4
+    /// Debounce for path flips before moving the signaling socket.
+    public static let pathSettle: TimeInterval = 1.5
 
     /// wifi <-> cellular (or wired), not the first path reading and not a drop to "none".
     public static func pathChange(_ from: String, _ to: String) -> Bool {

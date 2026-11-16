@@ -45,6 +45,8 @@ public enum OLCallFrames {
         case pong
         case resumed
         case legReset(Joined)
+        /// Server: this leg's ICE failed; it holds the call for a reset-leg (olcall-138).
+        case mediaLost(String)
         case ignored(String)
     }
 
@@ -93,6 +95,7 @@ public enum OLCallFrames {
         case "error": return .error(o["error"] as? String ?? "")
         case "pong": return .pong
         case "resumed": return .resumed
+        case "media-lost": return .mediaLost(o["reason"] as? String ?? "")
         case "leg-reset":
             guard let b64 = o["key"] as? String, let key = Data(base64Encoded: b64), key.count == 256,
                   let out = o["isOutgoing"] as? Bool else { return .error("bad-leg-reset") }

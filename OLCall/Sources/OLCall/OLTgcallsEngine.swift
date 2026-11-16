@@ -82,6 +82,11 @@ public final class OLTgcallsEngine {
     private var resumedAt: TimeInterval?
     private var silenceAfterResumeWatchdog: DispatchWorkItem?
     private var resetAckWatchdog: DispatchWorkItem?
+    private var pathSettleWork: DispatchWorkItem?
+    private var pathFrom: String?
+    private var reconnectWatch: DispatchWorkItem?
+    private var lastTgState: OLTgcallsInstance.State?
+    private var resetRetries = 0
     private var localMuted = false
     private var localVideoOn = false
     /// Logging only (t5614u): network path + 1 s video fps series.
@@ -348,11 +353,16 @@ public final class OLTgcallsEngine {
             end("bye:\(reason)")
         case let .legReset(j):
             startEngine(from: j, isInitialJoin: false)
+        case let .mediaLost(reason):
+            crumbs.event("tg", "server-media-lost:\(reason)", level: "warning")
+            if !resetInFlight { beginMediaReset(reason: "server-media-lost") } else { needsMediaReset = true }
         case let .error(e):
             if e == "reset-limited" || e == "reset-unsupported" || e == "translator" {
                 crumbs.event("tg", "media-reset:\(e)", level: "warning")
                 resetAckWatchdog?.cancel()
                 resetInFlight = false
+                // The engine was stopped for the reset: never sit with no engine (138).
+                if e != "reset-unsupported", instance == nil { scheduleResetRetry("retry-\(e)") }
                 break
             }
             crumbs.event("ws", "server-error:\(e)", level: "error")
@@ -365,6 +375,7 @@ public final class OLTgcallsEngine {
 
     private func end(_ reason: String) {
         guard !ended else { return }
+        pathSettleWork?.cancel(); reconnectWatch?.cancel()
         // Normal ends (local hangup, far side's bye) are not failures; everything else before Established is.
         let normal = reason == "local-hangup" || reason.hasPrefix("bye:")
         if states.state != .connected && !normal { states.fail(reason) }
@@ -570,6 +581,16 @@ public final class OLTgcallsEngine {
                     self.states.setState(.connected, reason: "tg-established")
                     self.resetInFlight = false
                 }
+                self.lastTgState = st
+                let midCall = self.states.state == .connected
+                if st == .connected { self.reconnectWatch?.cancel(); self.resetRetries = 0 }
+                if midCall, st == .reconnecting, !self.resetInFlight { self.armReconnectWatch() }
+                if midCall, st == .failed {
+                    // Mid-call engine failure: restart it on a fresh translator instead of ending the call (138).
+                    self.crumbs.event("tg.state", "failed:restarting", level: "error")
+                    if !self.resetInFlight { self.beginMediaReset(reason: "tg-failed") }
+                    return
+                }
                 self.crumbs.event("tg.state", st.rawValue, level: st == .failed ? "error" : "info")
                 self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
                 if st == .failed, !self.resetInFlight { self.end("tg-failed") }
@@ -600,19 +621,60 @@ public final class OLTgcallsEngine {
         }
     }
 
+    /// Path flip mid-call (138, Nov 15 night: dual-connected phones move their default path while the old one
+    /// stays up a while and then dies). After the flip settles, move signaling to the new path (resume on a fresh
+    /// socket) and restart the engine there, instead of waiting for the old socket to die.
     private func maybeResetOnPath(from: String, to: String) {
-        let connected = states.state == .connected
-        let now = Date().timeIntervalSince1970
-        if OLMediaReset.shouldResetOnPathChange(from: from, to: to, connected: connected, inFlight: resetInFlight,
-                                                ended: ended, count: resetCount, last: lastResetAt, now: now) {
-            if socket != nil, resumer == nil {
-                beginMediaReset(reason: "path:\(from)->\(to)")
-            } else {
-                needsMediaReset = true
-            }
-        } else if OLMediaReset.pathChange(from, to), connected {
-            needsMediaReset = true
+        if pathFrom == nil { pathFrom = from }
+        pathSettleWork?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            self?.queue.dispatch { self?.settlePath(to: to) }
         }
+        pathSettleWork = w
+        DispatchQueue.global().asyncAfter(deadline: .now() + OLMediaReset.pathSettle, execute: w)
+    }
+
+    private func settlePath(to: String) {
+        guard let from = pathFrom else { return }
+        pathFrom = nil
+        guard !ended, OLMediaReset.pathChange(from, to), states.state == .connected else { return }
+        crumbs.event("net", "handover:\(from)->\(to)", level: "warning")
+        needsMediaReset = true
+        if resumeKey != nil, resumer == nil {
+            beginResume() // cancels the old socket; onSignalingResumed restarts media on the new path
+        } else if socket != nil, resumer == nil {
+            beginMediaReset(reason: "path:\(from)->\(to)")
+        }
+    }
+
+    private func scheduleResetRetry(_ reason: String) {
+        guard !ended else { return }
+        guard resetRetries < 20 else { end("media-unrecoverable"); return }
+        resetRetries += 1
+        DispatchQueue.global().asyncAfter(deadline: .now() + 2.5) { [weak self] in
+            self?.queue.dispatch {
+                guard let self, !self.ended, !self.resetInFlight, self.instance == nil else { return }
+                self.beginMediaReset(reason: reason)
+            }
+        }
+    }
+
+    private func armReconnectWatch() {
+        reconnectWatch?.cancel()
+        let w = DispatchWorkItem { [weak self] in
+            self?.queue.dispatch {
+                guard let self, !self.ended, self.lastTgState == .reconnecting else { return }
+                if OLMediaReset.allowed(connected: self.states.state == .connected, inFlight: self.resetInFlight,
+                                        ended: self.ended, count: self.resetCount, last: self.lastResetAt,
+                                        now: Date().timeIntervalSince1970) {
+                    self.beginMediaReset(reason: "tg-reconnecting")
+                } else if self.states.state == .connected {
+                    self.armReconnectWatch()
+                }
+            }
+        }
+        reconnectWatch = w
+        DispatchQueue.global().asyncAfter(deadline: .now() + OLMediaReset.reconnectingReset, execute: w)
     }
 
     private func onSignalingResumed() {
@@ -668,6 +730,7 @@ public final class OLTgcallsEngine {
                 guard let self, self.resetInFlight, !self.ended else { return }
                 self.resetInFlight = false
                 self.crumbs.event("tg", "media-reset:timeout", level: "error")
+                if self.instance == nil { self.scheduleResetRetry("retry-timeout") }
             }
         }
         resetAckWatchdog = w

@@ -18,6 +18,6 @@ final class OLSignalingResumeTests: XCTestCase {
         while let d = r.next(now: t) { t += d + OLSignalingResume.attemptTimeout }
         XCTAssertLessThan(t, 100 + OLSignalingResume.window + OLSignalingResume.attemptTimeout + 2)
         XCTAssertGreaterThanOrEqual(r.attempts, 3)
-        XCTAssertLessThan(OLSignalingResume.window, 20) // server grace and tgcalls timeout are 20 s
+        XCTAssertLessThan(OLSignalingResume.window, 40) // server ws grace is 40 s (olcall-138)
     }
 }

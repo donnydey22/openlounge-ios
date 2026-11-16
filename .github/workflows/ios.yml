@@ -3,7 +3,7 @@ name: ol-call-integration
 
 on:
   push:
-    branches: [ol-call-integration, ol-b137]
+    branches: [ol-call-integration, ol-b137, ol-b138]
   workflow_dispatch:
 
 permissions:
