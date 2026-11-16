@@ -70,6 +70,7 @@ final class OLCallFramesTests: XCTestCase {
         if case .error = OLCallFrames.decode("not json") {} else { XCTFail() }
         if case .error = OLCallFrames.decode(#"{"t":"joined","key":"AAAA","isOutgoing":true}"#) {} else { XCTFail("short key accepted") }
         if case .ignored("offer") = OLCallFrames.decode(#"{"t":"offer"}"#) {} else { XCTFail("unknown frame not ignored") }
+        if case .mediaLost("ice-Failed") = OLCallFrames.decode(#"{"t":"media-lost","reason":"ice-Failed"}"#) {} else { XCTFail("media-lost") }
     }
 
     func testVersionPick() {
