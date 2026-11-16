@@ -621,9 +621,9 @@ public final class OLTgcallsEngine {
         }
     }
 
-    /// Path flip mid-call (138, Nov 15 night: dual-connected phones move their default path while the old one
+    /// Path flip mid-call (138, Nov 15 night: dual-connected phones move their default path while the previous one
     /// stays up a while and then dies). After the flip settles, move signaling to the new path (resume on a fresh
-    /// socket) and restart the engine there, instead of waiting for the old socket to die.
+    /// socket) and restart the engine there, instead of waiting for the previous socket to die.
     private func maybeResetOnPath(from: String, to: String) {
         if pathFrom == nil { pathFrom = from }
         pathSettleWork?.cancel()
@@ -641,7 +641,7 @@ public final class OLTgcallsEngine {
         crumbs.event("net", "handover:\(from)->\(to)", level: "warning")
         needsMediaReset = true
         if resumeKey != nil, resumer == nil {
-            beginResume() // cancels the old socket; onSignalingResumed restarts media on the new path
+            beginResume() // cancels the current socket; onSignalingResumed restarts media on the new path
         } else if socket != nil, resumer == nil {
             beginMediaReset(reason: "path:\(from)->\(to)")
         }
