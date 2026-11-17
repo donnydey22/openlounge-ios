@@ -73,6 +73,15 @@ final class OLCallFramesTests: XCTestCase {
         if case .mediaLost("ice-Failed") = OLCallFrames.decode(#"{"t":"media-lost","reason":"ice-Failed"}"#) {} else { XCTFail("media-lost") }
     }
 
+    func testDecodeRebuildFrames() {
+        if case .mediaLost("ice-disconnected") = OLCallFrames.decode(#"{"t":"media-lost","reason":"ice-disconnected"}"#) {} else { XCTFail("early media-lost") }
+        if case .peer("reconnecting") = OLCallFrames.decode(#"{"t":"peer","peer":"reconnecting"}"#) {} else { XCTFail("peer reconnecting") }
+        if case .peer("connected") = OLCallFrames.decode(#"{"t":"peer","peer":"connected"}"#) {} else { XCTFail("peer connected") }
+        if case .bye("leg-closed") = OLCallFrames.decode(#"{"t":"bye","reason":"leg-closed"}"#) {} else { XCTFail("bye without detail") }
+        if case .bye("leg-closed:hangup-by-caller") = OLCallFrames.decode(#"{"t":"bye","reason":"leg-closed","detail":"hangup-by-caller"}"#) {} else { XCTFail("bye detail") }
+        if case .error("call-ended") = OLCallFrames.decode(#"{"t":"error","error":"call-ended"}"#) {} else { XCTFail("call-ended") }
+    }
+
     func testVersionPick() {
         XCTAssertEqual(OLVersions.pick(local: ["7.0.0", "11.0.0", "13.0.0", "14.0.0"]), "13.0.0")
         XCTAssertEqual(OLVersions.pick(local: ["11.0.0", "14.0.0", "8.0.0"]), "8.0.0")

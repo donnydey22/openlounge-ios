@@ -47,6 +47,8 @@ public enum OLCallFrames {
         case legReset(Joined)
         /// Server: this leg's ICE failed; it holds the call for a reset-leg (olcall-138).
         case mediaLost(String)
+        /// Server `peer` frame (ol-fable52-rebuild): the OTHER party's media path, "connected" or "reconnecting". UI only.
+        case peer(String)
         case ignored(String)
     }
 
@@ -91,7 +93,12 @@ public enum OLCallFrames {
             guard let b64 = o["b64"] as? String, let d = Data(base64Encoded: b64) else { return .error("bad-blob") }
             return .blob(d)
         case "stats": return .stats(o["stats"] as? [String: Any] ?? [:])
-        case "bye": return .bye(o["reason"] as? String ?? "")
+        case "bye":
+            // `detail` (rebuild): hangup-by-caller / hangup-by-callee / join-timeout / server-shutdown / leg cause.
+            let reason = o["reason"] as? String ?? ""
+            let detail = o["detail"] as? String ?? ""
+            return .bye(detail.isEmpty ? reason : reason + ":" + detail)
+        case "peer": return .peer(o["peer"] as? String ?? "")
         case "error": return .error(o["error"] as? String ?? "")
         case "pong": return .pong
         case "resumed": return .resumed

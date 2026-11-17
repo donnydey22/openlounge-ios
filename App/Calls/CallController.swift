@@ -113,6 +113,15 @@ final class CallController: ObservableObject {
     /// This phone's media leg reached the server (tgcalls Established). Not an answer and not first inbound media.
     func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
 
+    /// Mid-call media is reconnecting (this phone's engine, or the server `peer` frame for the other party).
+    /// The status line shows "Reconnecting…" instead of the timer until it is back.
+    private var reconnecting = false
+    func setReconnecting(callId id: String, on: Bool) {
+        guard id == callId, reconnecting != on else { return }
+        reconnecting = on
+        tick()
+    }
+
     /// First inbound media after the answer (NativeMedia callback). Starts the timer only once also answered.
     func mediaFlowing(callId id: String, source: String) {
         guard id == callId else { return }
@@ -231,6 +240,7 @@ final class CallController: ObservableObject {
     }
 
     private func begin(_ id: String, name: String, photo: URL?, video v: Bool, phase p: OLCallPhase) {
+        reconnecting = false
         if callId != id {
             activeAt = nil
             engineUp = false
@@ -272,10 +282,12 @@ final class CallController: ObservableObject {
 
     private func tick() {
         let secs = activeAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
+        if reconnecting && phase == .active && !failed && !endedCard { statusText = "Reconnecting…"; return }
         statusText = (!live && ringingAck && phase == .calling) ? "Ringing…" : phase.status(seconds: secs)
     }
 
     private func finish() {
+        reconnecting = false
         endedWork?.cancel()
         endedWork = nil
         endedCard = false

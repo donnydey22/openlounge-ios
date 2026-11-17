@@ -28,6 +28,8 @@ public final class OLTgcallsEngine {
         case mediaFlowing(source: String)
         case route(String)
         case ended(String)
+        /// Mid-call: the other party's media path is reconnecting (true) or back (false). Server `peer` frame.
+        case peerReconnecting(Bool)
     }
 
     /// Main queue.
@@ -350,13 +352,26 @@ public final class OLTgcallsEngine {
             crumbs.blob("recv", b)
             instance?.receiveSignalingData(b)
         case let .bye(reason):
+            crumbs.event("tg", "bye:\(reason)")
             end("bye:\(reason)")
+        case let .peer(p):
+            crumbs.event("tg", "peer:\(p)")
+            if p == "reconnecting" || p == "connected" {
+                let on = p == "reconnecting"
+                emit(.peerReconnecting(on))
+            }
         case let .legReset(j):
             startEngine(from: j, isInitialJoin: false)
         case let .mediaLost(reason):
             crumbs.event("tg", "server-media-lost:\(reason)", level: "warning")
             if !resetInFlight { beginMediaReset(reason: "server-media-lost") } else { needsMediaReset = true }
         case let .error(e):
+            if e == "call-ended" {
+                // The other side ended (or cancelled) before this join arrived: a normal end, not a failure.
+                crumbs.event("tg", "server:call-ended")
+                end("bye:call-ended")
+                break
+            }
             if e == "reset-limited" || e == "reset-unsupported" || e == "translator" {
                 crumbs.event("tg", "media-reset:\(e)", level: "warning")
                 resetAckWatchdog?.cancel()

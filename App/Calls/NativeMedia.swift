@@ -26,6 +26,8 @@ final class NativeMedia {
     private(set) var callId: String?
     private var pending: Reply?
     private var connected = false
+    private var ownReconnecting = false
+    private var peerReconnecting = false
     private var video = false
     private var remoteVideo = false
     private var muted = false
@@ -108,6 +110,8 @@ final class NativeMedia {
     private func onEvent(_ ev: OLTgcallsEngine.Event, id: String) {
         switch ev {
         case let .state(st, rv, _):
+            // Mid-call "Reconnecting…": this phone's engine lost its path after having connected.
+            if connected { ownReconnecting = st == .reconnecting; CallController.shared.setReconnecting(callId: id, on: ownReconnecting || peerReconnecting) }
             if st == .connected && !connected {
                 connected = true
                 host?.emitNativeMedia(["state": "connected", "callId": id])
@@ -131,8 +135,14 @@ final class NativeMedia {
             engine = nil
             callId = nil
             connected = false
+            ownReconnecting = false
+            peerReconnecting = false
+            CallController.shared.setReconnecting(callId: id, on: false)
             muted = false
             CallController.shared.engineEnded(callId: id)
+        case let .peerReconnecting(on):
+            peerReconnecting = on
+            CallController.shared.setReconnecting(callId: id, on: ownReconnecting || peerReconnecting)
         case let .mediaFlowing(source):
             CallController.shared.mediaFlowing(callId: id, source: source)
         case .joined, .audio, .audioFailed, .route:
