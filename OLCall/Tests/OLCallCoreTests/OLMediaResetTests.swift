@@ -12,8 +12,11 @@ final class OLMediaResetTests: XCTestCase {
     }
 
     func testCooldownAndMax() {
-        XCTAssertFalse(OLMediaReset.shouldResetOnPathChange(from: "wifi", to: "cellular", connected: true, inFlight: false, ended: false, count: 0, last: 10, now: 17))
-        XCTAssertTrue(OLMediaReset.shouldResetOnPathChange(from: "wifi", to: "cellular", connected: true, inFlight: false, ended: false, count: 0, last: 10, now: 18))
+        // cooldown 3 s since 8ba7dc8 (iOS 138, dual-connected Wi-Fi/cellular flaps), same as Android OlMediaReset.COOLDOWN_MS;
+        // server reset-limited floor is 1.5 s, so a client reset after the cooldown is never refused for rate.
+        XCTAssertEqual(OLMediaReset.cooldown, 3)
+        XCTAssertFalse(OLMediaReset.shouldResetOnPathChange(from: "wifi", to: "cellular", connected: true, inFlight: false, ended: false, count: 0, last: 10, now: 12.9))
+        XCTAssertTrue(OLMediaReset.shouldResetOnPathChange(from: "wifi", to: "cellular", connected: true, inFlight: false, ended: false, count: 0, last: 10, now: 13))
         XCTAssertFalse(OLMediaReset.shouldResetOnPathChange(from: "wifi", to: "cellular", connected: true, inFlight: false, ended: false, count: OLMediaReset.maxPerCall, last: nil, now: 0))
     }
 
