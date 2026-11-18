@@ -6,6 +6,7 @@ import Combine
 import Foundation
 import OLShellCore
 import UIKit
+import OLCallCore
 
 final class CallController: ObservableObject {
     static let shared = CallController()
@@ -43,6 +44,9 @@ final class CallController: ObservableObject {
     /// First inbound media after the answer (page call:mediaFlowing, or NativeMedia.mediaFlowing).
     /// The timer and full controls start only when answered AND this is true.
     @Published private(set) var mediaFlowing = false
+    /// Server-owned call lifecycle (olcall states.go, via call:state). Read-only mirror: set only by
+    /// observeLifecycle from the server's snapshot, never computed or advanced here.
+    @Published private(set) var lifecycle: OLCallLifecycle?
     /// Full call UI (row, timer, video, minimize) only once media flows after the server answer.
     var live: Bool { answered && mediaFlowing }
 
@@ -112,6 +116,12 @@ final class CallController: ObservableObject {
 
     /// This phone's media leg reached the server (tgcalls Established). Not an answer and not first inbound media.
     func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
+
+    /// Observer only: holds the server's latest lifecycle snapshot for this call (seq-ordered, stale ignored).
+    func observeLifecycle(callId id: String, _ l: OLCallLifecycle) {
+        guard id == callId, OLCallLifecycle.newer(lifecycle, l) else { return }
+        lifecycle = l
+    }
 
     /// Mid-call media is reconnecting (this phone's engine, or the server `peer` frame for the other party).
     /// The status line shows "Reconnecting…" instead of the timer until it is back.
@@ -243,6 +253,7 @@ final class CallController: ObservableObject {
         reconnecting = false
         if callId != id {
             activeAt = nil
+            lifecycle = nil // new call: no server snapshot yet
             engineUp = false
             mediaFlowing = false
             answered = false

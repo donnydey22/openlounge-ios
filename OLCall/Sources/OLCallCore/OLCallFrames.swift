@@ -49,6 +49,8 @@ public enum OLCallFrames {
         case mediaLost(String)
         /// Server `peer` frame (ol-fable52-rebuild): the OTHER party's media path, "connected" or "reconnecting". UI only.
         case peer(String)
+        /// Server `call:state` frame: the server-owned lifecycle (olcall states.go). Observe only.
+        case callState(OLCallLifecycle)
         case ignored(String)
     }
 
@@ -109,6 +111,9 @@ public enum OLCallFrames {
             return .legReset(Joined(callId: o["callId"] as? String ?? "", leg: o["leg"] as? String ?? "", key: key,
                                     isOutgoing: out, serverVersions: o["versions"] as? [String] ?? [],
                                     iceServers: o["iceServers"], resume: o["resume"] as? String))
+        case "call:state":
+            guard let l = OLCallLifecycle.parse(o["lifecycle"] as? [String: Any]) else { return .error("bad-call-state") }
+            return .callState(l)
         default: return .ignored(t)
         }
     }

@@ -128,6 +128,8 @@ final class NativeMedia {
             CallController.shared.remoteVideoView = v
         case let .localVideoView(v):
             CallController.shared.localVideoView = v
+        case let .lifecycle(l):
+            CallController.shared.observeLifecycle(callId: id, l) // server-owned; observe only
         case let .ended(reason):
             let normal = reason == "local-hangup" || reason.hasPrefix("bye:")
             if let p = pending { p(false, nil, "network:olcall:\(reason)"); pending = nil }

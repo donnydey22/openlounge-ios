@@ -30,6 +30,8 @@ public final class OLTgcallsEngine {
         case ended(String)
         /// Mid-call: the other party's media path is reconnecting (true) or back (false). Server `peer` frame.
         case peerReconnecting(Bool)
+        /// Server-owned lifecycle (call:state). Observe only: never derive or write call state from it.
+        case lifecycle(OLCallLifecycle)
     }
 
     /// Main queue.
@@ -58,6 +60,8 @@ public final class OLTgcallsEngine {
     private var remoteMuted = false
     private let inboundSilence = OLSilenceWatchdog(window: 8, maxRecoveries: 0)
     private var remoteVideoActive = false
+    /// Latest server-owned lifecycle snapshot (call:state); nil until the server sends one. Read-only mirror.
+    public private(set) var lifecycle: OLCallLifecycle?
     /// Main thread: stable containers the UI shows (OLVideoView); the engine views go inside.
     private var remoteView: OLVideoView?
     private var localView: OLVideoView?
@@ -383,6 +387,12 @@ public final class OLTgcallsEngine {
             crumbs.event("ws", "server-error:\(e)", level: "error")
             callLog.event("server_error", reason: OLCallLogTags.tag("server-error:\(e)"), detail: String("\(e)".prefix(60)))
             end("server-error")
+        case let .callState(l):
+            // The server is the single writer of the call lifecycle (olcall states.go); pass it through untouched.
+            if OLCallLifecycle.newer(lifecycle, l) {
+                lifecycle = l
+                emit(.lifecycle(l))
+            }
         case .stats, .pong, .resumed, .ignored:
             break
         }

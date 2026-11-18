@@ -1,0 +1,24 @@
+[
+  {"name": "completed", "events": ["join", "joined", "media", "peer:connected", "peer:reconnecting", "hangup"],
+   "frames": [
+     {"callId":"fx","leg":"caller","state":"joining_url","seq":1,"event":"join"},
+     {"callId":"fx","leg":"caller","state":"connecting","seq":2,"event":"joined"},
+     {"callId":"fx","leg":"caller","state":"in_room","seq":3,"event":"peer:connected"},
+     {"callId":"fx","leg":"caller","state":"terminal","reason":"completed","seq":4,"event":"hangup"}]},
+  {"name": "declined", "events": ["call:start", "call:decline"],
+   "frames": [
+     {"callId":"fx","leg":"caller","state":"ringing","seq":1,"event":"call:start"},
+     {"callId":"fx","leg":"caller","state":"terminal","reason":"declined","seq":2,"event":"call:decline"}]},
+  {"name": "answered", "events": ["call:start", "call:accept", "join", "joined", "peer:connected"],
+   "frames": [
+     {"callId":"fx","leg":"caller","state":"ringing","seq":1,"event":"call:start"},
+     {"callId":"fx","leg":"caller","state":"answering","seq":2,"event":"call:accept"},
+     {"callId":"fx","leg":"caller","state":"joining_url","seq":3,"event":"join"},
+     {"callId":"fx","leg":"caller","state":"connecting","seq":4,"event":"joined"},
+     {"callId":"fx","leg":"caller","state":"in_room","seq":5,"event":"peer:connected"}]},
+  {"name": "expired", "events": ["join", "joined", "bye", "peer:connected"], "byeDetail": "join-timeout",
+   "frames": [
+     {"callId":"fx","leg":"caller","state":"joining_url","seq":1,"event":"join"},
+     {"callId":"fx","leg":"caller","state":"connecting","seq":2,"event":"joined"},
+     {"callId":"fx","leg":"caller","state":"terminal","reason":"expired","seq":3,"event":"bye"}]}
+]
