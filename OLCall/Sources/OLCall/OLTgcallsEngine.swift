@@ -393,8 +393,17 @@ public final class OLTgcallsEngine {
                 lifecycle = l
                 emit(.lifecycle(l))
             }
-        case .stats, .pong, .resumed, .ignored:
-            break
+        case .stats:
+            break // server diagnostics; iOS reads its own engine stats
+        case .pong:
+            break // keepalive reply; the ping's job is done once the socket delivered it
+        case .resumed:
+            break // only meaningful on the resume socket, handled in the resume receive path
+        case let .ignored(t), let .unknown(t):
+            // No silent drop (t5937u): an unhandled frame type is a hard error that ends the call.
+            crumbs.event("ws", "unknown-frame:\(t)", level: "error")
+            callLog.event("server_error", reason: OLCallLogTags.tag("unknown-frame:\(t)"), detail: String(t.prefix(60)))
+            end("unknown-frame")
         }
     }
 

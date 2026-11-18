@@ -144,8 +144,8 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         case let .ended(id):
             let keys = id.isEmpty ? Array(calls.keys) : [id]
             keys.forEach { end($0, reason: .remoteEnded) }
-        default:
-            break
+        case .muted, .audioRoute, .ringbackStop, .ringtonePrepare:
+            break // in-call UI and tone cues; CallKit has nothing to report for them
         }
     }
 

@@ -93,8 +93,8 @@ final class CallController: ObservableObject {
             muted = m
         case let .audioRoute(speaker):
             speakerOn = speaker
-        default:
-            break
+        case .ringbackStop, .ringtonePrepare:
+            break // tone cues for the page's own ringer; the call screen has no state for them
         }
     }
 

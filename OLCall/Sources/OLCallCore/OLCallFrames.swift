@@ -52,6 +52,8 @@ public enum OLCallFrames {
         /// Server `call:state` frame: the server-owned lifecycle (olcall states.go). Observe only.
         case callState(OLCallLifecycle)
         case ignored(String)
+        /// No silent drop (t5937u): a frame type this tgcalls leg has no handler for. The engine ends the call.
+        case unknown(String)
     }
 
     public static func join(_ j: Join, seq: UInt64) -> [String: Any] {
@@ -114,7 +116,12 @@ public enum OLCallFrames {
         case "call:state":
             guard let l = OLCallLifecycle.parse(o["lifecycle"] as? [String: Any]) else { return .error("bad-call-state") }
             return .callState(l)
-        default: return .ignored(t)
+        // Web-surface frames (SDP answer, ICE, media state) never go to a tgcalls leg, and client->server
+        // frame types never come back: receiving one is a protocol error.
+        case "answer", "ice", "media", "join", "resume", "hangup", "keyframe", "reset-leg", "ping":
+            return .unknown(t)
+        // No silent drop (t5937u): any other type is unknown, which the engine treats as a hard error.
+        default: return .unknown(t)
         }
     }
 }

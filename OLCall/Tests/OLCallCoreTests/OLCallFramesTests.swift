@@ -69,7 +69,11 @@ final class OLCallFramesTests: XCTestCase {
     func testDecodeRejectsGarbage() {
         if case .error = OLCallFrames.decode("not json") {} else { XCTFail() }
         if case .error = OLCallFrames.decode(#"{"t":"joined","key":"AAAA","isOutgoing":true}"#) {} else { XCTFail("short key accepted") }
-        if case .ignored("offer") = OLCallFrames.decode(#"{"t":"offer"}"#) {} else { XCTFail("unknown frame not ignored") }
+        // t5937u: no silent drop; an unknown type decodes to .unknown, which the engine ends the call on.
+        if case .unknown("offer") = OLCallFrames.decode(#"{"t":"offer"}"#) {} else { XCTFail("unknown frame not flagged") }
+        for t in ["answer", "ice", "media", "join", "resume", "hangup", "keyframe", "reset-leg", "ping", "bogus"] {
+            if case .unknown(t) = OLCallFrames.decode(#"{"t":"\#(t)"}"#) {} else { XCTFail("\(t) not flagged unknown") }
+        }
         if case .mediaLost("ice-Failed") = OLCallFrames.decode(#"{"t":"media-lost","reason":"ice-Failed"}"#) {} else { XCTFail("media-lost") }
     }
 
