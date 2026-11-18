@@ -94,3 +94,15 @@ public enum OLCallPhase: Equatable {
         }
     }
 }
+
+/// The page's incoming ringtone ("call:ringtonePrepare"), iOS counterpart of Android CallAudioPolicy.prepareRingtoneOn.
+/// After a call the app's AVAudioSession keeps tgcalls' PlayAndRecord category, and WebKit keeps page audio in
+/// PlayAndRecord/VideoChat while the session is already PlayAndRecord (WebKit MediaSessionManagerCocoa.mm
+/// updateSessionState), so the ring plays thin on the call path. Reset to playback only when no call is live and
+/// the session is still in the call category: never touch the session during a call (OLCallAudioDevice owns it then).
+public enum OLRingtoneSessionPolicy {
+    public static let playAndRecord = "AVAudioSessionCategoryPlayAndRecord"
+    public static func shouldResetForRingtone(callLive: Bool, category: String) -> Bool {
+        !callLive && category == playAndRecord
+    }
+}

@@ -333,3 +333,12 @@ final class OLCallScreenIdentityTests: XCTestCase {
         XCTAssertNil(old)
     }
 }
+
+final class OLRingtoneSessionPolicyTests: XCTestCase {
+    func testResetsOnlyLeftoverCallCategoryWithNoLiveCall() {
+        XCTAssertTrue(OLRingtoneSessionPolicy.shouldResetForRingtone(callLive: false, category: "AVAudioSessionCategoryPlayAndRecord"))
+        XCTAssertFalse(OLRingtoneSessionPolicy.shouldResetForRingtone(callLive: true, category: "AVAudioSessionCategoryPlayAndRecord"))
+        XCTAssertFalse(OLRingtoneSessionPolicy.shouldResetForRingtone(callLive: false, category: "AVAudioSessionCategoryPlayback"))
+        XCTAssertFalse(OLRingtoneSessionPolicy.shouldResetForRingtone(callLive: false, category: "AVAudioSessionCategorySoloAmbient"))
+    }
+}

@@ -144,8 +144,16 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         case let .ended(id):
             let keys = id.isEmpty ? Array(calls.keys) : [id]
             keys.forEach { end($0, reason: .remoteEnded) }
-        case .muted, .audioRoute, .ringbackStop, .ringtonePrepare:
-            break // in-call UI and tone cues; CallKit has nothing to report for them
+        case .ringtonePrepare:
+            // Same rule as Android (CallAudioPolicy.prepareRingtoneOn): only with no live call, reset the session
+            // tgcalls left in PlayAndRecord so WebKit plays the page's ringtone as media, not on the call path.
+            let s = AVAudioSession.sharedInstance()
+            if OLRingtoneSessionPolicy.shouldResetForRingtone(callLive: !calls.isEmpty || NativeMedia.shared.isActive,
+                                                              category: s.category.rawValue) {
+                do { try s.setCategory(.playback, mode: .default) } catch { NSLog("[OL] ringtonePrepare setCategory failed: \(error)") }
+            }
+        case .muted, .audioRoute, .ringbackStop:
+            break // in-call UI cues, and ringback is the page's own <audio> (no native ringback on iOS)
         }
     }
 
