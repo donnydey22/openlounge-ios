@@ -49,7 +49,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         c.maximumCallsPerCallGroup = 1
         c.supportedHandleTypes = [.generic]
         c.includesCallsInRecents = false
-        c.ringtoneSound = "openlounge-incoming.caf"
+        c.ringtoneSound = "ol_ring_facetime_style.caf" // App/Resources, 20 s PCM; Open Lounge's own synthesized tone
         provider = CXProvider(configuration: c)
         super.init()
         provider.setDelegate(self, queue: .main)
