@@ -7,6 +7,7 @@ import CallKit
 import Combine
 import Network
 import OLShellCore
+import OLCallCore
 import SafariServices
 import SwiftUI
 import UIKit
@@ -241,12 +242,13 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             currentURL: currentURL,
             origin: origin
         )
-        // Engine-branch call states (ringing acknowledged / server answered) drive the pre-answer card.
-        // OLShellCore drops call types it does not know yet, so read them here (UI only, no engine change).
+        // call:lifecycle: the backend's relayed server call:state snapshot, forwarded verbatim by the page (same as
+        // Android NativeCallScreen). OLShellCore does not know this type, so read it here; frames are the only state input.
         if message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let raw = body,
-           let o = CallPresence.object(fromJSON: raw), let t = o["type"] as? String,
-           CallController.pageStateTypes.contains(t) {
-            CallController.shared.onPageState(t, callId: (o["callId"] as? String) ?? "")
+           let o = CallPresence.object(fromJSON: raw), (o["type"] as? String) == "call:lifecycle",
+           let l = OLCallLifecycle.parse(o["lifecycle"] as? [String: Any]) {
+            let id = (o["callId"] as? String).flatMap { $0.isEmpty ? nil : $0 } ?? l.callId
+            CallController.shared.observeLifecycle(callId: id, l)
         }
         let req = body.flatMap(OLBridgeMessage.parse)
         guard message.frameInfo.isMainFrame, OLAppURL.isAppURL(u), let req else {
@@ -278,11 +280,7 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             PhoneAuth.confirm(id: id, code: code) { [weak self] r in DispatchQueue.main.async { self?.phoneAuthResult(r) } }
         case let .call(m):
             CallCenter.shared.onPage(m)
-            if case .ended = m, CallPresence.isFailure(fromJSON: body) {
-                CallController.shared.showNetworkFailure(CallPresence.failureText(fromJSON: body))
-            } else {
-                CallController.shared.onPage(m)
-            }
+            CallController.shared.onPage(m) // metadata only; failure / end come from the server's terminal frame
             if let raw = body, CallPresence.hasField(inJSON: raw) {
                 // Explicit field, including "offline" (hides the dot). Empty peek does not clear.
                 CallController.shared.setPresenceFromMessage(CallPresence.field(fromJSON: raw))

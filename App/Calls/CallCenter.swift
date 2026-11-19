@@ -14,6 +14,7 @@ import AVFAudio
 import CallKit
 import Foundation
 import OLShellCore
+import OLCallCore
 import PushKit
 import UIKit
 
@@ -138,12 +139,8 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             e.answeredInPage = true
             calls[id] = e
             controller.request(CXTransaction(action: CXAnswerCallAction(call: e.uuid))) { _ in }
-        case let .connected(id):
-            let key = id.isEmpty ? calls.first(where: { !$0.value.incoming })?.key : id
-            if let key, let e = calls[key], !e.incoming { provider.reportOutgoingCall(with: e.uuid, connectedAt: Date()) }
-        case let .ended(id):
-            let keys = id.isEmpty ? Array(calls.keys) : [id]
-            keys.forEach { end($0, reason: .remoteEnded) }
+        case .connected, .ended:
+            break // legacy page states: CallKit follows the server's lifecycle frames (onLifecycle)
         case .ringtonePrepare:
             // Same rule as Android (CallAudioPolicy.prepareRingtoneOn): only with no live call, reset the session
             // tgcalls left in PlayAndRecord so WebKit plays the page's ringtone as media, not on the call path.
@@ -154,6 +151,27 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             }
         case .muted, .audioRoute, .ringbackStop:
             break // in-call UI cues, and ringback is the page's own <audio> (no native ringback on iOS)
+        }
+    }
+
+    // MARK: server lifecycle frames (BaoTime binding)
+
+    /// The CallKit banner from the same server frame that moves CallScreen and MiniBar (OLCallFlow.callKit).
+    func onLifecycle(callId: String, _ l: OLCallLifecycle) {
+        guard let e = calls[callId] else { return }
+        switch OLCallFlow.callKit(for: l) {
+        case .none:
+            break
+        case .startedConnecting:
+            if !e.incoming { provider.reportOutgoingCall(with: e.uuid, startedConnectingAt: Date()) }
+        case .connected:
+            if !e.incoming { provider.reportOutgoingCall(with: e.uuid, connectedAt: Date()) }
+        case let .ended(r):
+            switch r {
+            case .failed: end(callId, reason: .failed)
+            case .unanswered: end(callId, reason: .unanswered)
+            case .remoteEnded: end(callId, reason: .remoteEnded)
+            }
         }
     }
 

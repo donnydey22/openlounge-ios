@@ -145,9 +145,7 @@ final class NativeMedia {
         case let .peerReconnecting(on):
             peerReconnecting = on
             CallController.shared.setReconnecting(callId: id, on: ownReconnecting || peerReconnecting)
-        case let .mediaFlowing(source):
-            CallController.shared.mediaFlowing(callId: id, source: source)
-        case .joined, .audio, .audioFailed, .route:
+        case .mediaFlowing, .joined, .audio, .audioFailed, .route:
             break
         }
     }

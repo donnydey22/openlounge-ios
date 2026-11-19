@@ -5,6 +5,7 @@
 // video on Telegram's top/bottom shadows, 4s control autohide on video, green minimize bar, end card.
 // Wired only to the existing Pion-engine CallController
 import SwiftUI
+import OLCallCore
 
 struct CallScreen: View {
     @ObservedObject var call: CallController
@@ -138,7 +139,7 @@ struct CallScreen: View {
         VStack(spacing: 12) {
             if !videoStage {
                 ZStack {
-                    if call.phase == .calling {
+                    if !call.failed && !call.endedCard && OLCallFlow.pulseMs(call.screen) > 0 {
                         RingPulse()
                     }
                     Avatar(name: call.peerName, photoURL: call.peerPhoto, presence: call.peerPresence)
@@ -158,6 +159,20 @@ struct CallScreen: View {
                     .foregroundColor(OLColor.status)
                     .shadow(color: .black.opacity(0.4), radius: 4)
                     .accessibilityIdentifier("call-status")
+                if call.failed {
+                    // Server terminal(failed): Call again, same as Android NativeCallScreen's retry row.
+                    Button(action: { call.retry() }) {
+                        Text("Call again")
+                            .font(.system(size: 15, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 20)
+                            .padding(.vertical, 10)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(Capsule())
+                    }
+                    .padding(.top, 12)
+                    .accessibilityIdentifier("call-again")
+                }
             }
         }
         .frame(maxWidth: .infinity)

@@ -1,7 +1,9 @@
-// CallController — state of the app's own call screens (CallScreen, IncomingCallScreen).
-// It follows the page's call messages (call:outgoing / answering / connected / ended), the
-// engine (connected, video views) and CallKit (rings). Buttons act through the page, so the page,
-// the server and the media stay in step: mute -> "call:mute", end -> "call:hangup".
+// CallController — the one state machine behind the iOS three-banner stack: the full CallScreen, the green
+// MiniBar (in the app) and CallKit (outside the app). BaoTime binding (Donny, Nov 19 2026): the call server's
+// seven-state lifecycle frames (OLTgcallsEngine .lifecycle, and the page's call:lifecycle relay) are the ONLY input
+// that moves these surfaces, mapped by OLCallFlow exactly like Android NativeCallFlow. Page call:* messages carry
+// metadata only (name, photo, video, mute, route). Buttons act through the page: mute -> "call:mute",
+// end -> "call:hangup", Call again -> "call:retry"; the screen then waits for the server's next frame.
 import Combine
 import Foundation
 import OLShellCore
@@ -34,30 +36,17 @@ final class CallController: ObservableObject {
     /// First-design network-failure chrome (ended overlay + the connect-on-this-network copy). Stays until Close.
     @Published private(set) var failed = false
     @Published private(set) var failedText = ""
-    /// This phone's media leg reached the Pion server (tgcalls Established). NOT "answered" and not first media.
+    /// This phone's media leg reached the Pion server (tgcalls Established): enables Speaker / Mute. Not a state.
     @Published private(set) var engineUp = false
-    /// Server answered (call:answered, or call:connected on engines that do not post it yet).
-    /// Until then CallScreen is the pre-answer card: avatar, name, Calling… / Ringing… and the Speaker / Mute / End call row.
-    @Published private(set) var answered = false
-    /// Callee's device acknowledged the ring (call:ringing) -> "Ringing…".
-    @Published private(set) var ringingAck = false
-    /// First inbound media after the answer (page call:mediaFlowing, or NativeMedia.mediaFlowing).
-    /// The timer and full controls start only when answered AND this is true.
-    @Published private(set) var mediaFlowing = false
-    /// Server-owned call lifecycle (olcall states.go, via call:state). Read-only mirror: set only by
-    /// observeLifecycle from the server's snapshot, never computed or advanced here.
+    /// Server-owned call lifecycle (olcall states.go). Read-only mirror: set only by observeLifecycle from the
+    /// server's snapshot (seq-ordered), never computed or advanced here.
     @Published private(set) var lifecycle: OLCallLifecycle?
-    /// Full call UI (row, timer, video, minimize) only once media flows after the server answer.
-    var live: Bool { answered && mediaFlowing }
-
-    /// Engine-branch "ringing acknowledged" / "media flowing" page types (raw JSON; see ShellViewController).
-    static let ringingAckTypes: Set<String> = ["call:ringing"]
-    static let mediaFlowingTypes: Set<String> = ["call:mediaFlowing"]
-    static let pageStateTypes: Set<String> = ringingAckTypes.union(mediaFlowingTypes).union(["call:answered"])
-
-    private func goLiveIfReady() {
-        if live { setPhase(.active) } else { tick() } // the timer starts here, on media after the answer
-    }
+    /// The surface for that snapshot (OLCallFlow); nil until the first server frame (status stays blank).
+    @Published private(set) var screen: OLCallFlow.Screen?
+    /// Full call UI (row, timer, video, minimize) only while the server says in_room.
+    var live: Bool { screen == .active }
+    /// Latest frame per call, so a frame that lands before call:outgoing / answering is applied on begin.
+    private var latest: [String: OLCallLifecycle] = [:]
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -78,17 +67,14 @@ final class CallController: ObservableObject {
             names[id] = (name, photo.flatMap(Self.photoURL), video)
             if lockCovering { show(incoming: id) }
         case let .outgoing(id, name, video, photo):
-            begin(id, name: name, photo: photo.flatMap(Self.photoURL), video: video, phase: .calling)
+            begin(id, name: name, photo: photo.flatMap(Self.photoURL), video: video)
         case let .answering(id, name, video, photo):
             let n = names[id]
             begin(id, name: name.isEmpty ? (n?.0 ?? peerName) : name,
                   photo: photo.flatMap(Self.photoURL) ?? n?.1,
-                  video: video || (n?.2 ?? false), phase: .connecting)
-        case let .connected(id):
-            if id.isEmpty || id == callId { answered = true; goLiveIfReady() }
-        case let .ended(id):
-            if id.isEmpty || id == callId { endOrCard() }
-            if id.isEmpty || id == callId { incomingVisible = false }
+                  video: video || (n?.2 ?? false))
+        case .connected, .ended:
+            break // legacy page states: only the server's lifecycle frames move the call surfaces
         case let .muted(m):
             muted = m
         case let .audioRoute(speaker):
@@ -105,11 +91,11 @@ final class CallController: ObservableObject {
     func answering(callId id: String, name: String, video: Bool, photo: String? = nil) {
         let n = names[id]
         begin(id, name: name.isEmpty ? (n?.0 ?? peerName) : name,
-              photo: photo.flatMap(Self.photoURL) ?? n?.1, video: video, phase: .connecting)
+              photo: photo.flatMap(Self.photoURL) ?? n?.1, video: video)
     }
 
     func engineStarted(callId id: String, video: Bool) {
-        if !visible || callId != id { begin(id, name: names[id]?.0 ?? peerName, photo: names[id]?.1, video: video, phase: phase) }
+        if !visible || callId != id { begin(id, name: names[id]?.0 ?? peerName, photo: names[id]?.1, video: video) }
         cameraOn = video
         speakerOn = video
     }
@@ -117,10 +103,30 @@ final class CallController: ObservableObject {
     /// This phone's media leg reached the server (tgcalls Established). Not an answer and not first inbound media.
     func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
 
-    /// Observer only: holds the server's latest lifecycle snapshot for this call (seq-ordered, stale ignored).
+    /// The single input of the three-banner stack: the server's lifecycle snapshot (engine leg socket, or the
+    /// page's call:lifecycle relay of the backend call:state). Seq-ordered; stale and duplicate frames are dropped.
     func observeLifecycle(callId id: String, _ l: OLCallLifecycle) {
-        guard id == callId, OLCallLifecycle.newer(lifecycle, l) else { return }
+        guard !id.isEmpty, OLCallLifecycle.newer(latest[id], l) else { return }
+        latest[id] = l
+        CallCenter.shared.onLifecycle(callId: id, l) // CallKit banner, same frame
+        if let d = OLCallFlow.pageDetail(callId: id, l) { host?.dispatchNativeCall(d) } // seven states back to the page
+        if l.state == .terminal, id == incomingCallId { incomingVisible = false }
+        guard visible, id == callId else { return } // applied on begin()
+        apply(l)
+    }
+
+    private func apply(_ l: OLCallLifecycle) {
         lifecycle = l
+        let s = OLCallFlow.screen(for: l)
+        screen = s
+        switch s {
+        case .none: break
+        case .ringing: setPhase(.calling)
+        case .answering, .joining, .connecting: setPhase(.connecting)
+        case .active: setPhase(.active)
+        case .failed: showNetworkFailure(CallPresence.failMsg)
+        case .ended: showEndCard(l.reason)
+        }
     }
 
     /// Mid-call media is reconnecting (this phone's engine, or the server `peer` frame for the other party).
@@ -132,32 +138,9 @@ final class CallController: ObservableObject {
         tick()
     }
 
-    /// First inbound media after the answer (NativeMedia callback). Starts the timer only once also answered.
-    func mediaFlowing(callId id: String, source: String) {
-        guard id == callId else { return }
-        mediaFlowing = true
-        goLiveIfReady()
-    }
-
-    /// call:ringing / call:answered / call:mediaFlowing from the page (raw JSON; see ShellViewController).
-    func onPageState(_ type: String, callId id: String) {
-        guard visible, id.isEmpty || id == callId else { return }
-        if Self.ringingAckTypes.contains(type) {
-            if !live { ringingAck = true; tick() }
-        } else if type == "call:answered" {
-            answered = true
-            goLiveIfReady()
-        } else if Self.mediaFlowingTypes.contains(type) {
-            answered = true // the engine posts mediaFlowing only after the answer
-            mediaFlowing = true
-            goLiveIfReady()
-        }
-    }
-
     func engineEnded(callId id: String) {
         guard id == callId else { return }
         engineUp = false
-        mediaFlowing = false
         remoteVideoView = nil
         localVideoView = nil
         remoteVideoOn = false
@@ -196,28 +179,39 @@ final class CallController: ObservableObject {
         minimized = on
     }
 
+    /// End call: asks the server through the page, then waits for its terminal frame (the screen never ends itself).
     func end() {
         let id = callId
         host?.dispatchNativeCall(["type": "call:hangup", "callId": id])
         NativeMedia.shared.close()
         CallCenter.shared.endFromApp(id)
-        endOrCard()
     }
 
-    /// Normal end of a live call: the end card (avatar, name, "Call ended · m:ss"), same structure as the calling
-    /// screen, for web engine.ts:93 ENDED_LINGER_MS (1.8 s); same as Android NativeCallScreen.showEndCard.
+    /// Call again on the failure screen (same message as Android NativeCallScreen's retry row).
+    func retry() {
+        let id = callId
+        finish()
+        host?.dispatchNativeCall(["type": "call:retry", "callId": id])
+    }
+
+    /// Terminal (not failed): the end card (avatar, name, reason text, or "Call ended · m:ss" after in_room), for
+    /// web engine.ts:93 ENDED_LINGER_MS (1.8 s); same as Android NativeCallScreen.showEndCard.
     @Published private(set) var endedCard = false
     private var endedWork: DispatchWorkItem?
-    private func endOrCard() {
-        guard visible, live, let at = activeAt, !failed else { finish(); return }
-        let secs = Int(Date().timeIntervalSince(at))
+    private func showEndCard(_ reason: OLCallLifecycle.Reason?) {
+        guard visible, !failed else { finish(); return }
+        let text = OLCallFlow.endedText(reason)
         timer?.invalidate()
         timer = nil
         minimized = false
         engineEnded(callId: callId)
         endedCard = true
         phase = .ended
-        statusText = "Call ended · " + OLCallPhase.active.status(seconds: secs)
+        if let at = activeAt, reason == .completed || reason == .disconnected {
+            statusText = text + " · " + OLCallFlow.timer(Int(Date().timeIntervalSince(at)))
+        } else {
+            statusText = text
+        }
         let w = DispatchWorkItem { [weak self] in if self?.endedCard == true { self?.finish() } }
         endedWork = w
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.8, execute: w)
@@ -249,14 +243,13 @@ final class CallController: ObservableObject {
         startPresencePeek()
     }
 
-    private func begin(_ id: String, name: String, photo: URL?, video v: Bool, phase p: OLCallPhase) {
+    private func begin(_ id: String, name: String, photo: URL?, video v: Bool) {
         reconnecting = false
         if callId != id {
             activeAt = nil
             lifecycle = nil // new call: no server snapshot yet
+            screen = nil
             engineUp = false
-            mediaFlowing = false
-            answered = false
             muted = false
             remoteVideoOn = false
             remoteVideoView = nil
@@ -265,11 +258,9 @@ final class CallController: ObservableObject {
             minimized = false
             failed = false
             failedText = ""
-            answered = false
-            mediaFlowing = false
             endedCard = false
             endedWork?.cancel()
-            ringingAck = false
+            phase = .calling
         }
         callId = id
         peerName = name.isEmpty ? "Open Lounge" : name
@@ -277,8 +268,8 @@ final class CallController: ObservableObject {
         video = v
         visible = true
         incomingVisible = false
-        setPhase(p)
         startPresencePeek()
+        if let l = latest[id] { apply(l) } else { tick() } // blank status until the server's first frame
     }
 
     private func setPhase(_ p: OLCallPhase) {
@@ -293,8 +284,9 @@ final class CallController: ObservableObject {
 
     private func tick() {
         let secs = activeAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
-        if reconnecting && phase == .active && !failed && !endedCard { statusText = "Reconnecting…"; return }
-        statusText = (!live && ringingAck && phase == .calling) ? "Ringing…" : phase.status(seconds: secs)
+        if failed || endedCard { return }
+        if reconnecting && live { statusText = "Reconnecting…"; return }
+        statusText = live ? OLCallFlow.timer(secs) : OLCallFlow.statusText(screen)
     }
 
     private func finish() {
@@ -312,9 +304,6 @@ final class CallController: ObservableObject {
         failedText = ""
         activeAt = nil
         peerPresence = nil
-        answered = false
-        mediaFlowing = false
-        ringingAck = false
         phase = .ended
         engineEnded(callId: callId)
     }
