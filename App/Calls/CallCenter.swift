@@ -190,6 +190,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
 
     func provider(_ provider: CXProvider, perform action: CXStartCallAction) {
         provider.reportOutgoingCall(with: action.callUUID, startedConnectingAt: Date())
+        NativeMedia.configureSessionForCallKit() // category before fulfill, or didActivate never arrives
         action.fulfill()
     }
 
@@ -204,6 +205,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             CallController.shared.answering(callId: id, name: e.name, video: e.video)
             host?.answerInPage(callId: id)
         }
+        NativeMedia.configureSessionForCallKit() // category before fulfill, or didActivate never arrives
         action.fulfill()
     }
 
@@ -238,6 +240,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
 
     func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
         audioActive = false
+        // The native engine owns hang-up authority on ring calls and tells the call server itself (no page mediation).
         NativeMedia.shared.callKitDidDeactivate(audioSession)
     }
 

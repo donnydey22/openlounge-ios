@@ -196,7 +196,31 @@ public final class OLTgcallsEngine {
     }
 
     public func callKitDidActivate(_ s: AVAudioSession) { audio.callKitDidActivate(s) }
-    public func callKitDidDeactivate(_ s: AVAudioSession) { audio.callKitDidDeactivate(s) }
+    /// iOS ring calls (link joins never use CallKit): CallKit owns the audio session and didDeactivate means it tore the
+    /// session down, so the media died. This engine, the only writer of this leg's frames, tells the call server at
+    /// once, with no page in between (Apple DTS / Speakerbox: the call provider owns hang-up). The server's FSM is the
+    /// single writer of call:state; the backend relays it to the page and the other leg.
+    ///   - CallKit no longer holds the call, or tgcalls never got going / failed  -> Ended: hangup frame.
+    ///   - CallKit still holds the call and tgcalls was connected / reconnecting   -> Reconnecting: reset-leg frame (the
+    ///     existing media-reset ladder; the server's 20 s ceiling ends it if it never comes back). Audio returns on the
+    ///     next didActivate.
+    /// The session itself is never deactivated here (no setActive(false) on a CallKit-owned session).
+    public func callKitDidDeactivate(_ s: AVAudioSession, callKitHoldsCall: Bool) {
+        audio.callKitDidDeactivate(s)
+        queue.dispatch {
+            guard !self.ended else { return }
+            let tg = self.lastTgState
+            let live = tg == .connected || tg == .reconnecting
+            if callKitHoldsCall && live {
+                self.logAppEvent("callkit_deactivated", ["map": "reconnecting", "tg": tg?.rawValue ?? "none"])
+                self.beginMediaReset(reason: "callkit-deactivated")
+            } else {
+                self.logAppEvent("callkit_deactivated", ["map": "ended", "tg": tg?.rawValue ?? "none", "callkitHolds": callKitHoldsCall])
+                self.send(OLCallFrames.hangup(seq: self.nextSeq()))
+                self.end("local-hangup")
+            }
+        }
+    }
 
     // MARK: socket (queue)
 

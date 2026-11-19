@@ -194,7 +194,16 @@ final class NativeMedia {
     func callKitDidActivate(_ s: AVAudioSession) {
         if let e = engine { e.callKitDidActivate(s) } else { earlyCallKit.append(("callkit_did_activate", Date(), s.category.rawValue, s.mode.rawValue)) }
     }
+    /// CallKit deactivated the session (iOS ring calls only; link joins never use CallKit). The engine decides Ended vs
+    /// Reconnecting and tells the call server itself (see OLTgcallsEngine.callKitDidDeactivate).
     func callKitDidDeactivate(_ s: AVAudioSession) {
-        if let e = engine { e.callKitDidDeactivate(s) } else { earlyCallKit.append(("callkit_did_deactivate", Date(), s.category.rawValue, s.mode.rawValue)) }
+        guard let e = engine else {
+            earlyCallKit.append(("callkit_did_deactivate", Date(), s.category.rawValue, s.mode.rawValue))
+            return
+        }
+        e.callKitDidDeactivate(s, callKitHoldsCall: callId.map { CallCenter.shared.hasCall($0) } ?? false)
     }
+
+    /// Before fulfilling CXStartCallAction / CXAnswerCallAction (see OLCallAudioDevice.configureSessionForCallKit).
+    static func configureSessionForCallKit() { OLCallAudioDevice.configureSessionForCallKit() }
 }

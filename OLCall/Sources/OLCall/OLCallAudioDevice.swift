@@ -20,6 +20,13 @@ import OLCallCore
 import TgVoipWebrtc
 
 public final class OLCallAudioDevice {
+    /// Configure the shared session category/mode (PlayAndRecord, VoiceChat; inactive) through Telegram's own
+    /// SharedCallAudioDevice. CallKit only sends didActivate for a session configured before the CXAnswerCallAction /
+    /// CXStartCallAction is fulfilled (Apple DTS), so CallCenter calls this before every fulfill. Never activates.
+    public static func configureSessionForCallKit() {
+        SharedCallAudioDevice.setupAudioSession()
+    }
+
     public enum Outcome { case active, failed(domain: String, code: Int32, first: Int32) }
 
     /// Handed to the engine instance.
