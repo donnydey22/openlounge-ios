@@ -193,12 +193,11 @@ public final class OLCallLog {
 
     public private(set) var meta: Meta
     public var turnServers: Int?
-    /// Whether the engine is restricted to the TURN relay. Since build 132 it is not: OLTgcallsInstance creates the
-    /// engine direct-first (direct host/srflx pairs first, TURN relay only when they fail), the same ICE policy
-    /// as Android. The old default (true, from the relay-only engine) made every 132 event say relayOnly: true while
-    /// Pion selected a direct pair (1372bded / 72a8f1e3, Nov 12), and would tag a plain ICE failure as a relay failure.
+    /// Whether the engine is restricted to the TURN relay. It is: OLTgcallsInstance creates the engine with
+    /// allowP2P: false, so it gathers only the TURN relays from the joined frame, the same ICE policy as Android
+    /// (enableP2P = false). An ICE failure is therefore tagged as a TURN relay failure.
     /// ci/clean-slate.sh keeps this default in step with the engine's ICE switch.
-    public var relayOnly = false
+    public var relayOnly = true
     private var audioFailed = false
     private let queue: OLCallLogQueue
     private let uploader: OLCallLogUploader?
