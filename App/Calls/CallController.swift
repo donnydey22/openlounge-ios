@@ -74,7 +74,7 @@ final class CallController: ObservableObject {
                   photo: photo.flatMap(Self.photoURL) ?? n?.1,
                   video: video || (n?.2 ?? false))
         case .connected, .ended:
-            break // legacy page states: only the server's lifecycle frames move the call surfaces
+            break // page-sent states are ignored here: only the server's lifecycle frames move the call surfaces
         case let .muted(m):
             muted = m
         case let .audioRoute(speaker):

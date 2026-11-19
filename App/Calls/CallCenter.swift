@@ -140,7 +140,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             calls[id] = e
             controller.request(CXTransaction(action: CXAnswerCallAction(call: e.uuid))) { _ in }
         case .connected, .ended:
-            break // legacy page states: CallKit follows the server's lifecycle frames (onLifecycle)
+            break // page-sent states are ignored here: CallKit follows the server's lifecycle frames (onLifecycle)
         case .ringtonePrepare:
             // Same rule as Android (CallAudioPolicy.prepareRingtoneOn): only with no live call, reset the session
             // tgcalls left in PlayAndRecord so WebKit plays the page's ringtone as media, not on the call path.
