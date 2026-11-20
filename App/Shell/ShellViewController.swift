@@ -280,6 +280,7 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
             PhoneAuth.confirm(id: id, code: code) { [weak self] r in DispatchQueue.main.async { self?.phoneAuthResult(r) } }
         case let .call(m):
             CallCenter.shared.onPage(m)
+            if case let .answering(id, _, _, _) = m, let raw = body { CallController.shared.markLink(callId: id, fromJSON: raw) }
             CallController.shared.onPage(m) // metadata only; failure / end come from the server's terminal frame
             if let raw = body, CallPresence.hasField(inJSON: raw) {
                 // Explicit field, including "offline" (hides the dot). Empty peek does not clear.

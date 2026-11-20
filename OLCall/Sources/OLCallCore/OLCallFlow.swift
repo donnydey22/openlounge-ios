@@ -38,6 +38,18 @@ public enum OLCallFlow {
         }
     }
 
+    /// A call link whose own leg is up while the server still says connecting (the other person has not joined):
+    /// "Waiting for <first name>…", the same words as the web page and Android (t6093u).
+    public static func statusText(_ s: Screen?, reason: OLCallLifecycle.Reason? = nil, waitingLink: Bool, peer: String) -> String {
+        if waitingLink, s == .connecting || s == .joining || s == .answering { return waitingFor(peer) }
+        return statusText(s, reason: reason)
+    }
+
+    public static func waitingFor(_ peer: String) -> String {
+        let first = peer.trimmingCharacters(in: .whitespaces).split(separator: " ").first.map(String.init) ?? ""
+        return "Waiting for \(first.isEmpty ? "them" : first)…"
+    }
+
     public static func statusText(_ s: Screen?, reason: OLCallLifecycle.Reason? = nil) -> String {
         switch s {
         case .ringing: return "Ringing…"

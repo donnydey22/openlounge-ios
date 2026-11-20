@@ -14,7 +14,10 @@ struct CallScreen: View {
     @State private var hideTask: Task<Void, Never>?
 
     /// Video only once media flows after the answer (call.live); before it the opaque pre-answer card covers any preview.
-    var videoStage: Bool { !call.failed && !call.endedCard && call.live && (call.remoteVideoOn || call.cameraOn) }
+    /// Meet-style (t6093u): the big tile is the other person's video; with their camera off it is their avatar (the
+    /// normal call card) and this phone's camera stays the PiP.
+    var videoStage: Bool { !call.failed && !call.endedCard && call.live && call.remoteVideoOn }
+    var selfPip: Bool { !call.failed && !call.endedCard && call.live && call.cameraOn }
     /// Calling / Ringing / Connecting: avatar, name, status and the in-call row (Speaker / Mute / End call).
     var preAnswer: Bool { !call.failed && !call.endedCard && !call.live }
     /// Failure or end card: no bottom row (its space stays reserved), Close top-right.
@@ -39,10 +42,10 @@ struct CallScreen: View {
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
                 }
-                if videoStage && call.remoteVideoOn && call.cameraOn {
-                    Pip(view: swap ? (call.remoteVideoView) : call.localVideoView, mirrored: !swap && call.facingFront, size: geo.size,
+                if selfPip {
+                    Pip(view: swap && videoStage ? (call.remoteVideoView) : call.localVideoView, mirrored: !(swap && videoStage) && call.facingFront, size: geo.size,
                         insets: CallPip.insets(controlsShown: showCtl, rowReserve: OLMetric.rowBottom + OLMetric.rowHeight + geo.safeAreaInsets.bottom)) {
-                        swap.toggle()
+                        if videoStage { swap.toggle() }
                     }
                 }
 
@@ -92,7 +95,7 @@ struct CallScreen: View {
 
     @ViewBuilder
     private var videoLayer: some View {
-        let bigLocal = call.cameraOn && (!call.remoteVideoOn || swap)
+        let bigLocal = call.cameraOn && swap
         if bigLocal, let local = call.localVideoView {
             VideoSurface(view: local)
                 .scaleEffect(x: call.facingFront ? -1 : 1, y: 1)
@@ -214,12 +217,11 @@ struct CallScreen: View {
             if call.cameraOn {
                 RoundButton(label: "Flip", glyph: "ol_call_flip") { call.flip() }
             }
-            if call.cameraOn || call.remoteVideoOn || videoStage {
-                RoundButton(label: call.cameraOn ? "Camera" : "Video",
-                            glyph: call.cameraOn ? "ol_call_video" : "ol_call_video_off",
-                            on: call.cameraOn, enabled: call.canToggleVideo || call.phase == .active) {
-                    call.toggleVideo()
-                }
+            // One path (t6093u): every live call is the same audio + video room, so the camera toggle is always here.
+            RoundButton(label: call.cameraOn ? "Camera" : "Video",
+                        glyph: call.cameraOn ? "ol_call_video" : "ol_call_video_off",
+                        on: call.cameraOn, enabled: call.canToggleVideo || call.phase == .active) {
+                call.toggleVideo()
             }
             RoundButton(label: call.muted ? "Unmute" : "Mute",
                         glyph: call.muted ? "ol_call_mic_off" : "ol_call_mic",

@@ -82,15 +82,18 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
 
     private func reportIncoming(callId: String, name: String, handle: String, video: Bool, expiresAtMs: Double,
                                 declineToken: String?, completion: (() -> Void)? = nil) {
+        // One ringing door (t6093u): every ring is a CallKit VIDEO ring into the always-alive A/V room; an old build's
+        // audio ring rings the same way. The FaceTime-audio-style ring path is gone. (`video` is ignored.)
+        _ = video
         if var e = calls[callId] {
             if e.declineToken == nil { e.declineToken = declineToken; calls[callId] = e }
             // Already ringing: report again so iOS counts this push as reported (it rejects the duplicate).
-            provider.reportNewIncomingCall(with: e.uuid, update: update(name: name, handle: handle, video: video)) { _ in completion?() }
+            provider.reportNewIncomingCall(with: e.uuid, update: update(name: name, handle: handle, video: true)) { _ in completion?() }
             return
         }
         let uuid = OLCallIdentity.uuid(for: callId)
-        calls[callId] = Entry(uuid: uuid, incoming: true, declineToken: declineToken, name: name, video: video)
-        provider.reportNewIncomingCall(with: uuid, update: update(name: name, handle: handle, video: video)) { [weak self] err in
+        calls[callId] = Entry(uuid: uuid, incoming: true, declineToken: declineToken, name: name, video: true)
+        provider.reportNewIncomingCall(with: uuid, update: update(name: name, handle: handle, video: true)) { [weak self] err in
             if err != nil { self?.calls[callId] = nil }
             completion?()
         }
@@ -122,14 +125,14 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         case let .incoming(id, name, video, _, expiresAt):
             // Only while the app is not in front: in front, the page rings itself.
             if UIApplication.shared.applicationState != .active || CallController.shared.lockCovering {
-                reportIncoming(callId: id, name: name, handle: "", video: video, expiresAtMs: expiresAt ?? 0, declineToken: nil)
+                reportIncoming(callId: id, name: name, handle: "", video: true, expiresAtMs: expiresAt ?? 0, declineToken: nil)
             }
-        case let .outgoing(id, name, video, _):
+        case let .outgoing(id, name, _, _):
             guard calls[id] == nil else { return }
             let uuid = OLCallIdentity.uuid(for: id)
-            calls[id] = Entry(uuid: uuid, incoming: false, answered: true, name: name, video: video)
+            calls[id] = Entry(uuid: uuid, incoming: false, answered: true, name: name, video: true)
             let a = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: name.isEmpty ? "Open Lounge" : name))
-            a.isVideo = video
+            a.isVideo = true // one ringing door (t6093u): every outgoing ring is the video ring
             a.contactIdentifier = name
             controller.request(CXTransaction(action: a)) { [weak self] err in
                 if err != nil { self?.calls[id] = nil }
@@ -292,6 +295,6 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             if ring.expired(nowMs: nowMs) { self?.endRing(ring.callId, reason: .unanswered) }
             completion()
         }
-        CallController.shared.ringing(callId: ring.callId, name: ring.callerName, photo: ring.callerPhoto, video: ring.video)
+        CallController.shared.ringing(callId: ring.callId, name: ring.callerName, photo: ring.callerPhoto, video: true)
     }
 }

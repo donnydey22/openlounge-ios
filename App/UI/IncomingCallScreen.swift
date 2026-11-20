@@ -37,7 +37,7 @@ struct IncomingCallScreen: View {
                         .lineLimit(2)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 24)
-                    Text(call.video ? "Open Lounge video call" : "Open Lounge audio call")
+                    Text("Open Lounge video call") // one ringing door (t6093u)
                         .font(.system(size: OLMetric.statusSize))
                         .foregroundColor(OLColor.status)
                         .padding(.top, OLMetric.statusGap)

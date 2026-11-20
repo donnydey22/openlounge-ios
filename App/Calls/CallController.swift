@@ -101,7 +101,16 @@ final class CallController: ObservableObject {
     }
 
     /// This phone's media leg reached the server (tgcalls Established). Not an answer and not first inbound media.
-    func mediaConnected(callId id: String) { if id == callId { engineUp = true } }
+    func mediaConnected(callId id: String) { if id == callId { engineUp = true; tick() } }
+
+    /// One path (t6093u): the page marks a link join ("link": true on call:answering). A link never rings; alone in it
+    /// with this phone's leg up, the status reads "Waiting for <first name>…".
+    @Published private(set) var link = false
+    private var linkIds: Set<String> = []
+    func markLink(callId id: String, fromJSON raw: String) {
+        guard let d = raw.data(using: .utf8), let o = try? JSONSerialization.jsonObject(with: d) as? [String: Any] else { return }
+        if o["link"] as? Bool == true { linkIds.insert(id); if id == callId { link = true; tick() } }
+    }
 
     /// The single input of the three-banner stack: the server's lifecycle snapshot (engine leg socket, or the
     /// page's call:lifecycle relay of the backend call:state). Seq-ordered; stale and duplicate frames are dropped.
@@ -263,6 +272,7 @@ final class CallController: ObservableObject {
             phase = .calling
         }
         callId = id
+        link = linkIds.contains(id)
         peerName = name.isEmpty ? "Open Lounge" : name
         peerPhoto = photo
         video = v
@@ -286,7 +296,7 @@ final class CallController: ObservableObject {
         let secs = activeAt.map { Int(Date().timeIntervalSince($0)) } ?? 0
         if failed || endedCard { return }
         if reconnecting && live { statusText = "Reconnecting…"; return }
-        statusText = live ? OLCallFlow.timer(secs) : OLCallFlow.statusText(screen)
+        statusText = live ? OLCallFlow.timer(secs) : OLCallFlow.statusText(screen, reason: nil, waitingLink: link && engineUp, peer: peerName)
     }
 
     private func finish() {
