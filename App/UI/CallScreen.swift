@@ -16,8 +16,10 @@ struct CallScreen: View {
     /// Video only once media flows after the answer (call.live); before it the opaque pre-answer card covers any preview.
     /// Meet-style (t6093u): the big tile is the other person's video; with their camera off it is their avatar (the
     /// normal call card) and this phone's camera stays the PiP.
-    var videoStage: Bool { !call.failed && !call.endedCard && call.live && call.remoteVideoOn }
-    var selfPip: Bool { !call.failed && !call.endedCard && call.live && call.cameraOn }
+    /// t6106u: one display rule with web / Android (OLStageLayout).
+    var stage: OLStageLayout { .of(live: call.live, card: call.failed || call.endedCard, remoteVideoOn: call.remoteVideoOn, cameraOn: call.cameraOn, remoteMuted: call.remoteMuted) }
+    var videoStage: Bool { stage.big == .theirVideo }
+    var selfPip: Bool { stage.pip != .none }
     /// Calling / Ringing / Connecting: avatar, name, status and the in-call row (Speaker / Mute / End call).
     var preAnswer: Bool { !call.failed && !call.endedCard && !call.live }
     /// Failure or end card: no bottom row (its space stays reserved), Close top-right.
@@ -43,9 +45,9 @@ struct CallScreen: View {
                     .allowsHitTesting(false)
                 }
                 if selfPip {
-                    Pip(view: swap && videoStage ? (call.remoteVideoView) : call.localVideoView, mirrored: !(swap && videoStage) && call.facingFront, size: geo.size,
+                    Pip(view: stage.pip == .myCameraOff ? nil : (swap && videoStage ? (call.remoteVideoView) : call.localVideoView), mirrored: !(swap && videoStage) && call.facingFront, size: geo.size,
                         insets: CallPip.insets(controlsShown: showCtl, rowReserve: OLMetric.rowBottom + OLMetric.rowHeight + geo.safeAreaInsets.bottom)) {
-                        if videoStage { swap.toggle() }
+                        if videoStage && stage.pip == .myCamera { swap.toggle() }
                     }
                 }
 
@@ -95,7 +97,7 @@ struct CallScreen: View {
 
     @ViewBuilder
     private var videoLayer: some View {
-        let bigLocal = call.cameraOn && swap
+        let bigLocal = stage.pip == .myCamera && swap
         if bigLocal, let local = call.localVideoView {
             VideoSurface(view: local)
                 .scaleEffect(x: call.facingFront ? -1 : 1, y: 1)
@@ -162,6 +164,16 @@ struct CallScreen: View {
                     .foregroundColor(OLColor.status)
                     .shadow(color: .black.opacity(0.4), radius: 4)
                     .accessibilityIdentifier("call-status")
+                if stage.muteBadge {
+                    // web mute badge: their mic is off
+                    CallGlyph(name: "ol_call_mic_off", size: 16)
+                        .foregroundColor(.white)
+                        .frame(width: 28, height: 28)
+                        .background(Color.white.opacity(0.15))
+                        .clipShape(Circle())
+                        .padding(.top, 6)
+                        .accessibilityLabel("Muted")
+                }
                 if call.failed {
                     // Server terminal(failed): Call again, same as Android NativeCallScreen's retry row.
                     Button(action: { call.retry() }) {
@@ -420,7 +432,12 @@ struct Pip: View {
                 VideoSurface(view: view)
                     .scaleEffect(x: mirrored ? -1 : 1, y: 1)
             } else {
-                Color.black
+                // camera off (or not yet capturing): the camera-off tile, never a black box (web selfPip)
+                ZStack {
+                    Color(red: 0x27 / 255, green: 0x27 / 255, blue: 0x2A / 255)
+                    CallGlyph(name: "ol_call_video_off", size: 22).foregroundColor(.white.opacity(0.85))
+                }
+                .accessibilityLabel("Camera off")
             }
         }
         .frame(width: OLMetric.pipWidth, height: OLMetric.pipHeight)

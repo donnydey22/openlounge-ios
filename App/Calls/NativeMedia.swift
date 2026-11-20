@@ -109,7 +109,8 @@ final class NativeMedia {
 
     private func onEvent(_ ev: OLTgcallsEngine.Event, id: String) {
         switch ev {
-        case let .state(st, rv, _):
+        case let .state(st, rv, rm):
+            if CallController.shared.remoteMuted != rm { CallController.shared.remoteMuted = rm }
             // Mid-call "Reconnecting…": this phone's engine lost its path after having connected.
             if connected { ownReconnecting = st == .reconnecting; CallController.shared.setReconnecting(callId: id, on: ownReconnecting || peerReconnecting) }
             if st == .connected && !connected {

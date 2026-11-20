@@ -29,6 +29,8 @@ final class CallController: ObservableObject {
     @Published private(set) var speakerOn = false
     @Published var cameraOn = false
     @Published var remoteVideoOn = false
+    /// The other person's mic is off (their tgcalls audio state): web mute badge (t6106u).
+    @Published var remoteMuted = false
     @Published var remoteVideoView: UIView?
     @Published var localVideoView: UIView?
     @Published private(set) var facingFront = true
@@ -153,6 +155,7 @@ final class CallController: ObservableObject {
         remoteVideoView = nil
         localVideoView = nil
         remoteVideoOn = false
+        remoteMuted = false
         cameraOn = false
     }
 
@@ -261,6 +264,7 @@ final class CallController: ObservableObject {
             engineUp = false
             muted = false
             remoteVideoOn = false
+            remoteMuted = false
             remoteVideoView = nil
             localVideoView = nil
             facingFront = true
