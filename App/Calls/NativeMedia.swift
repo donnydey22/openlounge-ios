@@ -66,7 +66,7 @@ final class NativeMedia {
         close()
         callId = id
         video = wantVideo
-        gate.authorize(wantVideo ? .videoCall : .audioCall) { ok in
+        authorizeCamOrAudio(id: id, video: wantVideo) { ok, wantVideo in
             DispatchQueue.main.async {
                 guard self.callId == id else { return reply(false, nil, "cancelled") }
                 guard ok else { self.callId = nil; return reply(false, nil, "permission-denied") }
@@ -101,6 +101,24 @@ final class NativeMedia {
                 let replay = usesCallKit && CallCenter.shared.audioActive
                 e.logAppEvent("callkit_state_at_connect", ["callkit": usesCallKit, "audioActive": CallCenter.shared.audioActive, "replayActivate": replay])
                 if replay { e.callKitDidActivate(AVAudioSession.sharedInstance()) }
+            }
+        }
+    }
+
+    /// t6111u: every door opens with the camera on. Camera refused (mic granted) = join with audio and the camera-off
+    /// tile (the page hears "camera-unavailable"), never a failed call. Mic refused still fails silently, as before.
+    private func authorizeCamOrAudio(id: String, video: Bool, _ done: @escaping (Bool, Bool) -> Void) {
+        gate.authorize(video ? .videoCall : .audioCall) { ok in
+            guard !ok, video else { return done(ok, video) }
+            self.gate.authorize(.audioCall) { mic in
+                if mic {
+                    DispatchQueue.main.async {
+                        guard self.callId == id else { return }
+                        self.video = false
+                        self.host?.emitNativeMedia(["state": "camera-unavailable", "callId": id])
+                    }
+                }
+                done(mic, false)
             }
         }
     }
