@@ -19,7 +19,10 @@ public enum OLMediaCommand: Equatable {
         switch op {
         case "connect":
             guard let id = c["callId"]?.string, OLBridgeMessage.isCallId(id) else { return nil }
-            return .connect(callId: id, media: c["media"] ?? .null, video: c["video"]?.bool == true, caller: c["caller"]?.bool == true)
+            // Every durable-room link enters with camera ON and mic ON. The separate
+            // drop-in audio feature has no link flag and keeps its audio-only default.
+            let link = c["link"]?.bool == true
+            return .connect(callId: id, media: c["media"] ?? .null, video: link || c["video"]?.bool == true, caller: c["caller"]?.bool == true)
         case "camera": return .camera(on: c["on"]?.bool == true, front: c["facing"]?.string != "environment")
         case "mute": return .mute(c["muted"]?.bool == true)
         case "close", "end": return .close

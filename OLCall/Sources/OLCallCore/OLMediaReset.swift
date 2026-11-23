@@ -37,10 +37,12 @@ public struct OLMediaReset {
     }
 
     /// After signaling came back: if media has not started flowing again, restart.
-    public static func shouldResetOnSilence(resumedAt: TimeInterval?, flowing: Bool, connected: Bool,
-                                           inFlight: Bool, ended: Bool, count: Int,
+    /// A deliberately muted, camera-off peer is expected to produce no inbound media. That is not a
+    /// broken resume and must not start an endless reset ladder. Audio or rendered video clears `flowing`.
+    public static func shouldResetOnSilence(resumedAt: TimeInterval?, flowing: Bool, remoteMuted: Bool,
+                                           connected: Bool, inFlight: Bool, ended: Bool, count: Int,
                                            last: TimeInterval?, now: TimeInterval) -> Bool {
-        guard let resumedAt, !flowing, now - resumedAt >= silenceAfterResume else { return false }
+        guard let resumedAt, !flowing, !remoteMuted, now - resumedAt >= silenceAfterResume else { return false }
         return allowed(connected: connected, inFlight: inFlight, ended: ended, count: count, last: last, now: now)
     }
 }

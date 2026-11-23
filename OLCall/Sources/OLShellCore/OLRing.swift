@@ -3,7 +3,10 @@
 import Foundation
 
 public struct OLIncomingRing: Equatable {
+    /// Durable room id (the canonical /call/<roomId> target).
     public let callId: String
+    /// Temporary ring generation. Old payloads omit it and retain room-id compatibility.
+    public let invitationId: String?
     public let callerId: String
     public let callerName: String
     public let callerPhoto: String?
@@ -17,8 +20,11 @@ public struct OLIncomingRing: Equatable {
         let photo = (p["callerPhoto"] as? String).flatMap { $0.hasPrefix("http://") || $0.hasPrefix("https://") ? $0 : nil }
         let exp = (p["expiresAt"] as? String).flatMap(Double.init) ?? (p["expiresAt"] as? Double) ?? 0
         let token = (p["declineToken"] as? String).flatMap { OLAppURL.matches($0, "^v1\\.[A-Za-z0-9_-]{8,500}\\.[A-Za-z0-9_-]{20,100}$") ? $0 : nil }
+        let invitation = (p["invitationId"] as? String).flatMap {
+            OLAppURL.matches($0, "^[A-Za-z0-9_-]{1,64}$") ? $0 : nil
+        }
         let v = p["video"]
-        return OLIncomingRing(callId: id, callerId: p["callerId"] as? String ?? "",
+        return OLIncomingRing(callId: id, invitationId: invitation, callerId: p["callerId"] as? String ?? "",
                               callerName: String((p["callerName"] as? String ?? "").prefix(80)),
                               callerPhoto: photo, video: (v as? String) == "1" || (v as? Bool) == true,
                               expiresAt: exp, declineToken: token)
@@ -36,6 +42,12 @@ public enum OLCallIdentity {
         bytes[8] = (bytes[8] & 0x3F) | 0x80
         return UUID(uuid: (bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7],
                            bytes[8], bytes[9], bytes[10], bytes[11], bytes[12], bytes[13], bytes[14], bytes[15]))
+    }
+
+    /// A ring generation gets its own CallKit identity while callId remains the durable room identity.
+    /// This prevents a delayed report for an old invitation from reusing a successor's live CXCall.
+    public static func uuid(forCallId callId: String, invitationId: String?) -> UUID {
+        uuid(for: invitationId.map { "\(callId)#invitation:\($0)" } ?? callId)
     }
 
     /// PushKit token as the server expects it (lower-case hex, 64-200 chars), or nil.

@@ -24,7 +24,10 @@ final class NativeMedia {
     private let gate = OLCallPermissionGate(provider: SystemPermissions())
     private var engine: OLTgcallsEngine?
     private(set) var callId: String?
-    private var pending: Reply?
+    private static let connectTimeout: TimeInterval = 45
+    private var pending: [Reply] = []
+    private var connectWatchdog: DispatchWorkItem?
+    private var generation = 0
     private var connected = false
     private var ownReconnecting = false
     private var peerReconnecting = false
@@ -51,8 +54,11 @@ final class NativeMedia {
             reply(true, ["engine": "tgcalls", "available": true], nil)
         case .stats:
             reply(true, [Any](), nil)
-        case .restartIce, .signalConnected, .videoLayout:
-            reply(true, true, nil) // tgcalls follows network changes itself; the app lays out its own video
+        case .restartIce:
+            guard let engine, engine.restartIce() else { return reply(false, nil, "olcall not connected") }
+            reply(true, ["accepted": true], nil)
+        case .signalConnected, .videoLayout:
+            reply(true, true, nil) // the app lays out its own video; signaling state is server-owned
         case let .unknown(op):
             reply(false, nil, "unknown op: \(op)")
         }
@@ -60,39 +66,44 @@ final class NativeMedia {
 
     private func connect(id: String, media raw: OLJSON, video wantVideo: Bool, reply: @escaping Reply) {
         if callId == id, engine != nil {
-            if connected { reply(true, result(), nil) } else { pending = reply }
+            if connected { reply(true, result(), nil) } else { pending.append(reply) }
             return
         }
         close()
+        generation += 1
+        let attempt = generation
         callId = id
         video = wantVideo
-        authorizeCamOrAudio(id: id, video: wantVideo) { ok, wantVideo in
+        pending = [reply]
+        authorizeCamOrAudio(id: id, video: wantVideo, generation: attempt) { ok, wantVideo in
             DispatchQueue.main.async {
-                guard self.callId == id else { return reply(false, nil, "cancelled") }
-                guard ok else { self.callId = nil; return reply(false, nil, "permission-denied") }
-                guard let media = OLCallMedia.parse(raw.foundation) else { self.callId = nil; return reply(false, nil, "unsupported-media") }
+                guard self.callId == id, self.generation == attempt else { return }
+                guard ok else { self.failConnect(id: id, attempt: attempt, reason: "permission-denied", emit: false); return }
+                guard let media = OLCallMedia.parse(raw.foundation) else {
+                    self.failConnect(id: id, attempt: attempt, reason: "unsupported-media", emit: false); return
+                }
                 let usesCallKit = CallCenter.shared.hasCall(id)
                 let e: OLTgcallsEngine
                 do { e = try OLTgcallsEngine(media: media, video: wantVideo, usesCallKit: usesCallKit) } catch {
-                    self.callId = nil
-                    return reply(false, nil, "native-create-failed")
+                    self.failConnect(id: id, attempt: attempt, reason: "native-create-failed", emit: false); return
                 }
                 self.engine = e
-                self.pending = reply
                 self.connected = false
                 self.remoteVideo = false
                 e.onEvent = { [weak self, weak e] ev in
-                    guard let self, let e, self.engine === e else { return }
+                    guard let self, let e, self.engine === e, self.generation == attempt else { return }
                     self.onEvent(ev, id: id)
                 }
                 CallController.shared.engineStarted(callId: id, video: wantVideo)
-                // Logging only: a call answered from a VoIP-push wake / lock screen starts media while the app is not active.
                 e.audioTrigger = UIApplication.shared.applicationState == .active ? "foreground" : "push"
                 e.start()
+                let timeout = DispatchWorkItem { [weak self] in
+                    self?.failConnect(id: id, attempt: attempt, reason: "network:olcall:connect-timeout", emit: true)
+                }
+                self.connectWatchdog = timeout
+                DispatchQueue.main.asyncAfter(deadline: .now() + Self.connectTimeout, execute: timeout)
                 let now = Date()
                 for ev in self.earlyCallKit.suffix(8) {
-                    // category/mode as CallKit activated it: Telegram configures the session before reportNewIncomingCall
-                    // (CallKitIntegration.swift:295); OL first configures it in OLCallAudioDevice.begin (after this).
                     e.logAppEvent(ev.name, ["beforeEngine": true, "msBeforeEngine": Int(now.timeIntervalSince(ev.at) * 1000),
                                             "categoryAtEvent": ev.category, "modeAtEvent": ev.mode])
                 }
@@ -105,15 +116,38 @@ final class NativeMedia {
         }
     }
 
+    private func completePending(_ ok: Bool, _ result: Any? = nil, _ error: String? = nil) {
+        let replies = pending
+        pending = []
+        replies.forEach { $0(ok, result, error) }
+    }
+
+    private func failConnect(id: String, attempt: Int, reason: String, emit: Bool) {
+        guard generation == attempt, callId == id else { return }
+        connectWatchdog?.cancel(); connectWatchdog = nil
+        completePending(false, nil, reason)
+        if emit {
+            host?.emitNativeMedia(["state": "failed", "callId": id, "reason": reason])
+            CallController.shared.showNetworkFailure(reason == "network:olcall:connect-timeout"
+                ? "Could not connect on this network. Try again." : "Call audio could not start. Try again.")
+            host?.dispatchNativeCall(["type": "call:hangup", "callId": id, "reason": reason])
+        }
+        engine?.hangup()
+        engine = nil
+        callId = nil
+        connected = false
+        CallController.shared.engineEnded(callId: id)
+    }
+
     /// t6111u: every door opens with the camera on. Camera refused (mic granted) = join with audio and the camera-off
     /// tile (the page hears "camera-unavailable"), never a failed call. Mic refused still fails silently, as before.
-    private func authorizeCamOrAudio(id: String, video: Bool, _ done: @escaping (Bool, Bool) -> Void) {
+    private func authorizeCamOrAudio(id: String, video: Bool, generation: Int, _ done: @escaping (Bool, Bool) -> Void) {
         gate.authorize(video ? .videoCall : .audioCall) { ok in
             guard !ok, video else { return done(ok, video) }
             self.gate.authorize(.audioCall) { mic in
                 if mic {
                     DispatchQueue.main.async {
-                        guard self.callId == id else { return }
+                        guard self.callId == id, self.generation == generation else { return }
                         self.video = false
                         self.host?.emitNativeMedia(["state": "camera-unavailable", "callId": id])
                     }
@@ -133,9 +167,9 @@ final class NativeMedia {
             if connected { ownReconnecting = st == .reconnecting; CallController.shared.setReconnecting(callId: id, on: ownReconnecting || peerReconnecting) }
             if st == .connected && !connected {
                 connected = true
+                connectWatchdog?.cancel(); connectWatchdog = nil
                 host?.emitNativeMedia(["state": "connected", "callId": id])
-                pending?(true, result(), nil)
-                pending = nil
+                completePending(true, result(), nil)
                 CallController.shared.mediaConnected(callId: id)
             }
             if rv != remoteVideo {
@@ -151,8 +185,13 @@ final class NativeMedia {
             CallController.shared.observeLifecycle(callId: id, l) // server-owned; observe only
         case let .ended(reason):
             let normal = reason == "local-hangup" || reason.hasPrefix("bye:")
-            if let p = pending { p(false, nil, "network:olcall:\(reason)"); pending = nil }
-            else if !normal { host?.emitNativeMedia(["state": "failed", "callId": id]) }
+            connectWatchdog?.cancel(); connectWatchdog = nil
+            let reasonText = "network:olcall:\(reason)"
+            completePending(false, nil, reasonText)
+            if !normal {
+                host?.emitNativeMedia(["state": "failed", "callId": id, "reason": reasonText])
+                CallController.shared.showNetworkFailure("The media connection ended. Try again.")
+            }
             engine = nil
             callId = nil
             connected = false
@@ -164,7 +203,9 @@ final class NativeMedia {
         case let .peerReconnecting(on):
             peerReconnecting = on
             CallController.shared.setReconnecting(callId: id, on: ownReconnecting || peerReconnecting)
-        case .mediaFlowing, .joined, .audio, .audioFailed, .route:
+        case let .audioFailed(reason):
+            failConnect(id: id, attempt: generation, reason: "audio:\(reason)", emit: true)
+        case .mediaFlowing, .joined, .audio, .route:
             break
         }
     }
@@ -198,10 +239,21 @@ final class NativeMedia {
     func setSpeaker(_ on: Bool) { engine?.setSpeaker(on) }
 
     func close() {
-        pending?(false, nil, "cancelled")
-        pending = nil
-        engine?.hangup() // ends with "local-hangup" -> onEvent(.ended) clears the rest
-        if engine == nil { callId = nil; connected = false; muted = false }
+        generation += 1
+        connectWatchdog?.cancel(); connectWatchdog = nil
+        completePending(false, nil, "cancelled")
+        let id = callId
+        let old = engine
+        engine = nil
+        callId = nil
+        connected = false
+        ownReconnecting = false
+        peerReconnecting = false
+        remoteVideo = false
+        muted = false
+        old?.onEvent = nil
+        old?.hangup()
+        if let id { CallController.shared.engineEnded(callId: id) }
     }
 
     /// CallKit audio callbacks that arrived while no engine existed (push-wake: CallKit can activate before the

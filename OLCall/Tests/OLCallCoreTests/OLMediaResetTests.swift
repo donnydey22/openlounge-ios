@@ -21,9 +21,19 @@ final class OLMediaResetTests: XCTestCase {
     }
 
     func testSilenceAfterResume() {
-        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 12.9))
-        XCTAssertTrue(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 13))
-        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: true, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 20))
-        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: nil, flowing: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 20))
+        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: false, remoteMuted: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 12.9))
+        XCTAssertTrue(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: false, remoteMuted: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 13))
+        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: true, remoteMuted: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 20))
+        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: nil, flowing: false, remoteMuted: false, connected: true, inFlight: false, ended: false, count: 0, last: nil, now: 20))
+    }
+
+    func testMutedPeerDoesNotCausePostResumeResetLoop() {
+        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: false, remoteMuted: true,
+                                                         connected: true, inFlight: false, ended: false,
+                                                         count: 0, last: nil, now: 60))
+        // Rendered remote video still counts as media while the peer's microphone is muted.
+        XCTAssertFalse(OLMediaReset.shouldResetOnSilence(resumedAt: 10, flowing: true, remoteMuted: true,
+                                                         connected: true, inFlight: false, ended: false,
+                                                         count: 0, last: nil, now: 60))
     }
 }

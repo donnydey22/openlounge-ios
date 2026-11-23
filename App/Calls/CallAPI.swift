@@ -20,14 +20,25 @@ enum CallAPI {
         }.resume()
     }
 
-    static func decline(origin: String, callId: String, declineToken: String?, access: String?) {
+    /// Bounded, idempotent Decline. A locked/offline device gets three attempts; success and permanent
+    /// rejection stop immediately. The invitation id/token make repeats safe on the backend.
+    static func decline(origin: String, callId: String, declineToken: String?, access: String?, attempt: Int = 0) {
         guard OLBridgeMessage.isCallId(callId), let url = URL(string: "\(origin)/api/calls/\(callId)/decline") else { return }
         var r = URLRequest(url: url)
         r.httpMethod = "POST"
+        r.timeoutInterval = 10
         r.setValue("application/json", forHTTPHeaderField: "Content-Type")
         if let t = declineToken { r.setValue(t, forHTTPHeaderField: "X-Call-Decline-Token") }
         if let a = access, !a.isEmpty { r.setValue("Bearer \(a)", forHTTPHeaderField: "Authorization") }
         r.httpBody = Data("{}".utf8)
-        URLSession.shared.dataTask(with: r).resume()
+        URLSession.shared.dataTask(with: r) { _, response, error in
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if (200..<300).contains(status) { return }
+            let retryable = error != nil || status == 0 || status == 408 || status == 429 || status >= 500
+            guard retryable, attempt < 2 else { return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + pow(2.0, Double(attempt))) {
+                decline(origin: origin, callId: callId, declineToken: declineToken, access: access, attempt: attempt + 1)
+            }
+        }.resume()
     }
 }

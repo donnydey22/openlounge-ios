@@ -19,6 +19,11 @@ public final class OLCallQueue: NSObject, OngoingCallThreadLocalContextQueueWebr
         if isCurrent() { f() } else { queue.async(execute: f) }
     }
 
+    public func sync<T>(_ f: () throws -> T) rethrows -> T {
+        if isCurrent() { return try f() }
+        return try queue.sync(execute: f)
+    }
+
     public func isCurrent() -> Bool { DispatchQueue.getSpecific(key: key) != nil }
 
     public func scheduleBlock(_ f: @escaping () -> Void, after timeout: Double) -> GroupCallDisposable {

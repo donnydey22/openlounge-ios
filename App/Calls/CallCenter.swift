@@ -24,12 +24,18 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     private struct Entry {
         let uuid: UUID
         let incoming: Bool
+        let invitationId: String?
         var answered = false
+        var accepting = false
         var answeredInPage = false
+        var answerAction: CXAnswerCallAction?
         var declineToken: String?
+        var expiresAtMs: Double
         var name: String
         var video: Bool
     }
+
+    private static let acceptTimeout: TimeInterval = 20
 
     weak var host: ShellHost?
     /// Main queue: PushKit token (hex) changed.
@@ -42,6 +48,9 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     private var registry: PKPushRegistry?
     private var calls: [String: Entry] = [:]
     private var expiry: [String: DispatchWorkItem] = [:]
+    private var acceptTimeouts: [String: DispatchWorkItem] = [:]
+    /// Terminal ring generations, retained briefly so a delayed duplicate cannot ring a successor's room.
+    private var endedInvitations: [String: [String]] = [:]
 
     private override init() {
         let c = CXProviderConfiguration()
@@ -81,39 +90,79 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     }
 
     private func reportIncoming(callId: String, name: String, handle: String, video: Bool, expiresAtMs: Double,
-                                declineToken: String?, completion: (() -> Void)? = nil) {
-        // One ringing door (t6093u): every ring is a CallKit VIDEO ring into the always-alive A/V room; an old build's
-        // audio ring rings the same way. The FaceTime-audio-style ring path is gone. (`video` is ignored.)
+                                declineToken: String?, invitationId: String? = nil, completion: (() -> Void)? = nil) {
+        // One ringing door (t6093u): every ring is a CallKit VIDEO ring into the always-alive A/V room.
         _ = video
-        if var e = calls[callId] {
-            if e.declineToken == nil { e.declineToken = declineToken; calls[callId] = e }
-            // Already ringing: report again so iOS counts this push as reported (it rejects the duplicate).
-            provider.reportNewIncomingCall(with: e.uuid, update: update(name: name, handle: handle, video: true)) { _ in completion?() }
+        if let invitationId, endedInvitations[callId]?.contains(invitationId) == true {
+            // PushKit still requires a report for every VoIP push, but a terminal invitation must never ring again.
+            let uuid = OLCallIdentity.uuid(forCallId: callId, invitationId: invitationId)
+            provider.reportNewIncomingCall(with: uuid, update: update(name: name, handle: handle, video: true)) { [weak self] _ in
+                self?.provider.reportCall(with: uuid, endedAt: nil, reason: .unanswered)
+                completion?()
+            }
             return
         }
-        let uuid = OLCallIdentity.uuid(for: callId)
-        calls[callId] = Entry(uuid: uuid, incoming: true, declineToken: declineToken, name: name, video: true)
+        if var e = calls[callId] {
+            if let invitationId, let old = e.invitationId, invitationId != old {
+                if expiresAtMs > 0 && e.expiresAtMs > 0 && expiresAtMs <= e.expiresAtMs {
+                    // An older generation cannot replace a newer ring for the same durable room.
+                    provider.reportNewIncomingCall(with: e.uuid, update: update(name: name, handle: handle, video: true)) { _ in completion?() }
+                    return
+                }
+                guard !e.accepting && !e.answered else {
+                    // A successor cannot steal the CXCall while this room is being answered or is active.
+                    provider.reportNewIncomingCall(with: e.uuid, update: update(name: name, handle: handle, video: true)) { _ in completion?() }
+                    return
+                }
+                end(callId, reason: .unanswered)
+            } else {
+                if e.declineToken == nil { e.declineToken = declineToken }
+                if expiresAtMs > 0 { e.expiresAtMs = expiresAtMs }
+                calls[callId] = e
+                armRingExpiry(callId: callId, expiresAtMs: expiresAtMs, invitationId: e.invitationId)
+                // Already ringing: report again so iOS counts this push as reported (it rejects the duplicate).
+                provider.reportNewIncomingCall(with: e.uuid, update: update(name: name, handle: handle, video: true)) { _ in completion?() }
+                return
+            }
+        }
+        let uuid = OLCallIdentity.uuid(forCallId: callId, invitationId: invitationId)
+        calls[callId] = Entry(uuid: uuid, incoming: true, invitationId: invitationId,
+                              declineToken: declineToken, expiresAtMs: expiresAtMs, name: name, video: true)
         provider.reportNewIncomingCall(with: uuid, update: update(name: name, handle: handle, video: true)) { [weak self] err in
             if err != nil { self?.calls[callId] = nil }
             completion?()
         }
+        armRingExpiry(callId: callId, expiresAtMs: expiresAtMs, invitationId: invitationId)
+    }
+
+    private func armRingExpiry(callId: String, expiresAtMs: Double, invitationId: String?) {
         let nowMs = Date().timeIntervalSince1970 * 1000
+        // expiresAt is absolute server time. Never restart a fresh ring window for a delayed duplicate push.
         let left = expiresAtMs > 0 ? max(0, (expiresAtMs - nowMs) / 1000) : 60
-        let w = DispatchWorkItem { [weak self] in self?.endRing(callId, reason: .unanswered) }
+        let w = DispatchWorkItem { [weak self] in self?.endRing(callId, invitationId: invitationId, reason: .unanswered) }
         expiry[callId]?.cancel()
         expiry[callId] = w
         DispatchQueue.main.asyncAfter(deadline: .now() + left, execute: w)
     }
 
     /// The caller hung up, someone answered elsewhere, or the ring expired.
-    func endRing(_ callId: String, reason: CXCallEndedReason) {
+    func endRing(_ callId: String, invitationId: String? = nil, reason: CXCallEndedReason) {
         guard let e = calls[callId], !e.answered else { return }
+        if let invitationId, e.invitationId != invitationId { return }
         end(callId, reason: reason)
     }
 
     private func end(_ callId: String, reason: CXCallEndedReason) {
         guard let e = calls.removeValue(forKey: callId) else { return }
         expiry.removeValue(forKey: callId)?.cancel()
+        acceptTimeouts.removeValue(forKey: callId)?.cancel()
+        e.answerAction?.fail()
+        if let invitation = e.invitationId {
+            var old = endedInvitations[callId] ?? []
+            old.removeAll { $0 == invitation }
+            old.append(invitation)
+            endedInvitations[callId] = Array(old.suffix(8))
+        }
         provider.reportCall(with: e.uuid, endedAt: nil, reason: reason)
         CallController.shared.dismissIncoming(callId: callId)
     }
@@ -130,7 +179,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         case let .outgoing(id, name, _, _):
             guard calls[id] == nil else { return }
             let uuid = OLCallIdentity.uuid(for: id)
-            calls[id] = Entry(uuid: uuid, incoming: false, answered: true, name: name, video: true)
+            calls[id] = Entry(uuid: uuid, incoming: false, invitationId: nil, answered: true, expiresAtMs: 0, name: name, video: true)
             let a = CXStartCallAction(call: uuid, handle: CXHandle(type: .generic, value: name.isEmpty ? "Open Lounge" : name))
             a.isVideo = true // one ringing door (t6093u): every outgoing ring is the video ring
             a.contactIdentifier = name
@@ -166,9 +215,17 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         case .none:
             break
         case .startedConnecting:
-            if !e.incoming { provider.reportOutgoingCall(with: e.uuid, startedConnectingAt: Date()) }
+            if e.incoming {
+                acknowledgeAnswer(callId: callId)
+            } else {
+                provider.reportOutgoingCall(with: e.uuid, startedConnectingAt: Date())
+            }
         case .connected:
-            if !e.incoming { provider.reportOutgoingCall(with: e.uuid, connectedAt: Date()) }
+            if e.incoming {
+                acknowledgeAnswer(callId: callId)
+            } else {
+                provider.reportOutgoingCall(with: e.uuid, connectedAt: Date())
+            }
         case let .ended(r):
             switch r {
             case .failed: end(callId, reason: .failed)
@@ -176,6 +233,31 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             case .remoteEnded: end(callId, reason: .remoteEnded)
             }
         }
+    }
+
+    /// Server Answering/JoiningUrl/Connecting/InRoom is the Accept acknowledgement. The user's tap is not.
+    private func acknowledgeAnswer(callId: String) {
+        guard var e = calls[callId], e.incoming, !e.answered else { return }
+        acceptTimeouts.removeValue(forKey: callId)?.cancel()
+        e.answered = true
+        e.accepting = false
+        let action = e.answerAction
+        e.answerAction = nil
+        calls[callId] = e
+        if let action {
+            NativeMedia.configureSessionForCallKit() // category before fulfill, or didActivate never arrives
+            action.fulfill()
+        }
+    }
+
+    private func acceptTimedOut(_ callId: String) {
+        guard let e = calls[callId], e.accepting, !e.answered else { return }
+        CallController.shared.answering(callId: callId, name: e.name, video: e.video)
+        CallController.shared.showNetworkFailure("Accept timed out. Check your connection and try again.")
+        host?.emitNativeMedia(["state": "failed", "callId": callId, "reason": "accept-timeout"])
+        host?.dispatchNativeCall(["type": "call:hangup", "callId": callId, "reason": "accept-timeout"])
+        if NativeMedia.shared.callId == callId { NativeMedia.shared.close() }
+        end(callId, reason: .failed)
     }
 
     // MARK: in-app incoming card (shown over App Lock)
@@ -203,9 +285,12 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     // MARK: CXProviderDelegate
 
     func providerDidReset(_ provider: CXProvider) {
+        calls.values.forEach { $0.answerAction?.fail() }
         calls.removeAll()
         expiry.values.forEach { $0.cancel() }
         expiry.removeAll()
+        acceptTimeouts.values.forEach { $0.cancel() }
+        acceptTimeouts.removeAll()
         NativeMedia.shared.close()
     }
 
@@ -216,8 +301,10 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     }
 
     func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
-        guard let id = callId(for: action.callUUID), var e = calls[id] else { return action.fail() }
-        e.answered = true
+        guard let id = callId(for: action.callUUID), var e = calls[id], !e.answered else { return action.fail() }
+        guard !e.accepting else { return } // the original action owns the bounded Accept transaction
+        e.accepting = true
+        e.answerAction = action
         calls[id] = e
         expiry.removeValue(forKey: id)?.cancel()
         host?.unlockForCall()
@@ -226,18 +313,26 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             CallController.shared.answering(callId: id, name: e.name, video: e.video)
             host?.answerInPage(callId: id)
         }
-        NativeMedia.configureSessionForCallKit() // category before fulfill, or didActivate never arrives
-        action.fulfill()
+        let timeout = DispatchWorkItem { [weak self] in self?.acceptTimedOut(id) }
+        acceptTimeouts[id] = timeout
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.acceptTimeout, execute: timeout)
+        // Do not fulfill here. acknowledgeAnswer fulfills only after the server accepts the invitation.
     }
 
     func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
         guard let id = callId(for: action.callUUID), let e = calls.removeValue(forKey: id) else { return action.fulfill() }
         expiry.removeValue(forKey: id)?.cancel()
+        acceptTimeouts.removeValue(forKey: id)?.cancel()
+        e.answerAction?.fail()
+        if let invitation = e.invitationId {
+            var old = endedInvitations[id] ?? []
+            old.removeAll { $0 == invitation }; old.append(invitation)
+            endedInvitations[id] = Array(old.suffix(8))
+        }
         CallController.shared.dismissIncoming(callId: id)
         if e.incoming && !e.answered {
             if let h = host {
                 CallAPI.decline(origin: h.origin, callId: id, declineToken: e.declineToken, access: h.accessToken)
-                h.dispatchNativeCall(["type": "call:decline", "callId": id])
             }
         } else {
             host?.dispatchNativeCall(["type": "call:hangup", "callId": id])
@@ -291,8 +386,14 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
         }
         let nowMs = Date().timeIntervalSince1970 * 1000
         reportIncoming(callId: ring.callId, name: ring.callerName, handle: ring.callerId, video: ring.video,
-                       expiresAtMs: ring.expiresAt, declineToken: ring.declineToken) { [weak self] in
-            if ring.expired(nowMs: nowMs) { self?.endRing(ring.callId, reason: .unanswered) }
+                       expiresAtMs: ring.expiresAt, declineToken: ring.declineToken,
+                       invitationId: ring.invitationId) { [weak self] in
+            if ring.expired(nowMs: nowMs), let self {
+                // Legacy payloads have no generation: their late expiry must not kill an identified successor.
+                if ring.invitationId != nil || self.calls[ring.callId]?.invitationId == nil {
+                    self.endRing(ring.callId, invitationId: ring.invitationId, reason: .unanswered)
+                }
+            }
             completion()
         }
         CallController.shared.ringing(callId: ring.callId, name: ring.callerName, photo: ring.callerPhoto, video: true)

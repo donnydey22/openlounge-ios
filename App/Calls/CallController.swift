@@ -49,6 +49,7 @@ final class CallController: ObservableObject {
     var live: Bool { screen == .active }
     /// Latest frame per call, so a frame that lands before call:outgoing / answering is applied on begin.
     private var latest: [String: OLCallLifecycle] = [:]
+    private var metadataPrune: [String: DispatchWorkItem] = [:]
 
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
@@ -105,8 +106,8 @@ final class CallController: ObservableObject {
     /// This phone's media leg reached the server (tgcalls Established). Not an answer and not first inbound media.
     func mediaConnected(callId id: String) { if id == callId { engineUp = true; tick() } }
 
-    /// One path (t6093u): the page marks a link join ("link": true on call:answering). A link never rings; alone in it
-    /// with this phone's leg up, the status reads "Waiting for <first name>…".
+    /// Durable-room entry: the page marks a link join ("link": true on call:answering). Any ring is a
+    /// separate invitation overlay; alone with this leg up, the status reads "Waiting for <first name>…".
     @Published private(set) var link = false
     private var linkIds: Set<String> = []
     func markLink(callId id: String, fromJSON raw: String) {
@@ -121,7 +122,22 @@ final class CallController: ObservableObject {
         latest[id] = l
         CallCenter.shared.onLifecycle(callId: id, l) // CallKit banner, same frame
         if let d = OLCallFlow.pageDetail(callId: id, l) { host?.dispatchNativeCall(d) } // seven states back to the page
-        if l.state == .terminal, id == incomingCallId { incomingVisible = false }
+        if l.state == .terminal {
+            if id == incomingCallId { incomingVisible = false }
+            metadataPrune[id]?.cancel()
+            let prune = DispatchWorkItem { [weak self] in
+                guard let self, self.callId != id || !self.visible else { return }
+                self.latest[id] = nil
+                self.names[id] = nil
+                self.linkIds.remove(id)
+                self.metadataPrune[id] = nil
+            }
+            metadataPrune[id] = prune
+            DispatchQueue.main.asyncAfter(deadline: .now() + 60, execute: prune)
+        } else {
+            metadataPrune[id]?.cancel()
+            metadataPrune[id] = nil
+        }
         guard visible, id == callId else { return } // applied on begin()
         apply(l)
     }
@@ -241,8 +257,8 @@ final class CallController: ObservableObject {
 
     func decline() {
         incomingVisible = false
+        // CallCenter performs the single token-authenticated Decline; do not send a second page Decline.
         CallCenter.shared.declineFromApp(incomingCallId)
-        host?.dispatchNativeCall(["type": "call:decline", "callId": incomingCallId])
     }
 
     // MARK: state

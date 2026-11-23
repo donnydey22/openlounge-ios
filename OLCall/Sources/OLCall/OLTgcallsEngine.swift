@@ -41,8 +41,10 @@ public final class OLTgcallsEngine {
     public let version: String
     /// idle/joining/offering/answering/connected/failed; used on `queue`.
     public let states: OLCallStates
-    /// No Established this long after "joined" -> failed with the diagnosed reason (e.g. ice-stalled).
-    public static let connectTimeout: TimeInterval = 30
+    /// No joined acknowledgement / no Established after peer arrival -> explicit failure.
+    public static let joinAckTimeout: TimeInterval = 15
+    public static let connectTimeout: TimeInterval = 45
+    private static let maxResetRetries = 3
 
     private let queue = OLCallQueue(label: "ol.call.engine")
     private let media: OLCallMedia
@@ -54,7 +56,11 @@ public final class OLTgcallsEngine {
     private var seq: UInt64 = 0
     private var ended = false
     private var pingTimer: DispatchSourceTimer?
+    private var joinAckWatchdog: DispatchWorkItem?
     private var connectWatchdog: DispatchWorkItem?
+    private var joinAckReceived = false
+    private var engineGeneration = 0
+    private var resetAwaitingFrame = false
     private var peerSeen = false
     private var connected = false
     private var remoteMuted = false
@@ -78,7 +84,9 @@ public final class OLTgcallsEngine {
     private var resumeLeg = ""
     private var resumer: OLSignalingResume?
     private var resumeTask: URLSessionWebSocketTask?
+    private var resumeScheduleWork: DispatchWorkItem?
     private var resumeAttemptWatchdog: DispatchWorkItem?
+    private var resetRetryWork: DispatchWorkItem?
     private var queuedWhileResuming: [[String: Any]] = []
     /// Restart tgcalls on a path change or media silence after a signaling resume (b137).
     private var needsMediaReset = false
@@ -161,6 +169,14 @@ public final class OLTgcallsEngine {
             self.crumbs.event("ws", "open")
             self.send(OLCallFrames.join(join, seq: self.nextSeq()))
             self.states.setState(.joining, reason: "join-sent")
+            let ack = DispatchWorkItem { [weak self] in
+                self?.queue.dispatch {
+                    guard let self, !self.ended, !self.joinAckReceived else { return }
+                    self.end("join-ack-timeout")
+                }
+            }
+            self.joinAckWatchdog = ack
+            DispatchQueue.global().asyncAfter(deadline: .now() + Self.joinAckTimeout, execute: ack)
             self.receive(on: t)
             let timer = DispatchSource.makeTimerSource(queue: nil)
             timer.schedule(deadline: .now() + 15, repeating: 15)
@@ -186,6 +202,18 @@ public final class OLTgcallsEngine {
 
     public func switchCamera(front: Bool) { queue.dispatch { self.instance?.switchCamera(front: front) } }
     public func setSpeaker(_ on: Bool) { audio.setSpeaker(on) }
+
+    /// Synchronously admits work onto the existing bounded reset owner. No media engine is replaced here.
+    public func restartIce() -> Bool {
+        queue.sync {
+            guard !ended, states.state == .connected, socket != nil, resumer == nil,
+                  OLMediaReset.allowed(connected: true, inFlight: resetInFlight, ended: ended,
+                                       count: resetCount, last: lastResetAt,
+                                       now: Date().timeIntervalSince1970) else { return false }
+            beginMediaReset(reason: "restart-ice")
+            return true
+        }
+    }
 
     public func hangup() {
         queue.dispatch {
@@ -248,15 +276,15 @@ public final class OLTgcallsEngine {
                 switch result {
                 case let .failure(err):
                     let code = t.closeCode
-                    if code != .invalid {
-                        self.end("ws-closed:\(code.rawValue)")
+                    let reason = code != .invalid ? "ws-closed:\(code.rawValue)" : "ws-failure"
+                    self.crumbs.event("ws", "failure:\((err as NSError).code):close=\(code.rawValue)", level: "error")
+                    // A finite close code is still a transient transport loss. Resume the same leg whenever
+                    // the server gave us a key; only pre-media/keyless calls retain the old terminal behavior.
+                    if OLSignalingResume.shouldResume(connected: self.states.state == .connected,
+                                                      hasKey: self.resumeKey != nil, ended: self.ended) {
+                        self.beginResume()
                     } else {
-                        self.crumbs.event("ws", "failure:\((err as NSError).code)", level: "error")
-                        if OLSignalingResume.shouldResume(connected: self.states.state == .connected, hasKey: self.resumeKey != nil, ended: self.ended) {
-                            self.beginResume()
-                        } else {
-                            self.end("ws-failure")
-                        }
+                        self.end(reason)
                     }
                 case let .success(msg):
                     if case let .string(text) = msg { self.onFrame(OLCallFrames.decode(text)) }
@@ -290,9 +318,11 @@ public final class OLTgcallsEngine {
             return
         }
         resumer = r
-        DispatchQueue.global().asyncAfter(deadline: .now() + d) { [weak self] in
+        let work = DispatchWorkItem { [weak self] in
             self?.queue.dispatch { self?.resumeAttempt() }
         }
+        resumeScheduleWork = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + d, execute: work)
     }
 
     private func resumeAttempt() {
@@ -358,6 +388,12 @@ public final class OLTgcallsEngine {
     private func onFrame(_ f: OLCallFrames.Inbound) {
         switch f {
         case let .joined(j):
+            guard !joinAckReceived else {
+                crumbs.event("ws", "duplicate-joined-ignored", level: "warning")
+                return
+            }
+            joinAckReceived = true
+            joinAckWatchdog?.cancel(); joinAckWatchdog = nil
             crumbs.callId = j.callId
             crumbs.leg = j.leg
             resumeKey = j.resume
@@ -389,6 +425,14 @@ public final class OLTgcallsEngine {
                 emit(.peerReconnecting(on))
             }
         case let .legReset(j):
+            guard resetInFlight, resetAwaitingFrame,
+                  j.callId == resumeCallId, j.leg == resumeLeg else {
+                crumbs.event("ws", "stale-leg-reset-ignored", level: "warning")
+                return
+            }
+            resetAwaitingFrame = false
+            resetAckWatchdog?.cancel(); resetAckWatchdog = nil
+            if let rotated = j.resume { resumeKey = rotated }
             startEngine(from: j, isInitialJoin: false)
         case let .mediaLost(reason):
             crumbs.event("tg", "server-media-lost:\(reason)", level: "warning")
@@ -402,10 +446,15 @@ public final class OLTgcallsEngine {
             }
             if e == "reset-limited" || e == "reset-unsupported" || e == "translator" {
                 crumbs.event("tg", "media-reset:\(e)", level: "warning")
-                resetAckWatchdog?.cancel()
+                resetAckWatchdog?.cancel(); resetAckWatchdog = nil
                 resetInFlight = false
-                // The engine was stopped for the reset: never sit with no engine (138).
-                if e != "reset-unsupported", instance == nil { scheduleResetRetry("retry-\(e)") }
+                resetAwaitingFrame = false
+                // The old engine was stopped. Every refusal ends in a bounded successor or explicit termination.
+                if e == "reset-unsupported" {
+                    end("reset-unsupported")
+                } else if instance == nil {
+                    scheduleResetRetry("retry-\(e)")
+                }
                 break
             }
             crumbs.event("ws", "server-error:\(e)", level: "error")
@@ -424,10 +473,10 @@ public final class OLTgcallsEngine {
         case .resumed:
             break // only meaningful on the resume socket, handled in the resume receive path
         case let .ignored(t), let .unknown(t):
-            // No silent drop (t5937u): an unhandled frame type is a hard error that ends the call.
-            crumbs.event("ws", "unknown-frame:\(t)", level: "error")
-            callLog.event("server_error", reason: OLCallLogTags.tag("unknown-frame:\(t)"), detail: String(t.prefix(60)))
-            end("unknown-frame")
+            // Forward compatibility: additive future frames are observable but never fatal. Malformed known
+            // frames still arrive as .error("bad-...") and retain strict handling above.
+            crumbs.event("ws", "unknown-frame-ignored:\(t)", level: "warning")
+            callLog.event("unknown_frame_ignored", reason: OLCallLogTags.tag("unknown-frame:\(t)"), detail: String(t.prefix(60)))
         }
     }
 
@@ -438,12 +487,17 @@ public final class OLTgcallsEngine {
         let normal = reason == "local-hangup" || reason.hasPrefix("bye:")
         if states.state != .connected && !normal { states.fail(reason) }
         ended = true
-        connectWatchdog?.cancel()
+        joinAckWatchdog?.cancel(); joinAckWatchdog = nil
+        connectWatchdog?.cancel(); connectWatchdog = nil
         pingTimer?.cancel()
         pingTimer = nil
-        resumeAttemptWatchdog?.cancel()
-        silenceAfterResumeWatchdog?.cancel()
-        resetAckWatchdog?.cancel()
+        resumeScheduleWork?.cancel(); resumeScheduleWork = nil
+        resumeAttemptWatchdog?.cancel(); resumeAttemptWatchdog = nil
+        silenceAfterResumeWatchdog?.cancel(); silenceAfterResumeWatchdog = nil
+        resetAckWatchdog?.cancel(); resetAckWatchdog = nil
+        resetRetryWork?.cancel(); resetRetryWork = nil
+        pathSettleWork?.cancel(); pathSettleWork = nil
+        reconnectWatch?.cancel(); reconnectWatch = nil
         resumeTask?.cancel(with: .normalClosure, reason: nil)
         resumeTask = nil
         resumer = nil
@@ -451,10 +505,15 @@ public final class OLTgcallsEngine {
         resumeKey = nil
         pathMonitor?.cancel()
         pathMonitor = nil
+        engineGeneration += 1
+        resetAwaitingFrame = false
         instance?.stop()
         instance = nil
         socket?.cancel(with: .normalClosure, reason: nil)
         socket = nil
+        audio.onActiveChanged = nil
+        audio.onRouteChanged = nil
+        audio.onLog = nil
         audio.end()
         DispatchQueue.main.async {
             self.videoTimer?.invalidate(); self.videoTimer = nil
@@ -605,6 +664,11 @@ public final class OLTgcallsEngine {
             end("version-mismatch")
             return
         }
+        engineGeneration += 1
+        let generation = engineGeneration
+        let replaced = instance
+        instance = nil
+        replaced?.stop() // an old native handle must never survive a leg-reset replacement
         let rtc = OLRtcServers.fromIceServers(j.iceServers)
         crumbs.event("tg", "rtc-servers:" + OLRtcServers.summary(rtc))
         callLog.turnServers = rtc.filter { $0.isTurn }.count
@@ -620,17 +684,21 @@ public final class OLTgcallsEngine {
                     guard let self else { return }
                     self.crumbs.blob("send", blob)
                     self.queue.dispatch {
-                        guard !self.ended else { return }
+                        guard !self.ended, self.engineGeneration == generation else { return }
                         self.states.blobSent()
                         self.send(OLCallFrames.blob(blob, seq: self.nextSeq()))
                     }
                 })
             key.resetBytes(in: 0..<key.count) // the engine holds its own copy
             i.onRemoteAudioLevel = { [weak self] level in
-                self?.queue.dispatch { self?.onRemoteLevel(level) }
+                self?.queue.dispatch {
+                    guard let self, self.engineGeneration == generation else { return }
+                    self.onRemoteLevel(level)
+                }
             }
             i.onState = { [weak self] st, rv, rm in
-                guard let self else { return }
+                guard let self, !self.ended, self.engineGeneration == generation else { return }
+                let midCall = self.states.state == .connected
                 self.remoteMuted = rm
                 self.remoteVideoActive = rv
                 self.connected = st == .connected
@@ -638,27 +706,49 @@ public final class OLTgcallsEngine {
                     self.connectWatchdog?.cancel()
                     self.states.setState(.connected, reason: "tg-established")
                     self.resetInFlight = false
+                    self.resetAwaitingFrame = false
+                    self.resetRetryWork?.cancel(); self.resetRetryWork = nil
+                    self.reconnectWatch?.cancel(); self.resetRetries = 0
                 }
                 self.lastTgState = st
-                let midCall = self.states.state == .connected
-                if st == .connected { self.reconnectWatch?.cancel(); self.resetRetries = 0 }
                 if midCall, st == .reconnecting, !self.resetInFlight { self.armReconnectWatch() }
-                if midCall, st == .failed {
-                    // Mid-call engine failure: restart it on a fresh translator instead of ending the call (138).
-                    self.crumbs.event("tg.state", "failed:restarting", level: "error")
-                    if !self.resetInFlight { self.beginMediaReset(reason: "tg-failed") }
+                if st == .failed {
+                    if midCall {
+                        self.crumbs.event("tg.state", "failed:restarting", level: "error")
+                        if self.resetInFlight {
+                            // The replacement itself failed: it is not a successor. Stop it and enter the
+                            // same bounded retry-or-terminate ladder as a refused/timed-out reset.
+                            self.resetInFlight = false
+                            self.resetAwaitingFrame = false
+                            self.resetAckWatchdog?.cancel(); self.resetAckWatchdog = nil
+                            self.engineGeneration += 1
+                            self.instance?.stop()
+                            self.instance = nil
+                            self.scheduleResetRetry("retry-replacement-failed")
+                        } else {
+                            self.beginMediaReset(reason: "tg-failed")
+                        }
+                    } else {
+                        self.crumbs.event("tg.state", "failed:initial", level: "error")
+                        self.end("tg-failed")
+                    }
                     return
                 }
-                self.crumbs.event("tg.state", st.rawValue, level: st == .failed ? "error" : "info")
+                self.crumbs.event("tg.state", st.rawValue, level: "info")
                 self.emit(.state(st, remoteVideoActive: rv, remoteMuted: rm))
-                if st == .failed, !self.resetInFlight { self.end("tg-failed") }
             }
             instance = i
             if localMuted { i.setMuted(true) }
-            i.makeIncomingVideoView { [weak self] v in if let v { self?.showRemote(v) } }
+            i.makeIncomingVideoView { [weak self] v in
+                guard let self, self.engineGeneration == generation, let v else { return }
+                self.showRemote(v)
+            }
             if isInitialJoin ? video : localVideoOn {
                 i.setVideoEnabled(true)
-                i.makeOutgoingVideoView { [weak self] v in if let v { self?.showLocal(v) } }
+                i.makeOutgoingVideoView { [weak self] v in
+                    guard let self, self.engineGeneration == generation, let v else { return }
+                    self.showLocal(v)
+                }
             }
             if isInitialJoin {
                 emit(.joined(isOutgoing: j.isOutgoing, version: version))
@@ -707,14 +797,17 @@ public final class OLTgcallsEngine {
 
     private func scheduleResetRetry(_ reason: String) {
         guard !ended else { return }
-        guard resetRetries < 20 else { end("media-unrecoverable"); return }
+        guard resetRetries < Self.maxResetRetries else { end("reset-exhausted"); return }
         resetRetries += 1
-        DispatchQueue.global().asyncAfter(deadline: .now() + 2.5) { [weak self] in
+        resetRetryWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
             self?.queue.dispatch {
                 guard let self, !self.ended, !self.resetInFlight, self.instance == nil else { return }
                 self.beginMediaReset(reason: reason)
             }
         }
+        resetRetryWork = work
+        DispatchQueue.global().asyncAfter(deadline: .now() + max(2.5, OLMediaReset.cooldown), execute: work)
     }
 
     private func armReconnectWatch() {
@@ -754,6 +847,7 @@ public final class OLTgcallsEngine {
                 guard let self, !self.ended else { return }
                 let now = Date().timeIntervalSince1970
                 if OLMediaReset.shouldResetOnSilence(resumedAt: self.resumedAt, flowing: self.flowing,
+                                                     remoteMuted: self.remoteMuted,
                                                      connected: self.states.state == .connected, inFlight: self.resetInFlight,
                                                      ended: self.ended, count: self.resetCount, last: self.lastResetAt, now: now) {
                     self.beginMediaReset(reason: "silence-after-resume")
@@ -766,11 +860,15 @@ public final class OLTgcallsEngine {
 
     /// Stop this peer's tgcalls instance and ask the server to reset only this slot's translator.
     private func beginMediaReset(reason: String) {
-        guard !ended, !resetInFlight, socket != nil, resumer == nil else {
+        guard !ended else { return }
+        guard !resetInFlight, socket != nil, resumer == nil else {
             needsMediaReset = true
             return
         }
+        guard states.state == .connected else { return }
+        guard resetCount < OLMediaReset.maxPerCall else { end("reset-exhausted"); return }
         resetInFlight = true
+        resetAwaitingFrame = true
         needsMediaReset = false
         resetCount += 1
         lastResetAt = Date().timeIntervalSince1970
@@ -779,6 +877,7 @@ public final class OLTgcallsEngine {
         silenceAfterResumeWatchdog?.cancel()
         crumbs.event("tg", "media-reset:\(reason)", level: "warning")
         callLog.event("media_reset", reason: reason, extra: ["count": resetCount, "netType": netType ?? "unknown"])
+        engineGeneration += 1
         let old = instance
         instance = nil
         old?.stop()
@@ -787,8 +886,13 @@ public final class OLTgcallsEngine {
             self?.queue.dispatch {
                 guard let self, self.resetInFlight, !self.ended else { return }
                 self.resetInFlight = false
+                self.resetAwaitingFrame = false
                 self.crumbs.event("tg", "media-reset:timeout", level: "error")
-                if self.instance == nil { self.scheduleResetRetry("retry-timeout") }
+                // No half-created replacement may linger while a retry is scheduled.
+                self.engineGeneration += 1
+                self.instance?.stop()
+                self.instance = nil
+                self.scheduleResetRetry("retry-timeout")
             }
         }
         resetAckWatchdog = w

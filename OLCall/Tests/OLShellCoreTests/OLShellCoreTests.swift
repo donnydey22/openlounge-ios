@@ -152,6 +152,13 @@ final class OLMediaCommandTests: XCTestCase {
         XCTAssertNil(OLMediaCommand.parse(["op": .string("connect"), "callId": .string("a b")]))
         XCTAssertNil(OLMediaCommand.parse([:]))
     }
+
+    func testDurableLinkMediaDefaults() {
+        XCTAssertEqual(OLMediaCommand.parse(["op": .string("connect"), "callId": .string("room1"), "link": .bool(true), "video": .bool(false)]),
+                       .connect(callId: "room1", media: .null, video: true, caller: false))
+        XCTAssertEqual(OLMediaCommand.parse(["op": .string("connect"), "callId": .string("room1"), "video": .bool(false)]),
+                       .connect(callId: "room1", media: .null, video: false, caller: false))
+    }
 }
 
 final class OLBridgeScriptTests: XCTestCase {
@@ -225,6 +232,7 @@ final class OLRingTests: XCTestCase {
         let r = OLIncomingRing.parse(["type": "call_incoming", "callId": "c1", "callerId": "u1", "callerName": "Ann",
                                       "callerPhoto": "https://x/p.jpg", "video": "1", "expiresAt": "2000", "declineToken": token])
         XCTAssertEqual(r?.callId, "c1")
+        XCTAssertNil(r?.invitationId)
         XCTAssertEqual(r?.video, true)
         XCTAssertEqual(r?.expiresAt, 2000)
         XCTAssertEqual(r?.declineToken, token)
@@ -236,12 +244,20 @@ final class OLRingTests: XCTestCase {
         XCTAssertEqual(bad?.expired(nowMs: 1e15), false)
         XCTAssertNil(OLIncomingRing.parse(["type": "dm", "callId": "c1"]))
         XCTAssertNil(OLIncomingRing.parse(["type": "call_incoming", "callId": "a/b"]))
+        let successor = OLIncomingRing.parse(["type": "call_incoming", "callId": "c1", "invitationId": "inv_2",
+                                              "expiresAt": "2000"])
+        XCTAssertEqual(successor?.callId, "c1")
+        XCTAssertEqual(successor?.invitationId, "inv_2")
+        XCTAssertNil(OLIncomingRing.parse(["type": "call_incoming", "callId": "c1", "invitationId": "../old"])?.invitationId)
     }
 
     func testUUID() {
         let a = OLCallIdentity.uuid(for: "c1")
         XCTAssertEqual(a, OLCallIdentity.uuid(for: "c1"))
         XCTAssertNotEqual(a, OLCallIdentity.uuid(for: "c2"))
+        XCTAssertEqual(OLCallIdentity.uuid(forCallId: "c1", invitationId: nil), a)
+        XCTAssertNotEqual(OLCallIdentity.uuid(forCallId: "c1", invitationId: "inv_1"),
+                          OLCallIdentity.uuid(forCallId: "c1", invitationId: "inv_2"))
         let s = a.uuidString
         XCTAssertEqual(Array(s)[14], "5")
         XCTAssertTrue("89AB".contains(Array(s)[19]))
