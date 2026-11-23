@@ -1,0 +1,51 @@
+# Codemagic CI for the Open Lounge iOS app: mirrors .github/workflows/ios.yml (engine xcframework, ci/build.sh, ci/adhoc.sh).
+# Signing secrets live in the Codemagic app variable group ios_signing (secure): P12_B64 P12_PASSWORD PROFILE_B64 ARTIFACT_PASSPHRASE.
+workflows:
+  ios-adhoc:
+    name: Open Lounge iOS ad hoc
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      groups:
+        - ios_signing
+      xcode: 27.1
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/xcf
+    triggering:
+      events:
+        - push
+      branch_patterns:
+        - pattern: 'ol-ios-*'
+          include: true
+          source: true
+      cancel_previous_builds: true
+    scripts:
+      - name: Toolchain
+        script: |
+          xcodebuild -version; sw_vers
+      - name: Engine xcframework (cache, else build from Telegram-iOS at the pin)
+        script: |
+          set -euo pipefail
+          pin="$(sed -n 's/.*"telegram_ios": *"\([^"]*\)".*/\1/p' ci/telegram-ios-versions.pin)"
+          h="$(cat ci/xcframework/BUILD.bazel ci/xcframework/install.sh | shasum -a 256 | cut -c1-16)"
+          key="${pin}-${h}"
+          if [ -f xcf/TgVoipWebrtc.xcframework.zip ] && [ "$(cat xcf/KEY 2>/dev/null)" = "$key" ]; then
+            echo "engine xcframework from cache ($key)"; du -h xcf/TgVoipWebrtc.xcframework.zip; exit 0
+          fi
+          rm -rf xcf tg
+          git init -q tg && cd tg
+          git remote add origin https://github.com/TelegramMessenger/Telegram-iOS.git
+          git fetch -q --depth 1 origin "$pin" && git checkout -q FETCH_HEAD
+          git submodule update --init --recursive --depth 1 --jobs 8
+          cd .. && bash ci/xcframework/install.sh "$PWD/tg" "$PWD/xcf"
+          echo "$key" > xcf/KEY
+          rm -rf tg
+      - name: Build and test
+        script: bash ci/build.sh "$PWD/xcf/TgVoipWebrtc.xcframework.zip"
+      - name: Signed ad hoc IPA (encrypted)
+        script: bash ci/adhoc.sh
+    artifacts:
+      - out/*
+      - build/RESULT.json
+      - build/ci-*.log

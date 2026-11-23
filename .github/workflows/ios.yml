@@ -1,9 +1,8 @@
 # Mac CI for the combined Open Lounge call branch. Unsigned builds only: no signing, no upload, no deploy.
 name: ol-call-integration
 
+# Push builds moved to Codemagic (codemagic.yaml, branches ol-ios-*). workflow_dispatch only.
 on:
-  push:
-    branches: [ol-call-integration, ol-b137, ol-b138, ol-b139, ol-b140]
   workflow_dispatch:
 
 permissions:
