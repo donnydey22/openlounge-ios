@@ -34,6 +34,12 @@ workflows:
             echo "engine xcframework from cache ($key)"; du -h xcf/TgVoipWebrtc.xcframework.zip; exit 0
           fi
           rm -rf xcf tg
+          # Codemagic images ship Homebrew ccache; TDLib's CMake picks it up, but Bazel's strict action PATH
+          # (/bin:/usr/bin:/usr/local/bin) cannot run it ("ccache: command not found"). GitHub runners have no ccache.
+          while command -v ccache >/dev/null 2>&1; do
+            c="$(command -v ccache)"; echo "removing $c"
+            brew uninstall --ignore-dependencies --force ccache 2>/dev/null || sudo rm -f "$c"; hash -r
+          done
           git init -q tg && cd tg
           git remote add origin https://github.com/TelegramMessenger/Telegram-iOS.git
           git fetch -q --depth 1 origin "$pin" && git checkout -q FETCH_HEAD
