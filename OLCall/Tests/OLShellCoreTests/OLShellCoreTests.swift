@@ -274,6 +274,42 @@ final class OLRingTests: XCTestCase {
         XCTAssertEqual(OLCallIdentity.voipTokenHex(Data(repeating: 0xab, count: 32)), String(repeating: "ab", count: 32))
         XCTAssertNil(OLCallIdentity.voipTokenHex(Data([1, 2])))
     }
+
+    func testIncomingBannerAcceptJoinsSameLinkId() {
+        let t = OLIncomingBannerPolicy.transition(callId: "pair_room_42", action: .accept)
+        XCTAssertEqual(t.callId, "pair_room_42")
+        XCTAssertTrue(t.accepts)
+        XCTAssertFalse(t.terminatesLink)
+        XCTAssertTrue(t.stopsRing)
+    }
+
+    func testIncomingBannerRedXTerminatesLinkAndStopsRing() {
+        let t = OLIncomingBannerPolicy.transition(callId: "pair_room_42", action: .decline)
+        XCTAssertEqual(t.callId, "pair_room_42")
+        XCTAssertTrue(t.terminatesLink)
+        XCTAssertTrue(t.stopsRing)
+    }
+
+    func testIncomingBannerThirtySecondTimeoutTerminatesLink() {
+        let t = OLIncomingBannerPolicy.transition(callId: "pair_room_42", action: .timeout)
+        XCTAssertTrue(t.terminatesLink)
+        XCTAssertTrue(t.stopsRing)
+        XCTAssertEqual(OLIncomingBannerPolicy.ringSeconds(nowMs: 1_000, expiresAtMs: 31_000), 30)
+        XCTAssertEqual(OLIncomingBannerPolicy.ringSeconds(nowMs: 1_000, expiresAtMs: 91_000), 30,
+                       "a delayed duplicate never extends the ring beyond 30 seconds")
+        XCTAssertEqual(OLIncomingBannerPolicy.ringSeconds(nowMs: 1_000, expiresAtMs: 0), 30)
+        XCTAssertEqual(OLIncomingBannerPolicy.ringSeconds(nowMs: 31_000, expiresAtMs: 31_000), 0)
+    }
+
+    func testIncomingBannerCallerCancelTerminatesLink() {
+        let t = OLIncomingBannerPolicy.transition(callId: "pair_room_42", action: .callerCancel)
+        XCTAssertTrue(t.terminatesLink)
+        XCTAssertTrue(t.stopsRing)
+    }
+
+    func testIncomingBannerButtonOrderIsRedLeftGreenRight() {
+        XCTAssertEqual(OLIncomingBannerPolicy.buttonOrder, [.decline, .accept])
+    }
 }
 
 /// The native call screen follows the page call screen's identity (the server's current-profile peer).

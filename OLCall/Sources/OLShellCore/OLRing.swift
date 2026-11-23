@@ -33,6 +33,34 @@ public struct OLIncomingRing: Equatable {
     public func expired(nowMs: Double) -> Bool { expiresAt > 0 && nowMs >= expiresAt }
 }
 
+public enum OLIncomingBannerAction: Equatable {
+    case accept, decline, timeout, callerCancel
+}
+
+public struct OLIncomingBannerTransition: Equatable {
+    public let callId: String
+    public let accepts: Bool
+    public let terminatesLink: Bool
+    public let stopsRing: Bool
+}
+
+/// Platform-neutral contract for the single incoming overlay. CallController and CallCenter still own the actions.
+public enum OLIncomingBannerPolicy {
+    public static let maxRingSeconds: TimeInterval = 30
+    public static let buttonOrder: [OLIncomingBannerAction] = [.decline, .accept]
+
+    public static func ringSeconds(nowMs: Double, expiresAtMs: Double) -> TimeInterval {
+        guard expiresAtMs > 0 else { return maxRingSeconds }
+        return min(maxRingSeconds, max(0, (expiresAtMs - nowMs) / 1000))
+    }
+
+    public static func transition(callId: String, action: OLIncomingBannerAction) -> OLIncomingBannerTransition {
+        let accept = action == .accept
+        return OLIncomingBannerTransition(callId: callId, accepts: accept,
+                                          terminatesLink: !accept, stopsRing: true)
+    }
+}
+
 public enum OLCallIdentity {
     /// Deterministic CallKit UUID for a call id (name-based, RFC 4122 version 5 layout), so a VoIP
     /// push, the page's call:incoming and a late cancel all address the same CallKit call.

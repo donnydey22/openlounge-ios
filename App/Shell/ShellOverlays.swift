@@ -87,7 +87,7 @@ struct CallLayer: View {
             } else if call.visible {
                 CallScreen(call: call).transition(.opacity)
             }
-            if call.incomingVisible { IncomingCallScreen(call: call).transition(.opacity) }
+            if call.incomingVisible { IncomingCallScreen(call: call).transition(.move(edge: .top).combined(with: .opacity)) }
         }
         .animation(.easeInOut(duration: 0.2), value: call.visible)
         .animation(.easeInOut(duration: 0.2), value: call.incomingVisible)

@@ -138,7 +138,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     private func armRingExpiry(callId: String, expiresAtMs: Double, invitationId: String?) {
         let nowMs = Date().timeIntervalSince1970 * 1000
         // expiresAt is absolute server time. Never restart a fresh ring window for a delayed duplicate push.
-        let left = expiresAtMs > 0 ? max(0, (expiresAtMs - nowMs) / 1000) : 60
+        let left = OLIncomingBannerPolicy.ringSeconds(nowMs: nowMs, expiresAtMs: expiresAtMs)
         let w = DispatchWorkItem { [weak self] in self?.endRing(callId, invitationId: invitationId, reason: .unanswered) }
         expiry[callId]?.cancel()
         expiry[callId] = w
@@ -191,8 +191,11 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
             e.answeredInPage = true
             calls[id] = e
             controller.request(CXTransaction(action: CXAnswerCallAction(call: e.uuid))) { _ in }
-        case .connected, .ended:
-            break // page-sent states are ignored here: CallKit follows the server's lifecycle frames (onLifecycle)
+        case let .ended(id):
+            // Caller cancel, answered elsewhere, or the server's timeout terminates this ring and stops CallKit's tone.
+            endRing(id, reason: .remoteEnded)
+        case .connected:
+            break // active CallKit state follows the server's lifecycle frames (onLifecycle)
         case .ringtonePrepare:
             // Same rule as Android (CallAudioPolicy.prepareRingtoneOn): only with no live call, reset the session
             // tgcalls left in PlayAndRecord so WebKit plays the page's ringtone as media, not on the call path.
@@ -263,12 +266,19 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
     // MARK: in-app incoming card (shown over App Lock)
 
     func answerFromApp(_ callId: String) {
-        guard let e = calls[callId] else { return host?.answerInPage(callId: callId) ?? () }
+        guard let e = calls[callId] else {
+            host?.answerInPage(callId: callId)
+            return
+        }
         controller.request(CXTransaction(action: CXAnswerCallAction(call: e.uuid))) { _ in }
     }
 
     func declineFromApp(_ callId: String) {
-        guard let e = calls[callId] else { return }
+        guard let e = calls[callId] else {
+            // In front there is no CallKit entry: use the page's existing same-room Decline and stop its ring.
+            host?.dispatchNativeCall(["type": "call:decline", "callId": callId])
+            return
+        }
         controller.request(CXTransaction(action: CXEndCallAction(call: e.uuid))) { _ in }
     }
 

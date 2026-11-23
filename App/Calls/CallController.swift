@@ -54,6 +54,7 @@ final class CallController: ObservableObject {
     // incoming card (over App Lock only; otherwise CallKit or the page ring)
     @Published private(set) var incomingVisible = false
     @Published var lockCovering = false
+    private var incomingExpiry: DispatchWorkItem?
 
     var canToggleVideo: Bool { NativeMedia.shared.callId == callId && (phase == .connecting || phase == .active) }
 
@@ -66,9 +67,9 @@ final class CallController: ObservableObject {
 
     func onPage(_ m: OLPageCallMessage) {
         switch m {
-        case let .incoming(id, name, video, photo, _):
+        case let .incoming(id, name, video, photo, expiresAt):
             names[id] = (name, photo.flatMap(Self.photoURL), video)
-            if lockCovering { show(incoming: id) }
+            show(incoming: id, expiresAtMs: expiresAt ?? 0)
         case let .outgoing(id, name, video, photo):
             begin(id, name: name, photo: photo.flatMap(Self.photoURL), video: video)
         case let .answering(id, name, video, photo):
@@ -76,8 +77,12 @@ final class CallController: ObservableObject {
             begin(id, name: name.isEmpty ? (n?.0 ?? peerName) : name,
                   photo: photo.flatMap(Self.photoURL) ?? n?.1,
                   video: video || (n?.2 ?? false))
-        case .connected, .ended:
-            break // page-sent states are ignored here: only the server's lifecycle frames move the call surfaces
+        case let .ended(id):
+            // Caller cancel / server timeout: the ring's pre-seeded link is already terminated upstream.
+            _ = OLIncomingBannerPolicy.transition(callId: id, action: .callerCancel)
+            dismissIncoming(callId: id)
+        case .connected:
+            break // only the server's lifecycle frames move the active call surface
         case let .muted(m):
             muted = m
         case let .audioRoute(speaker):
@@ -123,7 +128,7 @@ final class CallController: ObservableObject {
         CallCenter.shared.onLifecycle(callId: id, l) // CallKit banner, same frame
         if let d = OLCallFlow.pageDetail(callId: id, l) { host?.dispatchNativeCall(d) } // seven states back to the page
         if l.state == .terminal {
-            if id == incomingCallId { incomingVisible = false }
+            if id == incomingCallId { dismissIncoming(callId: id) }
             metadataPrune[id]?.cancel()
             let prune = DispatchWorkItem { [weak self] in
                 guard let self, self.callId != id || !self.visible else { return }
@@ -175,7 +180,12 @@ final class CallController: ObservableObject {
         cameraOn = false
     }
 
-    func dismissIncoming(callId id: String) { if incomingCallId == id { incomingVisible = false } }
+    func dismissIncoming(callId id: String) {
+        guard incomingCallId == id else { return }
+        incomingExpiry?.cancel()
+        incomingExpiry = nil
+        incomingVisible = false
+    }
 
     // MARK: buttons
 
@@ -250,25 +260,42 @@ final class CallController: ObservableObject {
     private(set) var incomingCallId = ""
 
     func accept() {
-        incomingVisible = false
+        let t = OLIncomingBannerPolicy.transition(callId: incomingCallId, action: .accept)
+        dismissIncoming(callId: t.callId)
         host?.unlockForCall()
-        CallCenter.shared.answerFromApp(incomingCallId)
+        // The existing route accepts this exact durable room; no invitation id or separate connect stage is substituted.
+        CallCenter.shared.answerFromApp(t.callId)
     }
 
-    func decline() {
-        incomingVisible = false
-        // CallCenter performs the single token-authenticated Decline; do not send a second page Decline.
-        CallCenter.shared.declineFromApp(incomingCallId)
+    func decline() { endIncoming(.decline) }
+
+    private func endIncoming(_ action: OLIncomingBannerAction) {
+        let t = OLIncomingBannerPolicy.transition(callId: incomingCallId, action: action)
+        dismissIncoming(callId: t.callId)
+        // CallKit performs the token-authenticated Decline; a foreground page uses its existing socket Decline.
+        CallCenter.shared.declineFromApp(t.callId)
     }
 
     // MARK: state
 
-    private func show(incoming id: String) {
+    private func show(incoming id: String, expiresAtMs: Double) {
         incomingCallId = id
         let n = names[id]
         if !visible { peerName = n?.0 ?? ""; peerPhoto = n?.1; video = n?.2 ?? false }
         incomingVisible = true
         startPresencePeek()
+        incomingExpiry?.cancel()
+        if !CallCenter.shared.hasCall(id) {
+            // Foreground page ring: no CallKit owner, so this overlay owns the same bounded 30-second Decline.
+            let left = OLIncomingBannerPolicy.ringSeconds(
+                nowMs: Date().timeIntervalSince1970 * 1000, expiresAtMs: expiresAtMs)
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, self.incomingVisible, self.incomingCallId == id else { return }
+                self.endIncoming(.timeout)
+            }
+            incomingExpiry = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + left, execute: work)
+        }
     }
 
     private func begin(_ id: String, name: String, photo: URL?, video v: Bool) {
@@ -297,6 +324,8 @@ final class CallController: ObservableObject {
         peerPhoto = photo
         video = v
         visible = true
+        incomingExpiry?.cancel()
+        incomingExpiry = nil
         incomingVisible = false
         startPresencePeek()
         if let l = latest[id] { apply(l) } else { tick() } // blank status until the server's first frame
@@ -340,6 +369,8 @@ final class CallController: ObservableObject {
 
     /// Show the first-design failure screen instead of immediately dismissing the overlay.
     func showNetworkFailure(_ text: String) {
+        incomingExpiry?.cancel()
+        incomingExpiry = nil
         incomingVisible = false
         failed = true
         failedText = text
