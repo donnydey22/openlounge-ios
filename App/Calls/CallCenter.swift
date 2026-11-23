@@ -399,7 +399,7 @@ final class CallCenter: NSObject, CXProviderDelegate, PKPushRegistryDelegate {
                        expiresAtMs: ring.expiresAt, declineToken: ring.declineToken,
                        invitationId: ring.invitationId) { [weak self] in
             if ring.expired(nowMs: nowMs), let self {
-                // Legacy payloads have no generation: their late expiry must not kill an identified successor.
+                // Payloads without a generation: their late expiry must not kill an identified successor.
                 if ring.invitationId != nil || self.calls[ring.callId]?.invitationId == nil {
                     self.endRing(ring.callId, invitationId: ring.invitationId, reason: .unanswered)
                 }

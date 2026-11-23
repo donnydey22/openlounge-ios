@@ -449,7 +449,7 @@ public final class OLTgcallsEngine {
                 resetAckWatchdog?.cancel(); resetAckWatchdog = nil
                 resetInFlight = false
                 resetAwaitingFrame = false
-                // The old engine was stopped. Every refusal ends in a bounded successor or explicit termination.
+                // The preceding engine instance was stopped. Every refusal ends in a bounded successor or explicit termination.
                 if e == "reset-unsupported" {
                     end("reset-unsupported")
                 } else if instance == nil {
