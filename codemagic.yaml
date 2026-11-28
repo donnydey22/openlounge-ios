@@ -86,6 +86,17 @@ workflows:
           bash ci/smoke.sh sim/OpenLounge.app build/smoke $SMOKE_RUNTIMES
     artifacts:
       - build/smoke/*
+  smoke-27-2:
+    name: Smoke iOS 27.2 (Xcode 27.2 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 27.2
+      vars:
+        SMOKE_RUNTIMES: "27.2"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
   smoke-27-3:
     name: Smoke iOS 27.2 + 27.3 (Xcode 27.3 machine)
     instance_type: mac_mini_m2

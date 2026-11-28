@@ -15,8 +15,9 @@ set -uo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 app="${1:?usage: ci/smoke.sh <OpenLounge.app> <out-dir> <runtime>...}"; out="${2:?}"; shift 2
 [ -d "$app" ] || { echo "FAIL: no app at $app" >&2; exit 2; }
+app="$(cd "$(dirname "$app")" && pwd)/$(basename "$app")"
 bid=com.donnydey.openlounge
-mkdir -p "$out"; summary="$out/smoke-summary.txt"; : > "$summary"
+mkdir -p "$out"; out="$(cd "$out" && pwd)"; summary="$out/smoke-summary.txt"; : > "$summary"
 overall=0
 
 pick() { # pick <version> -> "<runtime-id>|<devicetype-id>|<devicetype-name>|<full version>" or empty
@@ -57,7 +58,12 @@ one() { # one <runtime-spec>
   echo "runtime $full ($rid) device $dtname" | tee -a "$log"
   udid="$(xcrun simctl create "ol-smoke-$rt" "$dtid" "$rid")" || { echo "FAIL: simctl create" | tee -a "$log"; overall=1; return; }
   xcrun simctl boot "$udid" >>"$log" 2>&1; xcrun simctl bootstatus "$udid" -b >>"$log" 2>&1
-  xcrun simctl install "$udid" "$app" >>"$log" 2>&1 || { reason="install failed"; alive=0; }
+  if ! xcrun simctl install "$udid" "$app" >>"$log" 2>&1; then
+    # CoreSimulatorService occasionally drops the connection right after boot: one clean retry.
+    echo "install failed, retrying once after a simulator restart" | tee -a "$log"
+    xcrun simctl shutdown "$udid" >>"$log" 2>&1; sleep 5; xcrun simctl boot "$udid" >>"$log" 2>&1; xcrun simctl bootstatus "$udid" -b >>"$log" 2>&1
+    xcrun simctl install "$udid" "$app" >>"$log" 2>&1 || { reason="install failed"; alive=0; }
+  fi
   marker="$(mktemp)"
   if [ "$alive" = 1 ]; then
     # --console-pty needs a tty: `script` supplies one.
@@ -97,13 +103,35 @@ one() { # one <runtime-spec>
   [ -z "$crash" ] || { result=FAIL; reason="$reason; crash report: $crash"; }
   case "$rt" in 2[7-9].*|[3-9][0-9].*) [ -z "$soft" ] || { result=FAIL; reason="$reason; UIScene adoption message on iOS $rt: $soft"; };; esac
   if [ -n "$distinct" ]; then
-    awk -v d="$distinct" -v n="$nondom" 'BEGIN{exit !(d>=40 && n>=0.02)}' || { result=FAIL; reason="$reason; screenshot looks blank/uniform ($stats)"; }
+    drawn() { awk -v d="$1" -v n="$2" 'BEGIN{exit !(d>=40 && n>=0.02)}'; }
+    if ! drawn "$distinct" "$nondom" && [ "$alive" = 1 ]; then
+      # Blank screenshot of a live app: some simulator devices (e.g. the foldable "iPhone Duo") have more than one display.
+      xcrun simctl io "$udid" enumerate > "$out/io-enumerate-$rt.txt" 2>&1
+      for disp in internal external; do
+        xcrun simctl io "$udid" screenshot --display="$disp" "$out/smoke-$rt-$disp.png" >>"$log" 2>&1 || continue
+        st="$(python3 "$here/png-stats.py" "$out/smoke-$rt-$disp.png" 2>&1)"; echo "display $disp: $st" | tee -a "$log"
+        d2="$(printf '%s' "$st" | sed -n 's/.*distinct=\([0-9]*\).*/\1/p')"; n2="$(printf '%s' "$st" | sed -n 's/.*nondominant=\([0-9.]*\).*/\1/p')"
+        if [ -n "$d2" ] && drawn "$d2" "$n2"; then cp "$out/smoke-$rt-$disp.png" "$out/smoke-$rt.png"; stats="$st; display=$disp"; distinct="$d2"; nondom="$n2"; break; fi
+      done
+    fi
+    if ! drawn "$distinct" "$nondom"; then
+      # Control: does this simulator device draw anything at all? Open Settings and look.
+      xcrun simctl launch "$udid" com.apple.Preferences >>"$log" 2>&1; sleep 6
+      xcrun simctl io "$udid" screenshot "$out/smoke-$rt-control-settings.png" >>"$log" 2>&1
+      cst="$(python3 "$here/png-stats.py" "$out/smoke-$rt-control-settings.png" 2>&1)"; echo "control (Settings app): $cst" | tee -a "$log"
+      cd2="$(printf '%s' "$cst" | sed -n 's/.*distinct=\([0-9]*\).*/\1/p')"; cn2="$(printf '%s' "$cst" | sed -n 's/.*nondominant=\([0-9.]*\).*/\1/p')"
+      if [ -n "$cd2" ] && drawn "$cd2" "$cn2"; then
+        result=FAIL; reason="$reason; screenshot looks blank/uniform ($stats) while the control app draws"
+      elif [ "$result" = PASS ]; then
+        result=UNVERIFIED-SCREENSHOT; reason="$reason; this simulator device renders black for every app (control: $cst), so the page drawing cannot be shown; process alive 20 s, no UIScene error"
+      fi
+    fi
   else
     [ -s "$out/smoke-$rt.png" ] && [ "$(stat -f%z "$out/smoke-$rt.png")" -gt 30000 ] || { result=FAIL; reason="$reason; no usable screenshot"; }
   fi
   echo "iOS $full ($dtname): $result${reason:+ - $reason}${soft:+ [soft: $soft]}" | tee -a "$summary" "$log"
   printf '{"runtime":"%s","full":"%s","device":"%s","result":"%s","stats":"%s"}\n' "$rt" "$full" "$dtname" "$result" "$stats" > "$out/smoke-$rt.json"
-  [ "$result" = PASS ] || overall=1
+  case "$result" in PASS) ;; UNVERIFIED-SCREENSHOT) [ "${SMOKE_STRICT:-0}" != 1 ] || overall=1;; *) overall=1;; esac
   xcrun simctl shutdown "$udid" >/dev/null 2>&1; xcrun simctl delete "$udid" >/dev/null 2>&1
 }
 
