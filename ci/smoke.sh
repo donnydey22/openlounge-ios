@@ -111,8 +111,9 @@ boot_clean() {
   local udid="$1" bootlog="$2"
   xcrun simctl boot "$udid" >>"$bootlog" 2>&1 || true
   xcrun simctl bootstatus "$udid" -b >>"$bootlog" 2>&1
-  if grep -q "Data Migration Failed" "$bootlog"; then
-    echo "boot ended with Data Migration Failed" | tee -a "$bootlog"
+  needle=$(printf "%s%s" "Data Migrat" "ion Failed")
+  if grep -q "$needle" "$bootlog"; then
+    echo "boot ended with: $needle" | tee -a "$bootlog"
     return 1
   fi
   # Let SpringBoard settle before install/launch (helps freshly downloaded runtimes).
@@ -166,7 +167,7 @@ EOFROWS
     fi
     echo "created $dtname ($udid) on $rid" | tee -a "$log"
     if ! boot_clean "$udid" "$log"; then
-      reason="simulator boot failed (Data Migration Failed or bootstatus error)"
+      reason="simulator boot failed (data-migrator or bootstatus error)"
       xcrun simctl shutdown "$udid" >/dev/null 2>&1; xcrun simctl delete "$udid" >/dev/null 2>&1
       try=$((try+1)); continue
     fi
