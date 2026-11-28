@@ -57,13 +57,10 @@ sim="$(xcrun simctl list devices available | sed -n 's/^ *\(iPhone [^()]*\) (\([
 [ -n "$sim" ] || { echo "FAIL: no iPhone simulator" >&2; exit 1; }
 echo "simulator: $sim"
 
-# Xcode 27.1 links SwiftPM test bundles with swiftc, which rejects the bare "-ObjC" from OLCall's
-# Package.swift unsafeFlags ("unknown argument: '-ObjC'"); Xcode 26.6 used clang. Pin the clang linker
-# driver here until Package.swift passes it as ["-Xlinker", "-ObjC"].
+# Package.swift passes -ObjC as -Xlinker -ObjC so SwiftPM test bundles link under both clang and swiftc.
 pkg_tests() {
-  echo "package tests: LINKER_DRIVER=clang (CI workaround for Package.swift bare -ObjC under swiftc)"
   (cd OLCall && xcodebuild -scheme OLCall-Package -destination "id=$sim" -derivedDataPath "$root/build/dd-pkg" \
-     -resultBundlePath "$root/build/OLCall-tests.xcresult" LINKER_DRIVER=clang test)
+     -resultBundlePath "$root/build/OLCall-tests.xcresult" test)
 }
 run package_tests pkg_tests
 

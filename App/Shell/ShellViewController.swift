@@ -70,8 +70,8 @@ final class ShellViewController: UIViewController, WKNavigationDelegate, WKUIDel
         let ucc = WKUserContentController()
         ucc.addUserScript(WKUserScript(source: OLBridgeScript.injected(version: Self.version, build: Self.build, phoneAuth: PhoneAuth.available),
                                        injectionTime: .atDocumentStart, forMainFrameOnly: true))
-        // One call screen: the native first-design CallScreen. The page's CallOverlay always renders under it
-        // (and showed through after hang-up and under the minimized bar), so hide its non-incoming states.
+        // One call screen: the native first-design CallScreen. Hide every page CallOverlay state
+        // so none shows through after hang-up or under the minimized bar.
         ucc.addUserScript(WKUserScript(source: CallWebOverlay.hideJS, injectionTime: .atDocumentEnd, forMainFrameOnly: true))
         ucc.add(WeakMessageHandler(self), name: OLBridgeScript.handlerName)
         config.userContentController = ucc

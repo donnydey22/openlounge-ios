@@ -40,7 +40,7 @@ let package = Package(
                 .linkedFramework("CoreAudio"), .linkedFramework("CoreGraphics"), .linkedFramework("QuartzCore"),
                 .linkedFramework("CoreFoundation"), .linkedFramework("CFNetwork"), .linkedFramework("Foundation"),
                 .linkedLibrary("z"), .linkedLibrary("c++"), .linkedLibrary("bz2"), .linkedLibrary("iconv"),
-                .unsafeFlags(["-ObjC"]),
+                .unsafeFlags(["-Xlinker", "-ObjC"]),
             ]
         ),
         .testTarget(
