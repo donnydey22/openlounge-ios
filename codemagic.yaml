@@ -1,5 +1,12 @@
 # Codemagic CI for the Open Lounge iOS app: mirrors .github/workflows/ios.yml (engine xcframework, ci/build.sh, ci/adhoc.sh).
 # Signing secrets live in the Codemagic app variable group ios_signing (secure): P12_B64 P12_PASSWORD PROFILE_B64 ARTIFACT_PASSPHRASE.
+#
+# ios-adhoc is pinned to Xcode 26.6 (iphoneos26.5 SDK): the toolchain of the iOS 146 build that opens on Donny's iPhone.
+# An app built with the iOS 27 SDK (Xcode 27.x) must use the UIScene lifecycle or iOS 27 kills it at launch; this app does not
+# yet (see kimi-bundle/FIX_SCENE_LIFECYCLE.md), so do not move ios-adhoc to Xcode 27 before scene adoption lands.
+# smoke-* workflows (started by API with SIM_APP_URL = the Release simulator app built by ios-adhoc) run ci/smoke.sh on the
+# simulator runtimes of other Xcode machines; ios-evidence-27 builds the same source with Xcode 27.1 to show the smoke test
+# catches the failure (non-gating).
 workflows:
   ios-adhoc:
     name: Open Lounge iOS ad hoc
@@ -8,7 +15,7 @@ workflows:
     environment:
       groups:
         - ios_signing
-      xcode: 27.1
+      xcode: 26.6
     cache:
       cache_paths:
         - $CM_BUILD_DIR/xcf
@@ -25,11 +32,12 @@ workflows:
         script: |
           xcodebuild -version; sw_vers
       - name: Engine xcframework (cache, else build from Telegram-iOS at the pin)
-        script: |
+        script: &engine |
           set -euo pipefail
           pin="$(sed -n 's/.*"telegram_ios": *"\([^"]*\)".*/\1/p' ci/telegram-ios-versions.pin)"
           h="$(cat ci/xcframework/BUILD.bazel ci/xcframework/install.sh | shasum -a 256 | cut -c1-16)"
-          key="${pin}-${h}"
+          xcv="$(xcodebuild -version | head -n1 | tr ' ' '-')"
+          key="${pin}-${h}-${xcv}"
           if [ -f xcf/TgVoipWebrtc.xcframework.zip ] && [ "$(cat xcf/KEY 2>/dev/null)" = "$key" ]; then
             echo "engine xcframework from cache ($key)"; du -h xcf/TgVoipWebrtc.xcframework.zip; exit 0
           fi
@@ -47,7 +55,7 @@ workflows:
           cd .. && bash ci/xcframework/install.sh "$PWD/tg" "$PWD/xcf"
           echo "$key" > xcf/KEY
           rm -rf tg
-      - name: Build and test
+      - name: Build, test and launch smoke test
         script: bash ci/build.sh "$PWD/xcf/TgVoipWebrtc.xcframework.zip"
       - name: Signed ad hoc IPA (encrypted)
         script: bash ci/adhoc.sh
@@ -55,3 +63,102 @@ workflows:
       - out/*
       - build/RESULT.json
       - build/ci-*.log
+      - build/smoke/*
+  smoke-27-1:
+    name: Smoke iOS 27.0 + 27.1 (Xcode 27.1 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 27.1
+      vars:
+        SMOKE_RUNTIMES: "27.0 27.1"
+    scripts: &smokescripts
+      - name: Smoke matrix on this machine's simulator runtimes
+        script: |
+          set -euo pipefail
+          : "${SIM_APP_URL:?SIM_APP_URL is set when the build is started}"
+          xcodebuild -version; xcrun simctl list runtimes
+          mkdir -p sim build/smoke
+          curl -fsSL "$SIM_APP_URL" -o sim/app.zip
+          [ -z "${SIM_APP_SHA256:-}" ] || [ "$(shasum -a 256 sim/app.zip | cut -d' ' -f1)" = "$SIM_APP_SHA256" ] || { echo "FAIL: sim app sha256 mismatch" >&2; exit 1; }
+          ditto -x -k sim/app.zip sim
+          plutil -p sim/OpenLounge.app/Info.plist | grep -E "CFBundleVersion|DTXcode|DTSDKName|MinimumOSVersion"
+          bash ci/smoke.sh sim/OpenLounge.app build/smoke $SMOKE_RUNTIMES
+    artifacts:
+      - build/smoke/*
+  smoke-27-3:
+    name: Smoke iOS 27.2 + 27.3 (Xcode 27.3 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 27.3
+      vars:
+        SMOKE_RUNTIMES: "27.2 27.3"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-26-4:
+    name: Smoke iOS 26.3 + 26.4 (Xcode 26.4 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 26.4
+      vars:
+        SMOKE_RUNTIMES: "26.3 26.4"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-26-0:
+    name: Smoke iOS 26.0 + 18.5 (Xcode 26.0 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 26.0
+      vars:
+        SMOKE_RUNTIMES: "26.0 18.5"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-16-4:
+    name: Smoke iOS 17.5 + older downloads (Xcode 16.4 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 16.4
+      vars:
+        SMOKE_RUNTIMES: "17.5 17.0? 16.4?"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-16-0:
+    name: Smoke iOS 18.0 (Xcode 16.0 machine)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 16.0
+      vars:
+        SMOKE_RUNTIMES: "18.0"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  ios-evidence-27:
+    name: Evidence - same source built with Xcode 27.1, smoke on iOS 27 (non-gating)
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: 27.1
+      vars:
+        SMOKE_RUNTIMES: "27.0 27.1"
+        SMOKE_EVIDENCE_ONLY: "1"
+    cache:
+      cache_paths:
+        - $CM_BUILD_DIR/xcf
+    scripts:
+      - name: Engine xcframework (cache, else build from Telegram-iOS at the pin)
+        script: *engine
+      - name: Build, test and launch smoke test (evidence only)
+        script: bash ci/build.sh "$PWD/xcf/TgVoipWebrtc.xcframework.zip"
+    artifacts:
+      - build/RESULT.json
+      - build/ci-*.log
+      - build/smoke/*

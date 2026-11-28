@@ -6,6 +6,9 @@
 # 3. OLCall package tests   (OLCallCoreTests + OLShellCoreTests + OLCallTests) on an iPhone simulator
 # 4. app build              simulator arm64 (Debug) + device arm64 (Release), unsigned
 # 5. duplicate classes      ci/dup-classes.sh on both app builds
+# 6. launch smoke test      Release simulator app, ci/smoke.sh (alive 20 s, no UIScene error, screenshot drawn)
+#    SMOKE_RUNTIMES="26.5 ..." picks runtimes (default: newest installed iOS runtime);
+#    SMOKE_EVIDENCE_ONLY=1 records the result without failing the build.
 # Writes build/RESULT.json; exit 0 only if every step passed.
 set -euo pipefail
 [ "$(uname -s)" = Darwin ] || { echo "BLOCKED: macOS + Xcode only" >&2; exit 2; }
@@ -77,7 +80,13 @@ app_device() {
     -destination 'generic/platform=iOS' -derivedDataPath build/dd-app \
     ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build
 }
+app_sim_release() {
+  xcodebuild -project OpenLounge.xcodeproj -scheme OpenLounge -configuration Release \
+    -destination 'generic/platform=iOS Simulator' -derivedDataPath build/dd-app \
+    ARCHS=arm64 ONLY_ACTIVE_ARCH=NO CODE_SIGNING_ALLOWED=NO build
+}
 run app_build_simulator app_sim
+run app_build_simulator_release app_sim_release
 run app_build_device app_device
 
 dups() {
@@ -88,6 +97,22 @@ dups() {
   return $ok
 }
 run duplicate_classes dups
+
+# Launch smoke test: the Release simulator app, installed and launched on a simulator runtime of this Xcode.
+simapp=build/dd-app/Build/Products/Release-iphonesimulator/OpenLounge.app
+mkdir -p out
+if [ -d "$simapp" ]; then
+  rm -f out/OpenLounge-sim.app.zip && ditto -c -k --keepParent "$simapp" out/OpenLounge-sim.app.zip
+  shasum -a 256 out/OpenLounge-sim.app.zip | tee out/OpenLounge-sim.app.zip.sha256
+fi
+smoke_rt="${SMOKE_RUNTIMES:-$(xcrun simctl list runtimes -j | python3 -c 'import json,sys; v=[r["version"] for r in json.load(sys.stdin)["runtimes"] if r.get("isAvailable") and r.get("name","").startswith("iOS")]; v.sort(key=lambda x:[int(i) for i in x.split(".")]); print(".".join(v[-1].split(".")[:2]) if v else "")')}"
+smoke() { bash ci/smoke.sh "$simapp" build/smoke $smoke_rt; }
+if [ "${SMOKE_EVIDENCE_ONLY:-0}" = 1 ]; then
+  echo "== launch_smoke (evidence only, not gating)"
+  if smoke; then echo '"launch_smoke_evidence": PASS'; else echo '"launch_smoke_evidence": FAIL (expected for an Xcode 27 SDK build of the app-delegate-only app)'; fi
+else
+  run launch_smoke smoke
+fi
 
 tests="$(awk "/^Test Suite '.*\\.xctest' (passed|failed)/{getline; print}" "$log" | sed -n 's/.*Executed \([0-9]*\) tests\{0,1\}, with \([0-9]*\) failures.*/\1 \2/p' | awk '{e+=$1; f+=$2} END {print e" "f}')"
 echo "tests (executed failures): ${tests:-unknown}"
