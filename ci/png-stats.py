@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""png-stats.py <file.png>: prints "distinct=<n> nondominant=<fraction> w=<w> h=<h>" using only the stdlib.
-Used by ci/smoke.sh to tell a drawn page from a blank/uniform launch screen. Exit 3 if the PNG layout is unsupported."""
+"""png-stats.py <file.png>: prints "distinct=<n> nondominant=<fraction> darkfrac=<fraction> w=<w> h=<h>" using only the stdlib.
+Used by ci/smoke.sh to tell a drawn dark sign-in page from a blank launch screen or the colorful SpringBoard home screen. Exit 3 if the PNG layout is unsupported."""
 import struct, sys, zlib
 from collections import Counter
 
@@ -17,7 +17,8 @@ def main(path):
         print("unsupported bd=%s ct=%s il=%s" % (bd, ct, il)); return 3
     bpp = 3 if ct == 2 else 4
     raw = zlib.decompress(idat); stride = w * bpp
-    prev = bytearray(stride); cnt = Counter(); o = 0
+    prev = bytearray(stride); cnt = Counter(); dark = 0; total_px = 0
+    o = 0
     for _ in range(h):
         f = raw[o]; line = bytearray(raw[o+1:o+1+stride]); o += 1 + stride
         if f == 1:
@@ -35,10 +36,14 @@ def main(path):
                 pr = a if pa <= pb and pa <= pc else (b if pb <= pc else c)
                 line[i] = (line[i] + pr) & 255
         prev = line
-        for x in range(0, stride, bpp * 4):          # sample every 4th pixel
+        for x in range(0, stride, bpp * 4):
+            r, g, b = line[x], line[x+1], line[x+2]
             cnt[bytes(line[x:x+3])] += 1
+            total_px += 1
+            if (r + g + b) < 180:
+                dark += 1
     total = sum(cnt.values()); top = cnt.most_common(1)[0][1]
-    print("distinct=%d nondominant=%.4f w=%d h=%d" % (len(cnt), 1 - top / total, w, h))
+    print("distinct=%d nondominant=%.4f darkfrac=%.4f w=%d h=%d" % (len(cnt), 1 - top / total, dark / float(total_px or 1), w, h))
     return 0
 
 sys.exit(main(sys.argv[1]))

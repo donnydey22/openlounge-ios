@@ -173,3 +173,71 @@ workflows:
       - build/RESULT.json
       - build/ci-*.log
       - build/smoke/*
+  smoke-gap-27-1:
+    name: Gap - iOS 27.1 on a standard iPhone (not Duo)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 27.1
+      vars:
+        SMOKE_RUNTIMES: "27.1"
+        SMOKE_DEVICE: "iPhone 17 Pro"
+        SMOKE_ATTEMPTS: "3"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-gap-27-2a:
+    name: Gap - iOS 27.2 on Xcode 27.3 (generic runtime)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 27.3
+      vars:
+        SMOKE_RUNTIMES: "27.2"
+        SMOKE_DEVICE: "iPhone 17 Pro"
+        SMOKE_ATTEMPTS: "3"
+        SMOKE_DOWNLOAD: "1"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-gap-27-2b:
+    name: Gap - iOS 27.2 on Xcode 27.2, standard iPhone
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 27.2
+      vars:
+        SMOKE_RUNTIMES: "27.2"
+        SMOKE_DEVICE: "iPhone 17 Pro"
+        SMOKE_ATTEMPTS: "3"
+        SMOKE_DOWNLOAD: "1"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-gap-26-4:
+    name: Gap - iOS 26.4 on Xcode 26.5 (preinstalled 26.4)
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      xcode: 26.5
+      vars:
+        SMOKE_RUNTIMES: "26.4"
+        SMOKE_DEVICE: "iPhone 17 Pro"
+        SMOKE_ATTEMPTS: "4"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
+  smoke-gap-17-0:
+    name: Gap - iOS 17.0 (download on Xcode 16.4, which has working 17.5 WebKit)
+    instance_type: mac_mini_m2
+    max_build_duration: 120
+    environment:
+      xcode: 16.4
+      vars:
+        SMOKE_RUNTIMES: "17.0"
+        SMOKE_DEVICE: "iPhone 15 Pro"
+        SMOKE_ATTEMPTS: "3"
+        SMOKE_DOWNLOAD: "1"
+    scripts: *smokescripts
+    artifacts:
+      - build/smoke/*
